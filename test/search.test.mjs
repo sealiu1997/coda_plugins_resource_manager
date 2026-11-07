@@ -433,3 +433,14 @@ test('等屏障的时间算在 5 秒里：屏障排空时已经过了 5 秒，�
   assert.deepEqual(await b, { results: [], stop: 'time', scanned: 0, unreadable: 0 });
   assert.equal(tree.counts.readdir, 1, '排空之后也没有读');
 });
+
+test('出错出口核对身份：起点解析失败的同一刻身份已经作废（valid 翻成假），静默而不是抛错', async t => {
+  const tree = fakeTree({ '': ['a'] });
+  let alive = true;
+  const resolve = async () => { alive = false; throw Object.assign(new Error('gone'), { code: 'ENOENT' }); };
+  const searcher = createSearcher(tree.listing, { resolve });
+  assert.equal(await ask(searcher, tree, 'a', { valid: () => alive }), null);
+  alive = true;
+  const again = createSearcher(tree.listing, { resolve: async () => { throw Object.assign(new Error('gone'), { code: 'not_found', protocol: true }); } });
+  assert.equal(await rejected(ask(again, tree, 'a')), 'not_found', '身份还有效：照常回答错误');
+});

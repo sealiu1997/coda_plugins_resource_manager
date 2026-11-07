@@ -265,3 +265,30 @@ test('找到时 clientHeight 小于一行也不出错（居中夹在顶部）', 
   await ask(ctx, 'dir/x.txt');
   assert.ok(ctx.page.tree.scrollTop >= 0);
 });
+
+const many = (count, prefix = 'f') => Array.from({ length: count }, (_, i) => `${prefix}${String(i).padStart(3, '0')}`);
+
+test('开始时丢掉目标视图还在等的滚动恢复：定位居中之后，另一个目录晚到也不会触发恢复把它滚走', async t => {
+  const saved = { v: 1, seq: 1, hidden: false, sort: 'name', sessions: { s1: { at: 1, expanded: ['dir'], selected: null, scroll: { tree: 200, top: 0, left: 0, sort: 'name' } } } };
+  const ctx = await start(t, { listing: { '': [...many(80), 'dir/'], dir: ['x.txt'] }, state: saved, prepare: host => { host.held.add(''); host.held.add('dir'); } });
+  await ask(ctx, 'f070');
+  ctx.host.answer(await nextHeld(ctx.host), page([...many(80), 'dir/']));
+  await flush();
+  const top = ctx.page.tree.scrollTop;
+  assert.equal(top, 70 * 24 - (120 - 24) / 2, '居中：第 70 行的中心在可见区中间');
+  ctx.host.answer(await nextHeld(ctx.host), page(['x.txt'])); // 恢复要等的最后一个目录到了
+  await flush();
+  assert.equal(ctx.page.tree.scrollTop, top, '没有被保存的 200 拉走');
+});
+
+test('图标视图进入上一层之后不触发 landed 的补滚动：居中的位置不被拉回顶部', async t => {
+  const ctx = await start(t, { listing: { '': ['dir/'], dir: many(100) }, state: iconsAt('') });
+  await ask(ctx, 'dir/f090');
+  const top = gridBody(ctx.page).scrollTop;
+  assert.ok(top > 0, '滚到了 f090 附近');
+  assert.deepEqual(selectedCells(ctx.page), ['f090']);
+  ctx.host.changed();
+  await flush();
+  await flush();
+  assert.equal(gridBody(ctx.page).scrollTop, top);
+});
