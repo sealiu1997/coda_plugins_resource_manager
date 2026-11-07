@@ -313,3 +313,14 @@ test('按下反馈：先在目录树按下 a.txt，再搜到同一路径的结�
   await search(ctx, 'a', [hit('a.txt')]);
   assert.equal(hitNamed(ctx.page, 'a.txt').classList.contains('pressed'), false);
 });
+
+test('iPhone 顶部标题：搜索时盖住了图标视图的目录，标题是根目录名；清空后回到当前目录名', async t => {
+  const ctx = await startPhone(t, { state: iconsRecord });
+  const title = () => ctx.page.bar.find(node => node.classList.contains('bar-title'))[0].textContent;
+  assert.equal(title(), 'dir');
+  await search(ctx, 'x', results);
+  assert.equal(title(), 'A');
+  type(ctx.page, '');
+  await flush();
+  assert.equal(title(), 'dir');
+});
