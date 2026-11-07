@@ -81,7 +81,7 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
         if (checked !== undefined) button.setAttribute('aria-checked', String(checked));
         button.addEventListener('click', () => {
           if (!alive()) return; // 菜单已经关了（换成了别的、退回了上一层）：留在手里的按钮不再响应
-          hide();
+          hide(true);
           run();
         });
       }
@@ -193,14 +193,18 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
   // 安全区的左边：body 的左内边距就是它（style.css），算出来的是像素。读不到按 0。
   const safeLeft = () => { const px = parseFloat(globalThis.getComputedStyle?.(document.body)?.paddingLeft); return Number.isFinite(px) ? px : 0; };
 
-  function hide() {
+  // restore：关菜单后把焦点交回打开它的按钮（Esc 关、选了一项之后）。点菜单外、滚动、旋转关的不交：点到哪里焦点就在哪里。
+  // 选项的操作在交回焦点之后才执行，操作自己要移焦点（如「查找」聚焦查找条）时以操作为准。没有按钮的菜单（右键、原生按钮的假锚点）焦点不动。
+  function hide(restore = false) {
     settle();
     current = null;
     layer++;
     collapse();
     el.hidden = true;
+    const back = opener;
     opener?.setAttribute?.('aria-expanded', 'false');
     opener = null;
+    if (restore) back?.focus?.();
   }
 
   // 两个面板都算菜单里面。菜单开着时点菜单外：只关菜单，紧接着的那次点击不交给页面。
@@ -220,7 +224,7 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
     if (!el.hidden) eaten.add(event);
-    hide();
+    hide(true);
   });
   window.addEventListener('blur', hide);
   window.addEventListener('resize', hide); // 旋转、拖窄侧栏：位置对不上了

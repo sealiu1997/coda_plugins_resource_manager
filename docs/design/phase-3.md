@@ -156,7 +156,7 @@ test/harness/      深浅色、Mac 和 iPhone 的截图
 
 ## 9. 样式规则
 
-- 颜色、字体、圆角只用 `--coda-*`；`style.css` 里的回退值只给 harness 用，已有的写法照旧。类型图标的 `--tone-*`、高亮的 `--hl-*` 和菜单阴影的 `--shadow-menu` 是三个例外（第 13.9、15.5、17.5 节）。
+- 颜色、字体、圆角只用 `--coda-*`，可以用 `color-mix` 从它们派生（文件内查找的高亮，第 18.6 节），不算新增颜色；`style.css` 里的回退值只给 harness 用，已有的写法照旧。类型图标的 `--tone-*`、高亮的 `--hl-*` 和菜单阴影的 `--shadow-menu` 是三个例外（第 13.9、15.5、17.5 节）。
 - 文字层级只用 `foreground`、`secondary`、`tertiary`。
 - 悬停只在 `@media (hover: hover)` 下。
 - 不做 iPad、Duo 的专门布局。

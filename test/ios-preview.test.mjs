@@ -58,7 +58,7 @@ test('图标视图：声明的路径多一级「当前目录名」；steps 为 1
   assert.deepEqual(again.host.calls.back.at(-1), []);
 });
 
-test('预览时顶部工具条只有「返回」（exit-only，竖屏不显示）；标题和 ⋯ 在预览头部，⋯ 里只有刷新和复制路径（相对路径），再点同一个按钮关闭', async t => {
+test('预览时顶部工具条只有「返回」（exit-only，竖屏不显示）；标题和 ⋯ 在预览头部，⋯ 里是刷新、查找（显示着文本时）、复制路径（相对路径），再点同一个按钮关闭', async t => {
   const { page, host } = await start(t);
   const barNames = () => page.bar.find(node => node.tagName === 'BUTTON' || node.classList.contains('bar-title')).map(node => node.getAttribute('aria-label') ?? node.textContent);
   assert.deepEqual(barNames(), ['返回', 'A', '更多'], '目录树上工具条不变');
@@ -74,7 +74,7 @@ test('预览时顶部工具条只有「返回」（exit-only，竖屏不显示�
   assert.ok(more, '预览头部右边有 ⋯');
   const items = () => page.menu.find(node => node.tagName === 'BUTTON').map(node => node.textContent);
   more.dispatch('click');
-  assert.deepEqual(items(), ['刷新', '复制路径']);
+  assert.deepEqual(items(), ['刷新', '查找', '复制路径']);
   assert.ok(visible(page.menu));
   more.dispatch('click');
   assert.equal(visible(page.menu), false, '再点同一个按钮关闭');

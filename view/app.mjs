@@ -135,6 +135,7 @@ const preview = mountPreview($('preview'), {
   back: isIOS ? null : closePreview,
   // 选中文字的右键菜单只有 Mac：iPhone 用系统的选区菜单。
   selectionMenu: isIOS ? null : (event, selection) => menu.open(event, { items: chat.selectionItems(selection) }),
+  consumed: menu.consumed, // 菜单开着时的 Esc 归菜单：查找条不处理
 });
 // 属性页：页内一层。
 let infoOpen = false;
@@ -386,6 +387,7 @@ const TOOLBAR = { getBoundingClientRect: () => ({ right: window.innerWidth, bott
 // 「更多」菜单的内容只写这一处，iPhone 的 ⋯ 和 Mac 的原生按钮共用：刷新、显示隐藏文件、「显示」›；「显示」里是视图和排序，当前项有对勾。
 const moreMenu = () => isIOS && mode() === 'preview' ? { items: [
   { label: '刷新', run: () => act('refresh') },
+  ...(preview.canFind ? [{ label: '查找', run: () => preview.openFind() }] : []), // 只有显示着的文本有查找
   { label: '复制路径', run: () => preview.copyPath() }, // 相对路径
 ] } : ({ items: [
   { label: '刷新', run: () => act('refresh') },
@@ -577,7 +579,12 @@ hits.onKey(event => {
 document.addEventListener('keydown', event => {
   if (isIOS || event.isComposing || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key?.toLowerCase() !== 'f') return;
   if (!menu.hidden) menu.hide();
-  if (mode() !== 'browse') return;
+  const layer = mode();
+  if (layer === 'preview') { // 能查找的文本：打开查找条并聚焦（已开就选中输入框的字）；图片、二进制、读取中、读不到不拦
+    if (preview.canFind) { event.preventDefault(); preview.openFind(); }
+    return;
+  }
+  if (layer !== 'browse') return;
   event.preventDefault();
   searchbar.select();
 });

@@ -75,7 +75,7 @@ test('结果列表：⌘F 聚焦搜索框并选中；Esc 焦点回搜索框；�
   assert.equal(visible(ctx.page.preview), true, '⌘↓ 打开选中的');
 });
 
-test('页面本身（焦点不在任何控件上）：浏览区和结果里 ⌘F 聚焦搜索框；预览、属性页、说明区不拦', async t => {
+test('页面本身（焦点不在任何控件上）：浏览区和结果里 ⌘F 聚焦搜索框；能查找的预览打开查找条；属性页、说明区不拦', async t => {
   const ctx = await startSearch(t);
   Object.assign(ctx.host, { autoRead: true });
   document.activeElement = null;
@@ -89,8 +89,9 @@ test('页面本身（焦点不在任何控件上）：浏览区和结果里 ⌘F
   await flush();
   assert.equal(visible(ctx.page.preview), true);
   document.activeElement = null;
-  assert.equal(onPage('f', cmd).prevented, false, '预览：不拦（查找在第 2 步）');
-  assert.notEqual(active(), box(ctx.page));
+  assert.equal(onPage('f', cmd).prevented, true, '能查找的文本：⌘F 打开查找条（第 18.6 节）');
+  assert.equal(ctx.page.preview.find(node => node.classList.contains('fbar'))[0].hidden, false);
+  assert.notEqual(active(), box(ctx.page), '不去聚焦被遮住的搜索框');
 });
 
 test('属性页：⌘F 不拦，不去聚焦被遮住的搜索框', async t => {

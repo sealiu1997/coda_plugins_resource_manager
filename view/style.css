@@ -278,3 +278,20 @@ button.icon svg { display: block; }
 /* 横屏：客户端隐藏导航栏，页面自己给返回。近似 verticalSizeClass 的判断，不等价（iPad、Duo 不单独适配）。 */
 .bar .exit, .bar.exit-only { display: none; } /* 只有返回的工具条（属性页）：返回不显示，整条也不占高度 */
 @media (orientation: landscape) and (max-height: 500px) { .coda-ios .bar .exit { display: inline-flex; } .coda-ios .bar.exit-only { display: flex; } }
+
+/* 文件内查找（第 18.6 节）：查找条在预览头部下面、正文上面，不随正文滚动。输入框字号不小于 16 点，按钮至少 44 点（iPhone 的最小触摸尺寸在 .coda-ios button 里）。
+   高亮全部匹配和当前这处：颜色从 --coda-accent 用 color-mix 派生（第 9 节），不改文字颜色。 */
+.fbar { flex: none; display: flex; align-items: center; gap: 4px; padding: 4px 12px; border-bottom: 1px solid var(--line); }
+.finput { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 8px; border: 0; outline: 0; border-radius: var(--coda-radius, 6px); background: var(--coda-fill, var(--hover)); color: inherit; font: inherit; font-size: max(16px, 1em);
+  -webkit-user-select: text; user-select: text; -webkit-appearance: none; appearance: none; }
+.finput::-webkit-search-cancel-button, .finput::-webkit-search-decoration { -webkit-appearance: none; display: none; }
+.finput:focus { outline: 2px solid var(--coda-accent, #0a84ff); outline-offset: -1px; }
+.fcount { flex: none; min-width: 3.2em; text-align: center; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fbar button { flex: none; white-space: nowrap; }
+.fbar button:disabled { opacity: .35; }
+.fprev svg { transform: rotate(-90deg); } .fnext svg { transform: rotate(90deg); }
+.coda-ios .fbar button { min-height: 44px; min-width: 44px; }
+.coda-ios .finput { height: 36px; }
+.pbody:focus { outline: none; }
+::highlight(find) { background-color: color-mix(in srgb, var(--coda-accent, #0a84ff) 25%, transparent); }
+::highlight(find-current) { background-color: color-mix(in srgb, var(--coda-accent, #0a84ff) 55%, transparent); }
