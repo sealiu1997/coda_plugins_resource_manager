@@ -30,13 +30,21 @@ export const selectedRows = page => page.tree.find(node => node.classList.contai
 export const selectedCells = page => page.grid.find(node => node.classList.contains('cell') && node.classList.contains('sel')).map(node => node.textContent);
 export const savedOf = ({ saves }) => saves.at(-1)?.sessions.s1;
 
+// 浏览器的一次鼠标单击：按下、松开、click，都发给同一个节点。Mac 在按下时选中（第 17.4 节），click 只管展开箭头、说明行这类仍在松开时执行的。
+export function clickOn(node, extra = {}) {
+  const init = { button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, clientX: 50, clientY: 12, ...extra };
+  node.dispatch('pointerdown', init);
+  node.dispatch('pointerup', init);
+  return node.dispatch('click', init);
+}
+
 // 浏览器的一次双击：两次 click（中间事件循环转一圈，微任务里的重画会跑），再 dblclick，都发给同一个节点；
 // 每一步之后节点必须还在容器里，不然 dblclick 到不了容器。返回节点。
 export async function doubleClick(container, node) {
-  node.dispatch('click');
+  clickOn(node);
   await flush();
   if (!container.contains(node)) throw new Error('第一次 click 之后节点脱离了容器');
-  node.dispatch('click');
+  clickOn(node);
   await flush();
   if (!container.contains(node)) throw new Error('第二次 click 之后节点脱离了容器');
   node.dispatch('dblclick');

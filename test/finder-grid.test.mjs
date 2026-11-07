@@ -4,7 +4,7 @@ import test from 'node:test';
 import { visible } from './support/dom.mjs';
 import { flush } from './support/fake.mjs';
 import { pick } from './support/more.mjs';
-import { cellNamed, cellNames, cmd, doubleClick, drain, gridBody, gridHead, press, savedOf, selectedCells, startGrid } from './support/finder.mjs';
+import { cellNamed, cellNames, cmd, doubleClick, drain, gridBody, gridHead, press, savedOf, selectedCells, startGrid, clickOn } from './support/finder.mjs';
 
 const reads = host => host.sent.filter(m => m.type === 'read');
 const labels = page => page.menu.find(node => node.tagName === 'BUTTON').map(node => node.textContent);
@@ -15,7 +15,7 @@ const back = async page => { gridHead(page).children[0].dispatch('click'); await
 test('单击只选中：文件夹、文件、不能打开的条目都不进入、不打开', async t => {
   const { page, host } = await startGrid(t);
   for (const name of ['dir', 'f1.txt', 'to']) {
-    cellNamed(page, name).dispatch('click');
+    clickOn(cellNamed(page, name));
     await flush();
     assert.deepEqual(selectedCells(page), [name]);
     assert.equal(visible(page.grid), true);
@@ -38,7 +38,7 @@ test('双击文件夹进入这一层，双击文件在侧栏打开，双击不�
 test('双击文件夹：进入恰好一次，选中清空', async t => {
   const ctx = await startGrid(t);
   const { page, host } = ctx;
-  cellNamed(page, 'f1.txt').dispatch('click');
+  clickOn(cellNamed(page, 'f1.txt'));
   await dblclick(page, 'dir');
   assert.deepEqual(cellNames(page), ['inner', 'x.txt', 'y.txt']);
   assert.equal(host.lists().filter(m => m.path === 'dir').length, 1);
@@ -50,24 +50,24 @@ test('双击文件夹：进入恰好一次，选中清空', async t => {
 test('选中不重画：节点身份不变；单击空白取消选中；头部的返回键不算空白', async t => {
   const { page } = await startGrid(t);
   const a = cellNamed(page, 'f1.txt'), b = cellNamed(page, 'f2.txt');
-  a.dispatch('click');
+  clickOn(a);
   await flush();
   assert.equal(cellNamed(page, 'f1.txt'), a);
-  b.dispatch('click');
+  clickOn(b);
   await flush();
   assert.deepEqual([a.classList.contains('sel'), b.classList.contains('sel')], [false, true]);
-  gridBody(page).dispatch('click');
+  clickOn(gridBody(page));
   assert.deepEqual(selectedCells(page), []);
-  b.dispatch('click');
+  clickOn(b);
   await enter(page, 'dir');
-  cellNamed(page, 'x.txt').dispatch('click');
+  clickOn(cellNamed(page, 'x.txt'));
   await back(page);
   assert.deepEqual(selectedCells(page), ['dir'], '点头部的返回不会再取消选中');
 });
 
 test('右键：不改选中，菜单第一项是「打开」，不能打开的条目没有；「打开」进入文件夹或打开文件', async t => {
   const { page, host } = await startGrid(t);
-  cellNamed(page, 'f2.txt').dispatch('click');
+  clickOn(cellNamed(page, 'f2.txt'));
   const right = name => cellNamed(page, name).dispatch('contextmenu', { clientX: 5, clientY: 6 });
   right('to');
   assert.equal(labels(page).includes('打开'), false);
@@ -88,7 +88,7 @@ test('iPhone：轻点照旧进入，dblclick 不触发任何东西', async t => 
   cellNamed(page, 'f1.txt').dispatch('dblclick');
   await flush();
   assert.equal(host.calls.open.length, 0);
-  cellNamed(page, 'dir').dispatch('click');
+  clickOn(cellNamed(page, 'dir'));
   await flush();
   assert.deepEqual(cellNames(page), ['inner', 'x.txt', 'y.txt']);
   cellNamed(page, 'x.txt').dispatch('dblclick');
@@ -120,7 +120,7 @@ test('图标：↑ ↓ 走同一列，末行不满时 ↓ 落在最后一个；�
   assert.deepEqual(selectedCells(page), ['f3.txt'], '行尾接下一行');
   press(body, 'ArrowLeft');
   assert.deepEqual(selectedCells(page), ['f2.txt']);
-  body.dispatch('click');
+  clickOn(body);
   press(body, 'ArrowUp');
   assert.deepEqual(selectedCells(page), ['to']);
 });
@@ -183,7 +183,7 @@ test('回上一层：头部返回、⌘↑ 选中来时的文件夹；连续进�
 
 test('iPhone 原生返回 steps 大于 1：选的是退到那一层的直接子项（a/b/c 退到 a 选 a/b）', async t => {
   const { page, host } = await startGrid(t, { platform: 'ios', back: true });
-  const tap = async name => { cellNamed(page, name).dispatch('click'); await flush(); };
+  const tap = async name => { clickOn(cellNamed(page, name)); await flush(); };
   await tap('dir');
   await tap('inner');
   await tap('z');
@@ -198,7 +198,7 @@ test('iPhone 原生返回 steps 大于 1：选的是退到那一层的直接子�
 
 test('和属性页叠加：steps 为 2 先关属性页再退一层，选中退到那一层里来时的文件夹', async t => {
   const { page, host } = await startGrid(t, { platform: 'ios', back: true });
-  const tap = async name => { cellNamed(page, name).dispatch('click'); await flush(); };
+  const tap = async name => { clickOn(cellNamed(page, name)); await flush(); };
   await tap('dir');
   await tap('inner');
   cellNamed(page, 'deep.txt').dispatch('contextmenu', { clientX: 1, clientY: 1 });
@@ -219,7 +219,7 @@ test('当前目录被删：模型自己退回上一层时不改选中', async t 
   const ctx = await startGrid(t);
   const { page, host } = ctx;
   await enter(page, 'dir');
-  cellNamed(page, 'x.txt').dispatch('click');
+  clickOn(cellNamed(page, 'x.txt'));
   host.missing.add('dir');
   host.changed();
   await flush();
@@ -232,7 +232,7 @@ test('当前目录被删：模型自己退回上一层时不改选中', async t 
 test('换排序、显示隐藏文件、切换视图：选中不变', async t => {
   const ctx = await startGrid(t);
   const { page, host } = ctx;
-  cellNamed(page, 'f2.txt').dispatch('click');
+  clickOn(cellNamed(page, 'f2.txt'));
   const choose = async label => { host.events.toolbar({ id: 'more' }); pick(page, label); await flush(); };
   await choose('日期');
   assert.deepEqual(selectedCells(page), ['f2.txt'], '换排序');
@@ -250,7 +250,7 @@ test('连续几级上层都被删：模型逐级退回根目录，选中不变',
   const ctx = await startGrid(t);
   const { page, host } = ctx;
   await enter(page, 'dir', 'inner', 'z');
-  cellNamed(page, 'q.txt').dispatch('click');
+  clickOn(cellNamed(page, 'q.txt'));
   for (const path of ['dir', 'dir/inner', 'dir/inner/z']) host.missing.add(path);
   host.changed();
   await flush();

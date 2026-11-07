@@ -17,6 +17,7 @@ export function mountInfo(el, { stat, size, rootPath, round, back = null }) {
   let reply = null, failure = null; // 属性的回答；取属性失败的原因
   let sizing = null; // 文件夹大小这一次统计：{ abort, round, phase: 'running' | 'done' | 'failed', result, message }
   let token = 0; // 取属性的序号：新的取代旧的，旧的回答不再用
+  let opens = 0, stoppedAt = -1; // 同预览：释放只在停止之后没有再打开过时才做
 
   const entry = () => reply ?? seed;
   // 指向工作目录内的链接按目标显示：种类和图标看目标的名字（链接自己叫什么不管），没有目标的（外链接）看自己。
@@ -98,20 +99,27 @@ export function mountInfo(el, { stat, size, rootPath, round, back = null }) {
     // seed：目录树里这一行（名字、种类），属性回来之前先画头部。
     open(next, row) {
       this.close();
+      opens++;
       path = next;
       seed = { name: row.name, kind: row.kind };
       load();
     },
     // 一轮结束：重取属性，不自动重新统计；已有的统计结果马上标成上次统计（页面的数据轮次变了）。
     refresh() { if (path !== null) { if (reply !== null) paint(); load(); } },
-    close() {
+    // 停止（逻辑关闭，立即）：取消统计、作废在途的回答；画面留着，由 release 在退场结束时清掉。
+    stop() {
       sizing?.abort.abort();
       sizing = null;
       token++;
       path = seed = reply = failure = null;
+      stoppedAt = opens;
+    },
+    release() {
+      if (stoppedAt !== opens) return;
       head.replaceChildren();
       body.replaceChildren();
     },
+    close() { this.stop(); this.release(); },
     get path() { return path; },
   };
 }

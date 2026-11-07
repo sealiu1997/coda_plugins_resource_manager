@@ -338,3 +338,37 @@ test('只收到 session、没有 root：30 秒后也提示，之后 root 到达�
   await flush();
   assert.equal(visible(page.notice), false, '已收到 root，不再提示');
 });
+
+// ---- 按下反馈的生命周期（第 17.3 节）：文件页也有，和资源页一样重置 ----
+import { start as startFile } from './support/filepage.mjs';
+const pressedButtons = page => page.preview.find(node => node.classList.contains('pressed'));
+const copyButton = page => page.preview.find(node => node.tagName === 'BUTTON' && node.getAttribute('aria-label') === '复制路径')[0];
+const mouseDown = { button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+
+test('文件页：按住「复制路径」时 visibility(false)、换会话、根目录变化、换文件，都清掉按下反馈', async t => {
+  const { page, host } = await startFile(t, { path: 'a.txt', files: { 'a.txt': { text: 'x' }, 'b.txt': { text: 'y' } } });
+  const hold = () => { copyButton(page).dispatch('pointerdown', mouseDown); assert.equal(pressedButtons(page).length, 1); };
+  hold();
+  host.events.visibility(false);
+  assert.equal(pressedButtons(page).length, 0, '页面隐藏');
+  hold();
+  host.start('/A');
+  await flush();
+  assert.equal(pressedButtons(page).length, 0, '换会话');
+  hold();
+  page.post({ type: 'root', generation: 2, state: 'ready', path: '/other' });
+  await flush();
+  assert.equal(pressedButtons(page).length, 0, '根目录变化');
+  hold();
+  host.events.context({ args: { session: 's1', path: 'b.txt' } });
+  await flush();
+  assert.equal(pressedButtons(page).length, 0, '换文件');
+});
+
+test('文件页：触摸按下不到 80 毫秒就隐藏，之后不会补亮', async t => {
+  const { page, host } = await startFile(t, { path: 'a.txt', files: { 'a.txt': { text: 'x' } } });
+  copyButton(page).dispatch('pointerdown', { ...mouseDown, pointerType: 'touch' });
+  host.events.visibility(false);
+  t.mock.timers.tick(500);
+  assert.equal(pressedButtons(page).length, 0);
+});

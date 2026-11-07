@@ -7,7 +7,7 @@ import { ReplyOf } from '../../view/protocol.mjs';
 import { loadApp } from './dom.mjs';
 import { flush } from './fake.mjs';
 
-export async function openTree(t, { platform = 'ios', listing = { '': ['a.txt', 'b.txt'] }, state, coda = {}, back = false } = {}) {
+export async function openTree(t, { platform = 'ios', listing = { '': ['a.txt', 'b.txt'] }, state, coda = {}, back = false, motion = null } = {}) {
   try { t.mock.timers.enable({ apis: ['setTimeout'] }); } catch { /* 同一个用例里的第二个页面（重建）：已经启用了 */ }
   const sent = [], calls = { open: [], copy: [], back: [] }, events = {};
   // missing：这些目录 list 回答 not_found；held：这些目录的 list 先扣住，测试自己用 host.answer 回答，扣住的请求在 host.heldLists 里。
@@ -41,7 +41,7 @@ export async function openTree(t, { platform = 'ios', listing = { '': ['a.txt', 
     open: args => { calls.open.push(args); return host.openResult?.(); },
     close: () => { calls.close = (calls.close ?? 0) + 1; },
     ...coda,
-  });
+  }, { motion });
   host.session = (id = 's1', path = '/A') => { host.generation++; page.post({ type: 'session', generation: host.generation, session: id }); page.post({ type: 'root', generation: host.generation, state: 'ready', path }); };
   host.requests = async type => { await flush(); return sent.filter(m => m.type === type); };
   host.answer = (request, body) => page.post({ type: ReplyOf[request.type], generation: request.generation, requestId: request.requestId, ...body });

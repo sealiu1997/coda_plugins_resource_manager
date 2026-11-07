@@ -10,6 +10,7 @@ import { mountMenu } from './menu.mjs';
 import { noticeText } from './model.mjs';
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
+import { mountPress } from './press.mjs';
 import { RootState } from './protocol.mjs';
 
 const coda = window.coda;
@@ -36,6 +37,7 @@ let restore = parseScroll(quiet(() => coda.getState()));
 const conn = connect(coda, { handlers: { session: onSession, root: onRoot, changed: onChanged }, onStatus: () => schedule() });
 const hint = mountHint($('hint'));
 const menu = mountMenu($('menu'));
+const press = mountPress({ consumed: menu.consumed }); // 按下反馈：刷新、复制、重试等按钮同资源页（第 17.3 节）
 const chat = createChat({ link: conn.link, copy: text => coda.copy(text), hint });
 const preview = mountPreview($('preview'), {
   read: (path, offset) => conn.link.call('read', { path, offset }), copy: text => coda.copy(text),
@@ -94,6 +96,7 @@ function paintNotice() {
 
 // ---- 模块的消息（代次和握手由 connection 处理）----
 function onSession(data) {
+  press.reset();
   park();
   preview.close();
   menu.hide();
@@ -105,6 +108,7 @@ function onSession(data) {
 
 function onRoot(data) {
   const before = root;
+  if (data.state !== before?.state || data.path !== before?.path) press.reset();
   if (data.state !== before?.state || data.path !== before?.path) menu.hide(); // 选区和行号是旧内容上的
   root = { state: data.state, path: data.path };
   if (data.state === RootState.READY) {
@@ -122,7 +126,7 @@ function onChanged() {
 // ---- 参数变了：换文件或换会话，旧文件的滚动位置不带过去 ----
 quiet(() => coda.on('context', ({ args }) => {
   const next = argsOf(args);
-  if (next.path !== want.path || next.session !== want.session) { restore = null; preview.close(); menu.hide(); hint.hide(); }
+  if (next.path !== want.path || next.session !== want.session) { press.reset(); restore = null; preview.close(); menu.hide(); hint.hide(); }
   want = next;
   schedule();
 }));
@@ -147,7 +151,7 @@ function saveNow() {
   if (at) quiet(() => coda.setState({ v: 1, top: at.top, left: at.left }));
 }
 // visibility: false 之后只保证同步事件处理完，所以同步保存。
-quiet(() => coda.on('visibility', visible => { if (!visible) saveNow(); }));
+quiet(() => coda.on('visibility', visible => { if (!visible) { press.reset(); saveNow(); } }));
 preview.onScroll(queueSave);
 preview.onScroll(menu.hide);
 

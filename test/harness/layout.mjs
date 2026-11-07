@@ -6,6 +6,7 @@ import { chmod, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inflateSync } from 'node:zlib';
 import { HIGHLIGHT_LIMIT } from '../../view/highlight.mjs';
 import { KINDS } from '../../view/icons.mjs';
 
@@ -75,9 +76,13 @@ const cleanup = async () => {
 
 let id = 0; const waiting = new Map();
 const send = (method, params = {}) => new Promise((resolve, reject) => { waiting.set(++id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params })); });
-const evaluate = async expr => (await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result.result.value;
+// evaluateLive 立即求值，不等动画：过渡进行中的检查（0.7.2）要在动画中途采样。其余检查量的是终态：
+// 菜单有出现动画、预览和属性页有滑入的过渡，量尺寸要等 document.getAnimations() 里的动画都播完（不靠固定睡眠），所以 evaluate 求值前先等它们。
+const evaluateLive = async expr => (await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result.result.value;
+const animationsDone = `Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {}))).then(() => true)`;
+const evaluate = async expr => { await evaluateLive(animationsDone).catch(() => {}); return evaluateLive(expr); };
 // 页面里的脚本抛错时报出原因，不悄悄返回 undefined（高亮一节用）。
-const evalStrict = async expr => { const { result, exceptionDetails } = (await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result; if (exceptionDetails) throw new Error(`页面脚本出错：${exceptionDetails.exception?.description ?? exceptionDetails.text}`); return result.value; };
+const evalStrict = async expr => { await evaluateLive(animationsDone).catch(() => {}); const { result, exceptionDetails } = (await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result; if (exceptionDetails) throw new Error(`页面脚本出错：${exceptionDetails.exception?.description ?? exceptionDetails.text}`); return result.value; };
 // 等条件成立：按真实时间算截止，不按次数。机器忙的时候目录请求和重绘会慢，固定几秒的等待会假失败；等不到就报出在等什么。
 const UNTIL_MS = 30000;
 const until = async (expr, what) => {
@@ -85,6 +90,15 @@ const until = async (expr, what) => {
   for (;;) {
     if (await evaluate(expr)) return;
     if (Date.now() >= deadline) throw new Error(`等不到：${what}（等了 ${UNTIL_MS / 1000} 秒）；页面现在：${JSON.stringify(await evaluate(`document.body.innerText.slice(0, 200)`).catch(() => null))}`);
+    await wait(50);
+  }
+};
+// 同 until，但不等动画播完：动画停在固定进度（过渡中途的检查）时，evaluate 会一直等它们播完。
+const untilLive = async (expr, what) => {
+  const deadline = Date.now() + UNTIL_MS;
+  for (;;) {
+    if (await evaluateLive(expr)) return;
+    if (Date.now() >= deadline) throw new Error(`等不到：${what}（等了 ${UNTIL_MS / 1000} 秒）`);
     await wait(50);
   }
 };
@@ -1746,6 +1760,372 @@ try {
     await realClick(await centerOf(cellBy('docs')));
     await frames();
     await shoot(`mac-grid-selected-${theme}`);
+  }
+
+  // ================= 0.7.2：按键的质感（设计第 17 节）=================
+  { // 独立的块：变量名和前面各节的不冲突
+  const MIN_DIFF = 8; // 按下和平常、悬停、选中的最终颜色，任一通道至少差这么多（0～255）才算分辨得出
+  const ICONS_STATE = { v: 1, seq: 1, hidden: false, view: 'icons', sessions: {} };
+  const diffOf = (a, b) => Math.max(...[0, 1, 2].map(i => Math.abs(a[i] - b[i])));
+  // 截图取像素：只截一个 2×2 的小块，解 PNG（只认 8 位 RGB、RGBA，Chrome 的截图就是这两种）。
+  function decodePng(buf) {
+    let pos = 8, width = 0, height = 0, depth = 0, kind = 0;
+    const idat = [];
+    while (pos < buf.length) {
+      const length = buf.readUInt32BE(pos), type = buf.toString('ascii', pos + 4, pos + 8), data = buf.subarray(pos + 8, pos + 8 + length);
+      pos += 12 + length;
+      if (type === 'IHDR') { width = data.readUInt32BE(0); height = data.readUInt32BE(4); depth = data[8]; kind = data[9]; }
+      else if (type === 'IDAT') idat.push(data);
+      else if (type === 'IEND') break;
+    }
+    const bpp = kind === 6 ? 4 : kind === 2 ? 3 : 0;
+    if (depth !== 8 || !bpp) throw new Error(`不认识的 PNG：位深 ${depth}，颜色类型 ${kind}`);
+    const raw = inflateSync(Buffer.concat(idat)), stride = width * bpp, out = Buffer.alloc(height * stride);
+    for (let y = 0; y < height; y++) {
+      const filter = raw[y * (stride + 1)];
+      for (let x = 0; x < stride; x++) {
+        const a = x >= bpp ? out[y * stride + x - bpp] : 0, b = y > 0 ? out[(y - 1) * stride + x] : 0, c = x >= bpp && y > 0 ? out[(y - 1) * stride + x - bpp] : 0, v = raw[y * (stride + 1) + 1 + x];
+        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        out[y * stride + x] = (v + (filter === 0 ? 0 : filter === 1 ? a : filter === 2 ? b : filter === 3 ? (a + b) >> 1 : (pa <= pb && pa <= pc ? a : pb <= pc ? b : c))) & 255;
+      }
+    }
+    return { width, height, at: (x, y) => [out[y * stride + x * bpp], out[y * stride + x * bpp + 1], out[y * stride + x * bpp + 2]] };
+  }
+  const pixelAt = async at => {
+    const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x: Math.floor(at.x), y: Math.floor(at.y), width: 2, height: 2, scale: 1 } });
+    return decodePng(Buffer.from(shot.result.data, 'base64')).at(0, 0);
+  };
+  // 元素上一个没有文字的点：edge 是左边内边距里（行、菜单项），top 是上沿中间（格子、按钮、说明行的字在中间）。
+  const spotOf = (expr, mode) => evaluate(`(() => { const el = ${expr}; if (!el) return null; const r = el.getBoundingClientRect();
+    return { x: ${mode === 'edge' ? 'r.left + 3' : 'r.left + r.width / 2'}, y: ${mode === 'edge' ? 'r.top + r.height / 2' : 'r.top + 1.5'}, w: r.width, h: r.height }; })()`);
+  const sizeOf = expr => evaluate(`(() => { const r = (${expr}).getBoundingClientRect(); return [r.width, r.height].join('x'); })()`);
+  const pressedNow = `document.querySelector('.pressed') !== null`;
+  const away = { x: 1, y: 1 };
+  const mouseMove = at => send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y });
+  const touch = (type, at) => send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchStart' || type === 'touchMove' ? [{ x: at.x, y: at.y, id: 1 }] : [] });
+  const shotKeep = async name => shoot(name);
+  const numbers = [];
+  const closeMenu = () => evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+
+  // ---- 按下的最终颜色：截图取像素，深浅两种外观 ----
+  // Mac：平常（鼠标在别处）、悬停、按下（鼠标按着不放）、选中（松开后鼠标移开）。selectable 的目标按下就选中，所以「按下」是选中加一层 hover。
+  async function macProbe(label, theme, expr, mode, { selectable = false, press = null } = {}) {
+    const at = await spotOf(expr, mode);
+    if (!at) throw new Error(`${label}：找不到元素`);
+    await mouseMove(away);
+    await frames();
+    const normal = await pixelAt(at);
+    await mouseMove(at);
+    await frames();
+    const hover = await pixelAt(at);
+    const size = await sizeOf(expr);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'left', buttons: 1, clickCount: 1 });
+    await until(pressedNow, `${label}：按下后有 .pressed`);
+    const pressed = await pixelAt(at);
+    const sizePressed = await sizeOf(expr);
+    // 松开：不能打开东西的在别处松开（不触发点击），选中的目标原地松开
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: selectable ? at.x : away.x, y: selectable ? at.y : away.y, button: 'left', buttons: 0, clickCount: 1 });
+    await until(`!(${pressedNow})`, `${label}：松开后 .pressed 去掉`);
+    let selected = null;
+    if (selectable) { await mouseMove(away); await frames(); selected = await pixelAt(at); }
+    const diffs = { 按下对平常: diffOf(pressed, normal), 按下对悬停: diffOf(pressed, hover), ...(selected ? { 按下对选中: diffOf(pressed, selected), 选中对平常: diffOf(selected, normal) } : {}) };
+    numbers.push(`Mac ${theme} ${label}：平常 ${normal} 悬停 ${hover} 按下 ${pressed}${selected ? ` 选中 ${selected}` : ''}；差值 ${JSON.stringify(diffs)}`);
+    check(`Mac ${theme} ${label}：按下有 .pressed、尺寸不变，最终底色和平常、悬停${selected ? '、选中' : ''}都差至少 ${MIN_DIFF}`,
+      size === sizePressed && Object.entries(diffs).every(([name, d]) => name === '选中对平常' || d >= MIN_DIFF), `${size} → ${sizePressed} ${JSON.stringify(diffs)}`);
+  }
+  // iPhone：平常、按下（触摸按着不放，按下后 80 毫秒才亮；最后 touchCancel 作废）。没有悬停。
+  async function phoneProbe(label, theme, expr, mode) {
+    const at = await spotOf(expr, mode);
+    if (!at) throw new Error(`${label}：找不到元素`);
+    const normal = await pixelAt(at);
+    const size = await sizeOf(expr);
+    await touch('touchStart', at);
+    await until(pressedNow, `${label}：触摸 80 毫秒后有 .pressed`);
+    const pressed = await pixelAt(at);
+    const sizePressed = await sizeOf(expr);
+    await touch('touchCancel', at);
+    await until(`!(${pressedNow})`, `${label}：取消后 .pressed 立即去掉`);
+    const d = diffOf(pressed, normal);
+    numbers.push(`iPhone ${theme} ${label}：平常 ${normal} 按下 ${pressed}；差值 ${d}`);
+    check(`iPhone ${theme} ${label}：触摸按下有 .pressed、尺寸不变，最终底色和平常差至少 ${MIN_DIFF}`, size === sizePressed && d >= MIN_DIFF, `${size} → ${sizePressed}，差 ${d}`);
+  }
+  // 说明区「重试」：让 hello 发不出去（页面一加载就把 coda.postMessage 换成拒绝），并且收不到模块主动推的 session（EventSource 换成空桩），说明区才会停在失败加重试
+  const rejectHello = `window.EventSource = class { addEventListener() {} close() {} }; let value; Object.defineProperty(window, 'coda', { configurable: true, get: () => value, set: v => { value = v; v.postMessage = () => Promise.reject(new Error('发不出去（harness）')); } });`;
+
+  // 触摸模拟下浏览器报告 hover: none，悬停的样式不生效：Mac 的检查关掉它，只在触摸的检查里打开。
+  const touchMode = on => send('Emulation.setTouchEmulationEnabled', on ? { enabled: true, maxTouchPoints: 1 } : { enabled: false });
+  await touchMode(false);
+  for (const theme of ['light', 'dark']) {
+    // -- Mac 列表：目录行（选中）、展开失败的重试行、菜单项、预览头部的返回
+    await open('mac', 'mac', theme);
+    await evaluate(`document.getElementById('tree').scrollTop = 0`);
+    await macProbe('目录行', theme, rowBy('LICENSE'), 'edge', { selectable: true });
+    await realClick(await centerOf(rowBy('locked'), '.chev'));
+    await until(`document.querySelector('.row.retry') !== null`, 'locked 读失败，出现重试行');
+    await macProbe('说明行（重试）', theme, `document.querySelector('.row.retry')`, 'edge');
+    await openMore('mac');
+    await macProbe('菜单项', theme, `document.querySelector('#menu button')`, 'edge');
+    await closeMenu();
+    await realClick(await centerOf(rowBy('LICENSE'), '.name'), 2);
+    await until(`document.querySelector('#preview .text')`, '双击 LICENSE 出预览');
+    await macProbe('头部按钮（返回）', theme, `document.querySelector('#preview .phead button[aria-label="返回"]')`, 'top');
+    // -- Mac 图标视图：格子
+    await open('mac', 'mac', theme, { state: ICONS_STATE, ready: '#grid .cell' });
+    await macProbe('格子', theme, cellBy('LICENSE'), 'top', { selectable: true });
+    // -- Mac 说明区的重试
+    await send('Page.enable');
+    const hook = (await send('Page.addScriptToEvaluateOnNewDocument', { source: rejectHello })).result.identifier;
+    await open('mac', 'mac', theme, { ready: '#notice button' });
+    await macProbe('说明区「重试」', theme, `document.querySelector('#notice button')`, 'top');
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: hook });
+
+    // -- iPhone
+    await touchMode(true);
+    await open('portrait', 'ios', theme);
+    await phoneProbe('目录行', theme, rowBy('LICENSE'), 'edge');
+    await phoneProbe('工具条按钮（⋯）', theme, `document.querySelector('#bar button[aria-label="更多"]')`, 'top');
+    await realClick(await centerOf(rowBy('locked'), '.name'));
+    await until(`document.querySelector('.row.retry') !== null`, 'iPhone：locked 读失败，出现重试行');
+    await phoneProbe('说明行（重试）', theme, `document.querySelector('.row.retry')`, 'edge');
+    await openMore('ios');
+    await phoneProbe('菜单项', theme, `document.querySelector('#menu button')`, 'edge');
+    await closeMenu();
+    await realClick(await centerOf(rowBy('LICENSE'), '.name'));
+    await until(`${previewOn} && document.querySelector('#preview .text')`, 'iPhone：预览出现');
+    await phoneProbe('头部按钮（⋯）', theme, `document.querySelector('#preview .phead button[aria-label="更多"]')`, 'top');
+    await open('portrait', 'ios', theme, { state: ICONS_STATE, ready: '#grid .cell' });
+    await phoneProbe('格子', theme, cellBy('LICENSE'), 'top');
+    const hook2 = (await send('Page.addScriptToEvaluateOnNewDocument', { source: rejectHello })).result.identifier;
+    await open('portrait', 'ios', theme, { ready: '#notice button' });
+    await phoneProbe('说明区「重试」', theme, `document.querySelector('#notice button')`, 'top');
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: hook2 });
+    await touchMode(false);
+  }
+  for (const line of numbers) console.log(`数字（按下底色的最终颜色，截图取像素）：${line}`);
+
+  // ---- Mac 按下的截图（浅、深）：鼠标按着不放 ----
+  for (const theme of ['light', 'dark']) {
+    await open('mac', 'mac', theme);
+    const at = await centerOf(rowBy('package.json'), '.name');
+    await mouseMove(at);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'left', buttons: 1, clickCount: 1 });
+    await until(pressedNow, `Mac ${theme}：按下`);
+    await shotKeep(`mac-pressed-${theme}`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'left', buttons: 0, clickCount: 1 });
+    await until(`!(${pressedNow})`, `Mac ${theme}：松开`);
+  }
+
+  // ---- 光标：按钮是箭头 ----
+  await open('mac', 'mac', 'light');
+  await realClick(await centerOf(rowBy('LICENSE'), '.name'), 2);
+  await until(`document.querySelector('#preview .text')`, '光标：预览出现');
+  check('Mac：按钮（预览头部、菜单）的光标是箭头，不是手形', await evaluate(`(() => { const b = document.querySelector('#preview .phead button'); return getComputedStyle(b).cursor; })()`) === 'default');
+
+  // ---- 快点和滑动（iPhone，触摸）：逐帧记录 .pressed ----
+  // 逐帧记录证明画面上出现过；.pressed 实际挂了多久用 MutationObserver 记加上和去掉的时刻（不靠帧数、帧间隔，机器忙时掉帧不影响）。
+  const recorder = `(() => { window.__rec = { frames: [], on: true, spans: [], since: null };
+    const watch = () => { const any = document.querySelector('.pressed') !== null, now = performance.now();
+      if (any && __rec.since === null) __rec.since = now; else if (!any && __rec.since !== null) { __rec.spans.push(now - __rec.since); __rec.since = null; } };
+    new MutationObserver(watch).observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true, childList: true });
+    const tick = t => { if (!__rec.on) return; __rec.frames.push({ t, pressed: document.querySelectorAll('.pressed').length, fade: document.querySelectorAll('.fade').length,
+      transitions: document.getAnimations().filter(a => a instanceof CSSTransition).length }); requestAnimationFrame(tick); }; requestAnimationFrame(tick); })()`;
+  const framesAfter = `(() => { __rec.on = false; return __rec.frames; })()`, spansAfter = `__rec.spans`;
+  await touchMode(true);
+  await open('portrait', 'ios', 'light');
+  await evaluateLive(recorder);
+  const tapAt = await spotOf(rowBy('docs'), 'edge');
+  await touch('touchStart', tapAt);
+  await touch('touchEnd', tapAt); // 快点：80 毫秒之前就抬起
+  await until(`(() => { const f = __rec.frames, first = f.findIndex(x => x.pressed > 0); return first >= 0 && f.slice(first).some(x => x.pressed === 0) && f.at(-1).fade === 0 && f.at(-1).transitions === 0; })()`, '快点：.pressed 出现又去掉、淡出结束');
+  const tapFrames = await evaluateLive(framesAfter);
+  const lit = tapFrames.filter(f => f.pressed > 0), spans = await evaluateLive(spansAfter);
+  check('iPhone 快点：.pressed 在抬起时补上，实际挂了至少 95 毫秒（MutationObserver 记的时刻），画面上出现过；去掉时有淡出（.fade、CSS transition）',
+    spans.length === 1 && spans[0] >= 95 && lit.length >= 1 && tapFrames.some(f => f.fade > 0) && tapFrames.some(f => f.transitions > 0),
+    JSON.stringify({ litFrames: lit.length, spans, fade: tapFrames.some(f => f.fade > 0), transitions: tapFrames.some(f => f.transitions > 0) }));
+  await evaluateLive(recorder);
+  const swipeAt = await spotOf(rowBy('LICENSE'), 'edge');
+  await touch('touchStart', swipeAt);
+  await touch('touchMove', { x: swipeAt.x, y: swipeAt.y + 40 }); // 按下后立刻滑动：80 毫秒之前
+  await until(`__rec.frames.length >= 14`, '滑动：记录了足够多的帧');
+  await touch('touchEnd', { x: swipeAt.x, y: swipeAt.y + 40 });
+  const swipeFrames = await evaluateLive(framesAfter);
+  check('iPhone 滑动：按下后立刻移动，.pressed 一帧都不出现', swipeFrames.length >= 14 && swipeFrames.every(f => f.pressed === 0), JSON.stringify(swipeFrames.filter(f => f.pressed > 0).length));
+  await evaluateLive(recorder);
+  const holdAt = await spotOf(rowBy('LICENSE'), 'edge');
+  await touch('touchStart', holdAt);
+  await until(pressedNow, '按住 80 毫秒后亮');
+  await touch('touchMove', { x: holdAt.x, y: holdAt.y + 40 }); // 亮起之后才移动：作废，立即去掉、不淡出
+  await until(`!(${pressedNow})`, '亮起后移动：立即去掉');
+  await touch('touchEnd', { x: holdAt.x, y: holdAt.y + 40 });
+  const cancelFrames = await evaluateLive(framesAfter);
+  check('iPhone 亮起后移动（作废）：立即去掉，没有淡出', cancelFrames.every(f => f.fade === 0 && f.transitions === 0), JSON.stringify(cancelFrames.filter(f => f.fade > 0 || f.transitions > 0).length));
+  await touchMode(false);
+
+  // ---- Mac：按下的那一刻条目已经选中（松开之前）；真实双击打开恰好一次，期间行节点身份不变 ----
+  await open('mac', 'mac', 'light');
+  const pressAt = await centerOf(rowBy('notes.txt'), '.name');
+  await mouseMove(pressAt);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pressAt.x, y: pressAt.y, button: 'left', buttons: 1, clickCount: 1 });
+  check('Mac 按下的那一刻（松开之前）条目已经选中', await evaluate(`document.querySelector('.row.sel .name')?.textContent === 'notes.txt'`));
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pressAt.x, y: pressAt.y, button: 'left', buttons: 0, clickCount: 1 });
+  await evaluate(`(() => { const row = ${rowBy('LICENSE')}; row.__mark = 'same'; window.__dbl = 0; window.__dblMark = null; document.getElementById('tree').addEventListener('dblclick', event => { window.__dbl++; window.__dblMark = event.target.closest('.row')?.__mark ?? null; }); })()`);
+  const readsBefore = await reqCount('read', 'LICENSE', 0);
+  const dblAt = await centerOf(rowBy('LICENSE'), '.name');
+  await mouseMove(dblAt);
+  await mousePress('mousePressed', dblAt, { clickCount: 1 });
+  const identityAfterDown = await evaluate(`${rowBy('LICENSE')}.__mark === 'same' && ${rowBy('LICENSE')}.classList.contains('sel')`);
+  await mousePress('mouseReleased', dblAt, { clickCount: 1 });
+  await mousePress('mousePressed', dblAt, { clickCount: 2 });
+  await mousePress('mouseReleased', dblAt, { clickCount: 2 });
+  await until(`document.querySelector('#preview .text')`, '真实双击出预览');
+  await settled('真实双击读文件');
+  check('Mac 真实双击：按下时就选中、节点身份不变（dblclick 派发时目标还是那个节点），dblclick 一次，只读了一次，预览打开',
+    identityAfterDown && await evaluate(`window.__dbl`) === 1 && await evaluate(`window.__dblMark`) === 'same' && await reqCount('read', 'LICENSE', 0) === readsBefore + 1, JSON.stringify({ identityAfterDown, dbl: await evaluate(`window.__dbl`), mark: await evaluate(`window.__dblMark`) }));
+
+  // ---- Mac 在滚动条上按下不取消选中（真实 CDP 鼠标）----
+  await open('mac', 'mac', 'light');
+  await realClick(await centerOf(rowBy('notes.txt'), '.name'));
+  const bar = await evaluate(`(() => { const t = document.getElementById('tree'), r = t.getBoundingClientRect(); return { width: t.offsetWidth - t.clientWidth, right: r.right, y: r.top + r.height / 2 }; })()`);
+  if (bar.width > 0) {
+    const spot = { x: bar.right - bar.width / 2, y: bar.y };
+    await mousePress('mousePressed', spot);
+    await mousePress('mouseReleased', spot);
+    await frames();
+    check('Mac 真实鼠标按在 #tree 的竖向滚动条上：选中不变（不当作点空白）', await evaluate(`document.querySelector('.row.sel .name')?.textContent`) === 'notes.txt', JSON.stringify(bar));
+  } else console.log('跳过：无头 Chrome 的滚动条是叠加式（宽度 0），点不到滚动条，滚动条上按下的检查只有单元测试');
+
+  // ---- 菜单：阴影（两种外观）、iPhone 出现动画 ----
+  for (const theme of ['light', 'dark']) {
+    await open('portrait', 'ios', theme);
+    await frames();
+    // 同一次页面求值里同步点并取动画：分两次求值时，机器忙、CDP 排队超过 150 毫秒动画就播完消失了
+    const anim = await evaluateLive(`(() => { document.querySelector('[aria-label="更多"]').click(); return document.getAnimations().filter(a => a.effect.target?.id === 'menu').map(a => ({ duration: a.effect.getTiming().duration, opacity: a.effect.getKeyframes().map(k => k.opacity), transform: a.effect.getKeyframes().map(k => k.transform), origin: getComputedStyle(a.effect.target).transformOrigin })); })()`);
+    await until(`document.getAnimations().length === 0`, `iPhone ${theme}：菜单动画播完`);
+    const final = await evaluate(`(() => { const m = document.getElementById('menu'), cs = getComputedStyle(m); return { opacity: cs.opacity, transform: cs.transform, shadow: cs.boxShadow }; })()`);
+    check(`iPhone ${theme}：菜单出现有动画（约 150 毫秒，透明度 0→1、缩放 0.96→1），终态不透明、无缩放`,
+      anim.length === 1 && anim[0].duration === 150 && anim[0].opacity.join() === '0,1' && anim[0].transform.join() === 'scale(0.96),scale(1)' && final.opacity === '1' && (final.transform === 'none' || final.transform === 'matrix(1, 0, 0, 1, 0, 0)'), JSON.stringify({ anim, final }));
+    const menuBox = await evaluate(`(() => { const r = document.getElementById('menu').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.bottom, left: r.left }; })()`);
+    const near = await pixelAt({ x: menuBox.x, y: menuBox.y + 6 }), farther = await pixelAt({ x: menuBox.x, y: Math.min(780, menuBox.y + 120) });
+    check(`iPhone ${theme}：菜单有阴影（computed 不是 none），菜单下沿外 6 点比远处的底色深至少 3`, final.shadow !== 'none' && farther[0] - near[0] >= 3, JSON.stringify({ shadow: final.shadow, near, farther }));
+    numbers.push(`iPhone ${theme} 菜单阴影：${final.shadow}；下沿外 ${near} 远处 ${farther}`);
+    await shotKeep(`ios-menu-${theme}`);
+    await closeMenu();
+    await open('mac', 'mac', theme);
+    await openMore('mac');
+    check(`Mac ${theme}：菜单有阴影，没有出现动画（立刻出现）`, await evaluate(`getComputedStyle(document.getElementById('menu')).boxShadow !== 'none' && document.getAnimations().length === 0`));
+    await shotKeep(`mac-menu-${theme}`);
+    await closeMenu();
+  }
+  const shadows = [];
+  for (const theme of ['light', 'dark']) { await open('mac', 'mac', theme); await openMore('mac'); shadows.push(await evaluate(`getComputedStyle(document.getElementById('menu')).boxShadow`)); await closeMenu(); }
+  const alpha = text => Number(/rgba\([^)]*,\s*([\d.]+)\)/.exec(text)?.[1] ?? 1);
+  check('菜单阴影深色比浅色重（第一层的透明度更大）', alpha(shadows[1]) > alpha(shadows[0]), JSON.stringify(shadows));
+
+  // ---- iPhone 层级过渡：打开和返回的中途（动画停在固定进度，不靠猜时长）----
+  const holdAnims = fraction => evaluateLive(`(() => { window.__animate ??= Element.prototype.animate; window.__hold = ${fraction};
+    Element.prototype.animate = function (...args) { const anim = window.__animate.apply(this, args); if (window.__hold !== null) { anim.pause(); anim.currentTime = anim.effect.getTiming().duration * window.__hold; } return anim; }; })()`);
+  const release = () => evaluateLive(`(() => { window.__hold = null; document.getAnimations().forEach(a => a.finish()); return true; })()`);
+  const probePanes = `(() => { const q = id => document.getElementById(id), cls = id => [...q(id).classList].join(' ');
+    const off = id => q(id).classList.contains('off'), r = id => q(id).getBoundingClientRect();
+    return { tree: { off: off('tree'), inert: q('tree').inert, cls: cls('tree'), left: r('tree').left, filter: getComputedStyle(q('tree')).filter, bg: getComputedStyle(q('tree')).backgroundColor, rows: q('tree').querySelectorAll('.row').length },
+      preview: { off: off('preview'), inert: q('preview').inert, cls: cls('preview'), left: r('preview').left, width: r('preview').width, z: Number(getComputedStyle(q('preview')).zIndex) || 0, treeZ: Number(getComputedStyle(q('tree')).zIndex) || 0, bg: getComputedStyle(q('preview')).backgroundColor, text: q('preview').querySelector('.text')?.textContent.length ?? 0, name: q('preview').querySelector('.pname')?.textContent ?? null },
+      anims: document.getAnimations().length }; })()`;
+  // 滑动期间整页不响应点按：真实触摸点这几个位置，什么都不触发（不发请求、不换预览、不选中、没有 .pressed、没开菜单）。
+  const swipeSnap = `({ log: window.__rpc.log.length, name: document.querySelector('#preview .pname')?.textContent ?? null, sel: document.querySelectorAll('.row.sel').length, menu: !document.getElementById('menu').hidden, moving: document.documentElement.classList.contains('moving') })`;
+  async function tapsIgnored(label, points) {
+    await untilLive(`!(${pressedNow})`, `${label}：打开那一下轻点的按下反馈已经结束（它不算点按期间的）`);
+    const before = await evaluateLive(swipeSnap);
+    await evaluateLive(recorder);
+    for (const at of points) { await touch('touchStart', at); await touch('touchEnd', at); }
+    await untilLive(`__rec.frames.length >= 14`, `${label}：记录了足够多的帧`);
+    await evaluateLive(framesAfter);
+    const after = await evaluateLive(swipeSnap), spans = await evaluateLive(spansAfter), pressedNowLive = await evaluateLive(pressedNow);
+    check(`${label}：滑动期间（html.moving）整页不响应点按——不发请求、不换预览、不选中、没有 .pressed、没开菜单`,
+      before.moving && after.moving && after.log === before.log && after.name === before.name && after.sel === before.sel && !after.menu && spans.length === 0 && !pressedNowLive, JSON.stringify({ before, after, spans }));
+  }
+  const opaque = bg => /^rgb\(/.test(bg); // rgb(...) 不带透明度，rgba(0, 0, 0, 0) 才是透明
+  await open('portrait', 'ios', 'light');
+  await evaluate(noOpens);
+  await holdAnims(0.3);
+  const openAt = await spotOf(rowBy('notes.txt'), 'edge');
+  await touch('touchStart', openAt);
+  await touch('touchEnd', openAt);
+  await untilLive(`document.getElementById('preview').querySelector('.pname')?.textContent === 'notes.txt'`, '打开文件：预览头部出现');
+  let mid = await evaluateLive(probePanes);
+  const yMid = 400;
+  check('iPhone 打开的中途：两层都在、都不透底（背景不透明）、浅层向左移并变暗、深层（预览）从右边滑入盖在上面，旧页内容还在',
+    !mid.tree.off && !mid.preview.off && opaque(mid.tree.bg) && opaque(mid.preview.bg) && mid.tree.left < 0 && mid.tree.filter !== 'none' && mid.preview.left > 0 && mid.preview.left < mid.preview.width && mid.tree.rows > 0 && /layer/.test(mid.tree.cls) && /layer/.test(mid.preview.cls), JSON.stringify(mid));
+  await tapsIgnored('iPhone 打开的中途', [{ x: mid.preview.left + 12, y: yMid }, ...(mid.preview.left > 24 ? [{ x: mid.preview.left - 12, y: yMid }] : [])]);
+  check('iPhone 打开的中途：离开的目录树 inert 且 .leaving', mid.tree.inert && /leaving/.test(mid.tree.cls), JSON.stringify({ tree: mid.tree.inert }));
+  await shotKeep('ios-open-mid');
+  await release();
+  await until(`document.getElementById('tree').classList.contains('off')`, '打开：过渡结束（finish 事件是异步的，等页面处理完它）');
+  let done = await evaluate(probePanes);
+  const moreAt = await spotOf(`document.querySelector('#preview .phead button[aria-label="更多"]')`, 'top');
+  await touch('touchStart', moreAt);
+  await touch('touchEnd', moreAt);
+  await until(`!document.getElementById('menu').hidden`, '打开结束后：目标页（预览）能点：头部 ⋯ 打开菜单');
+  check('iPhone 打开结束后（html.moving 已去掉）：目标页能点，同一位置的点按生效', await evaluate(`!document.documentElement.classList.contains('moving')`));
+  await closeMenu();
+  check('iPhone 打开结束后：只有预览一层可见，目录树 .off 且 inert，没有 layer、leaving 残留，没有动画', done.tree.off && done.tree.inert && !done.preview.off && !done.preview.inert && !/layer|leaving/.test(done.tree.cls + done.preview.cls) && done.anims === 0, JSON.stringify(done));
+  await evaluateLive(`window.__hold = 0.3`);
+  await backEvent();
+  await untilLive(`document.getAnimations().length > 0`, '返回：过渡开始');
+  mid = await evaluateLive(probePanes);
+  await tapsIgnored('iPhone 返回的中途', [{ x: mid.preview.left + 12, y: yMid }, ...(mid.preview.left > 24 ? [{ x: mid.preview.left - 12, y: yMid }] : [])]);
+  check('iPhone 返回的中途：预览在上面（层叠更高、背景不透明、盖住重叠的部分）、内容还在不是空白，预览 inert 且 .leaving',
+    !mid.tree.off && !mid.preview.off && opaque(mid.tree.bg) && opaque(mid.preview.bg) && mid.preview.z > mid.preview.treeZ && mid.preview.left < mid.preview.width && mid.preview.text > 0 && mid.preview.name === 'notes.txt' && mid.tree.rows > 0
+    && mid.preview.inert && /leaving/.test(mid.preview.cls), JSON.stringify({ mid }));
+  await shotKeep('ios-back-mid');
+  await release();
+  await until(`document.getElementById('preview').classList.contains('off')`, '返回：过渡结束（finish 事件是异步的，等页面处理完它）');
+  done = await evaluate(probePanes);
+  check('iPhone 返回结束后：只有目录树可见，预览 .off 且 inert、内容在退场结束时释放，没有 layer、leaving 残留', !done.tree.off && !done.tree.inert && done.preview.off && done.preview.inert && done.preview.text === 0 && !/layer|leaving/.test(done.tree.cls + done.preview.cls) && done.anims === 0, JSON.stringify(done));
+  await evaluateLive(`window.__hold = null`);
+  const rowAt = await spotOf(rowBy('notes.txt'), 'edge');
+  await touch('touchStart', rowAt);
+  await touch('touchEnd', rowAt);
+  await until(previewOn, '返回结束后：目录树能点：轻点条目打开预览');
+  check('iPhone 返回结束后（html.moving 已去掉）：目录树能点，同一位置的点按生效', true);
+  await backEvent();
+  await until(`document.getElementById('preview').classList.contains('off')`, '返回结束后：再返回');
+
+  // ---- 减弱动态效果：没有动画和过渡，按下反馈照常；动画进行中改设置：结束到终点 ----
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await open('portrait', 'ios', 'light');
+  await evaluate(noOpens);
+  await evaluateLive(`(() => { window.__calls = 0; const orig = Element.prototype.animate; Element.prototype.animate = function (...a) { window.__calls++; return orig.apply(this, a); }; })()`);
+  await evaluateLive(`document.querySelector('[aria-label="更多"]').click()`);
+  check('减弱动态效果：iPhone 菜单出现没有动画', await evaluateLive(`__calls === 0 && document.getAnimations().length === 0 && !document.getElementById('menu').hidden`));
+  await closeMenu();
+  await realClick(await centerOf(rowBy('notes.txt'), '.name'));
+  await until(`document.getElementById('preview').querySelector('.text')`, '减弱：预览出现');
+  let reduced = await evaluateLive(probePanes);
+  check('减弱动态效果：打开文件没有过渡，面板直接切换', await evaluateLive(`__calls === 0`) && reduced.anims === 0 && reduced.tree.off && !reduced.preview.off && !/layer/.test(reduced.preview.cls));
+  await backEvent();
+  await until(`document.getElementById('preview').classList.contains('off')`, '减弱：返回');
+  reduced = await evaluateLive(probePanes);
+  check('减弱动态效果：返回没有过渡，预览立即释放', await evaluateLive(`__calls === 0`) && reduced.anims === 0 && !reduced.tree.off && reduced.preview.text === 0);
+  const pressSpot = await spotOf(rowBy('LICENSE'), 'edge');
+  await touch('touchStart', pressSpot);
+  await until(pressedNow, '减弱：按下反馈照常');
+  const fadeOnCancel = await evaluateLive(`document.querySelector('.pressed') !== null`);
+  await touch('touchEnd', pressSpot);
+  await until(`!(${pressedNow})`, '减弱：抬起');
+  check('减弱动态效果：按下反馈仍在，抬起后没有淡出', fadeOnCancel && await evaluate(`document.querySelectorAll('.fade').length === 0 && document.getAnimations().length === 0`));
+  // 设置中途改变：先在正常设置下让过渡停在中途，再切到减弱
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+  await open('portrait', 'ios', 'light');
+  await evaluate(noOpens);
+  await holdAnims(0.3);
+  await realClick(await centerOf(rowBy('notes.txt'), '.name'));
+  await untilLive(`document.getAnimations().length > 0`, '设置中途改变：过渡进行中');
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await untilLive(`document.getAnimations().length === 0`, '设置改成减弱：动画结束到终点');
+  done = await evaluateLive(probePanes);
+  check('减弱动态效果在动画进行中打开：正在播的动画结束到终点，只剩预览一层', done.tree.off && !done.preview.off && !/layer|leaving/.test(done.tree.cls + done.preview.cls), JSON.stringify(done));
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  await evaluateLive(`window.__hold = null`);
   }
   }
 

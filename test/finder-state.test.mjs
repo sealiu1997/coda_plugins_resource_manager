@@ -4,7 +4,7 @@ import test from 'node:test';
 import { Model, parseState, putSession, trimState } from '../view/model.mjs';
 import { visible } from './support/dom.mjs';
 import { flush } from './support/fake.mjs';
-import { doubleClick, drain, press, savedOf, selectedRows, startMac } from './support/finder.mjs';
+import { doubleClick, drain, press, savedOf, selectedRows, startMac, clickOn } from './support/finder.mjs';
 import { manual } from './support/page.mjs';
 import { rowNamed } from './support/treehost.mjs';
 
@@ -73,7 +73,7 @@ const rebuild = (t, ctx, options) => startMac(t, { state: ctx.saves.at(-1), ...o
 
 test('selected 和 opened 分别保存和恢复：只选中的重建后是目录树，打开的重建后是预览，都不用「换会话时补存」', async t => {
   const first = await startMac(t);
-  rowNamed(first.page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(first.page, 'b.txt'));
   first.tick(300);
   assert.deepEqual([savedOf(first).selected, savedOf(first).opened], ['b.txt', null]);
   const selectedOnly = await rebuild(t, first);
@@ -107,7 +107,7 @@ test('换会话 A→B→A：各自恢复自己的选中和预览', async t => {
   await flush();
   assert.equal(visible(page.preview), false, '换会话：预览关掉');
   assert.deepEqual(selectedRows(page), [], 'B 没有记录：空的');
-  rowNamed(page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(page, 'b.txt'));
   host.session('s1', '/A');
   await flush();
   assert.equal(visible(page.preview), true, 'A 的预览回来');
@@ -122,7 +122,7 @@ test('换会话 A→B→A：各自恢复自己的选中和预览', async t => {
 
 test('同根重建保留选中', async t => {
   const first = await startMac(t);
-  rowNamed(first.page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(first.page, 'b.txt'));
   first.tick(300);
   const same = await rebuild(t, first);
   assert.deepEqual(selectedRows(same.page), ['b.txt']);
@@ -130,7 +130,7 @@ test('同根重建保留选中', async t => {
 
 test('异根重建清空选中和预览', async t => {
   const first = await startMac(t);
-  rowNamed(first.page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(first.page, 'b.txt'));
   first.tick(300);
   const state = first.saves.at(-1);
   const other = await startMac(t, { state, settle: false, root: '/elsewhere' });

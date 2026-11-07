@@ -23,6 +23,9 @@
   --tone-gray: #a3a3a9; --tone-blue: #6aa9ec; --tone-yellow: #e3b63e; --tone-green: #63c77f; --tone-teal: #58c3dd;
   --tone-orange: #f0964f; --tone-red: #f0717a; --tone-purple: #ac87ec; --tone-pink: #ee77ac;
 }
+/* 菜单的阴影（第 9 节第 1 条的第三个例外）：主题变量里没有阴影，深浅各一套，深色更重才看得出。 */
+:root { --shadow-menu: 0 6px 20px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.12); }
+:root.coda-dark { --shadow-menu: 0 8px 24px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.4); }
 /* 代码高亮的颜色，深浅各一套；自己定的，不照搬任何现成主题。每个 token 的最终颜色在代码区底色上不低于 4.5:1（harness 读真实计算值检查）；改色值要重新跑。 */
 :root {
   --hl-keyword: #a2218f; --hl-string: #b82a1f; --hl-comment: #5f6b76; --hl-number: #2d3fc4; --hl-title: #0b62a0; --hl-type: #1b7280; --hl-attr: #7a5200;
@@ -38,12 +41,12 @@
 .tone-red { color: var(--tone-red); } .tone-purple { color: var(--tone-purple); } .tone-pink { color: var(--tone-pink); }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-body { display: flex; flex-direction: column; overflow: hidden; -webkit-user-select: none; user-select: none;
+body { display: flex; flex-direction: column; overflow: hidden; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; /* 系统默认的点击闪烁是不带圆角的灰块：按下反馈归 .pressed */
   padding: var(--safe-top) var(--safe-right) 0 var(--safe-left); }
 .selectable { -webkit-user-select: text; user-select: text; }
-button { font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: inherit; cursor: pointer; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: inherit; cursor: default; } /* 原生 Mac 应用的按钮是箭头 */
 button:focus-visible { outline: 2px solid var(--coda-accent, #0a84ff); outline-offset: 2px; border-radius: 6px; }
-button.link { color: var(--coda-accent, #0a84ff); }
+button.link { color: var(--coda-accent, #0a84ff); border-radius: var(--coda-radius, 6px); }
 p { margin: 0; }
 .secondary { color: var(--coda-secondary, #6e6e73); }
 .caption { font-size: .85em; }
@@ -52,9 +55,16 @@ p { margin: 0; }
 [hidden] { display: none !important; }
 
 /* 面板（目录树、图标、预览、说明、属性页）叠在同一处，只切可见性：隐藏的树保留滚动位置，切换不改变布局。 */
-#stage { position: relative; flex: 1 1 auto; min-height: 0; }
+#stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; } /* 裁掉层级过渡时横向溢出的那一层；菜单、提示是它的兄弟节点，不受裁切 */
 .pane { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; padding-bottom: var(--safe-bottom); }
 .pane.off { visibility: hidden; pointer-events: none; }
+/* iPhone 层级切换（第 17.6 节）：深的一层（预览、属性页）永远在上，打开时它滑入盖住浅层，返回时它滑出露出浅层。
+   .layer 只在过渡期间加：两层都要不透明，否则透出对面；.leaving 是离开的那一层，不接指针，点在它上面等于点在下面的目标页。 */
+#preview, #info { z-index: 1; }
+.pane.layer { background: var(--coda-background, #fff); }
+.pane.leaving { pointer-events: none; }
+/* 滑动期间（约 280 毫秒）整页不响应点按；app.mjs 在过渡开始和结束（含强制结束）时加上和去掉。 */
+html.moving, html.moving body, html.moving #stage { pointer-events: none; }
 .empty { display: grid; align-content: start; justify-items: center; gap: 6px; padding: 32px 20px; text-align: center; }
 .notice-icon { display: grid; place-items: center; margin-bottom: 6px; color: var(--coda-secondary, #6e6e73); }
 .notice-icon svg { display: block; color: inherit; } /* 说明区的图标不上色 */
@@ -139,7 +149,7 @@ button.icon svg { display: block; }
 /* 键盘焦点：选中的高亮已经表示位置，点击时不画外框；只在键盘操作（:focus-visible）时给容器内边一圈细线。 */
 #tree:focus, .gbody:focus { outline: none; }
 #tree:focus-visible, .gbody:focus-visible { outline: 1px solid var(--coda-accent, #0a84ff); outline-offset: -2px; }
-.menu { position: fixed; z-index: 10; width: max-content; max-width: min(280px, calc(100vw - var(--safe-left) - var(--safe-right) - 8px)); padding: 4px; border: 1px solid var(--coda-outline, var(--line)); border-radius: var(--coda-radius-card, 10px);
+.menu { position: fixed; z-index: 10; box-shadow: var(--shadow-menu); width: max-content; max-width: min(280px, calc(100vw - var(--safe-left) - var(--safe-right) - 8px)); padding: 4px; border: 1px solid var(--coda-outline, var(--line)); border-radius: var(--coda-radius-card, 10px);
   background: var(--coda-card, var(--coda-background, #fff));
   /* 高度有上限：内容多（长路径加五项）时在菜单里滚动，不超出安全区；位置由 menu.mjs 夹在安全区内。 */
   max-height: calc(100vh - var(--safe-top) - var(--safe-bottom) - 8px); overflow-y: auto; overscroll-behavior: contain; }
@@ -194,7 +204,6 @@ button.icon svg { display: block; }
 .gnote { grid-column: 1 / -1; justify-self: stretch; height: var(--note-h); line-height: var(--note-h); padding: 0 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; color: var(--coda-secondary, #6e6e73); }
 .gnote.more, .gnote.retry { color: var(--coda-accent, #0a84ff); cursor: pointer; }
 .coda-ios .cell { -webkit-touch-callout: none; } /* 长按由页面接管，不弹系统菜单 */
-.coda-ios .cell:active { background: var(--hover); } /* 按下：和列表的行一样 */
 
 /* 悬停只在有鼠标时：触摸后不会留着。 */
 @media (hover: hover) {
@@ -203,6 +212,15 @@ button.icon svg { display: block; }
   .row.entry.sel:hover, .cell.sel:hover { background: var(--coda-selection, var(--hover)); }
   .menu button:hover { background: var(--coda-selection, var(--hover)); }
 }
+
+/* 按下（press.mjs 加 .pressed，第 17.3 节）：只改底色，不改尺寸和文字色。最终的颜色是原底色上再叠一层 --hover：
+   普通的行和按钮是两层 --hover，选中的是 --coda-selection 加一层 --hover。第二层用内阴影而不是 background-image，淡出时两层都能过渡。
+   放在悬停之后、选择器的优先级不低于悬停：按在悬停着的元素上也是这个颜色。 */
+.row.entry.pressed, .row.more.pressed, .row.retry.pressed, .cell.pressed, .gnote.pressed, button.pressed, .bar button.pressed, button.icon.pressed {
+  background-color: var(--hover); box-shadow: inset 0 0 0 100vmax var(--hover); }
+.row.entry.sel.pressed, .cell.sel.pressed, .menu button.pressed { background-color: var(--coda-selection, var(--hover)); }
+/* iPhone 正常抬起时约 200 毫秒淡出（.fade 由 press.mjs 在去掉 .pressed 的同时加上，减弱动态效果时不加）；Mac 立刻去掉。 */
+.coda-ios .fade { transition: background-color .2s ease-out, box-shadow .2s ease-out; }
 
 /* iPhone：行和按钮至少 44 点；行高 58 点（两行：名字、日期 · 大小）在这里定，tree.mjs 量 .row 得到，不另写一份。
    目录树是 Coda 卡片外形的分组列表：.spacer 就是卡片（高度已等于全部行高），首尾圆角不用逐行判断。 */
@@ -216,7 +234,6 @@ button.icon svg { display: block; }
   left: calc(var(--pad) + var(--indent) * var(--d, 0) + 22px + 8px); } /* 从图标之后开始 */
 .coda-ios .row.sel + .row::before, .coda-ios .row.sel::before { background: transparent; }
 .coda-ios .row { -webkit-touch-callout: none; } /* 长按由页面接管，不弹系统菜单；选择和拖动另外已关 */
-.coda-ios .row.entry:active { background: var(--hover); }
 .coda-ios .ico svg { width: 22px; height: 22px; }
 .coda-ios .main { display: flex; flex-direction: column; justify-content: center; } /* 没有第二行的条目，名字垂直居中 */
 .coda-ios .sub { display: block; }
@@ -234,7 +251,6 @@ button.icon svg { display: block; }
 .coda-ios .preview:not(.info) .pbody { padding-bottom: var(--safe-bottom); } /* 资源页里没有底部工具条：最后一行不被 Home 指示条盖住 */
 .coda-ios .code { font-size: .8em; } /* 窄屏多看些：17 点下约 13.6 点 */
 .coda-ios .menu button { padding: 0 10px; }
-.coda-ios .menu button:active { background: var(--coda-selection, var(--hover)); }
 .coda-ios .menu-head { padding: 6px 10px 2px; }
 
 /* 横屏：客户端隐藏导航栏，页面自己给返回。近似 verticalSizeClass 的判断，不等价（iPad、Duo 不单独适配）。 */
