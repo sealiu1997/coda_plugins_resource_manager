@@ -1036,7 +1036,7 @@ test/harness/      深浅色、Mac 和 iPhone 的截图
 ### 18.2 文件名搜索：模块
 
 - **消息**：`search`（请求，`{ query, hidden }`）→ `searched`（回答）；`search_cancel`（`{ generation, requestId }`，没有回答）。
-  - 请求校验：`query` 是字符串，去掉首尾空白后 1～256 个字符，不含控制字符；`hidden` 是布尔值。不合格回答 `invalid_path` 之外的新错误码 `invalid_query`。规范化（NFC、小写）在模块里只做一次。
+  - 请求校验：`query` 是字符串，去掉首尾空白后 1～256 个字符，不含控制字符；`hidden` 是布尔值。不合格的回答新错误码 `invalid_query`。规范化（NFC、小写）在模块里只做一次。
   - `search` 依赖根目录（同 `list`、`stat`）：读的途中根目录换了，不回答结果。
 - **单槽和身份**：每个页面的模块实例同一时间只有一次搜索，同 `dir_size` 的 `sizing`：槽里是 `{ generation, requestId, root, abort }`。新的 `search` 先中止旧的。`search_cancel` 的代次和请求号都对上才停。回答前（成功和出错两个出口）都核对「槽里还是我、代次没变、根目录还是开始时那个」，不是就静默结束。`valid()` 为假一律是静默作废：超时、出错、链接分类回来、发送前都照这条。
 - **走树的代码只有一份**：把 `lib/info.mjs` 里 `dirSize` 的走树抽成 `lib/walk.mjs`，`dirSize` 和搜索都用它。调用方给：
