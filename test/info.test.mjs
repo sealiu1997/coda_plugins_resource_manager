@@ -209,7 +209,7 @@ test('dir_size：统计排在别的任务后面，到 5 秒一项都没读 → i
   const gate = deferred();
   const held = [listing.run(() => gate.promise), listing.run(() => gate.promise)]; // 把名额占满
   const answer = dirSize(listing, root, '');
-  await waitFor(() => stats.calls === 2 + 4, '一批 4 个已排进队');
+  await waitFor(() => stats.calls === 2 + 1, 'readdir 也经并发上限，已排进队');
   t.mock.timers.tick(5000);
   assert.deepEqual(await answer, { size: 0, items: 0, complete: false, unreadable: 0 });
   gate.resolve();
@@ -397,7 +397,7 @@ test('经 activate：新统计让旧的静默停止；旧的不回答、不再�
   gate.resolve();
   await flush();
   assert.equal(view.of('sized').length, 1, '只有新的有回答');
-  assert.equal(spy.counts.lstat, 4 + 3, '旧的没有排第二批');
+  assert.equal(spy.counts.lstat, 4 + 3 + 1, '旧的没有排第二批（新的 3 项，加进 deep 之前再 lstat 它一次）');
 });
 
 test('经 activate：换会话、根目录变化、视图关闭时进行中的统计停止，不回答，计时器清掉', async t => {
