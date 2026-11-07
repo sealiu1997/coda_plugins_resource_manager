@@ -3,7 +3,7 @@
   "name": "@coda-console/resource-manager",
   "displayName": "资源管理器",
   "description": "会话旁的只读文件浏览器：浏览会话工作目录，预览文本和图片，把路径交给对话。",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "categories": ["工作流程"],
   "license": "MIT",
   "repository": {
@@ -14,13 +14,13 @@
   "files": ["main.mjs", "lib", "view"],
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check:coda": "npx --yes @coda-console/plugin-check@0.5.31 . --manifest"
+    "check:coda": "npx --yes @coda-console/plugin-check@0.5.32 . --manifest"
   },
   "main": "main.mjs",
   "contributes": {
     "views": [
-      { "id": "files", "title": "资源管理器", "entry": "view/index.html", "in": ["side"], "icon": "folder" },
-      { "id": "file", "title": "文件", "entry": "view/file.html" }
+      { "id": "files", "title": "资源管理器", "entry": "view/index.html", "in": ["side"], "icon": "folder", "frame": "canvas" },
+      { "id": "file", "title": "文件", "entry": "view/file.html", "frame": "canvas" }
     ]
   }
 }
