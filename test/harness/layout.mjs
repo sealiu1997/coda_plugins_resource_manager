@@ -2033,6 +2033,7 @@ try {
   // 滑动期间整页不响应点按：真实触摸点这几个位置，什么都不触发（不发请求、不换预览、不选中、没有 .pressed、没开菜单）。
   const swipeSnap = `({ log: window.__rpc.log.length, name: document.querySelector('#preview .pname')?.textContent ?? null, sel: document.querySelectorAll('.row.sel').length, menu: !document.getElementById('menu').hidden, moving: document.documentElement.classList.contains('moving') })`;
   async function tapsIgnored(label, points) {
+    await untilLive(`!(${pressedNow})`, `${label}：打开那一下轻点的按下反馈已经结束（它不算点按期间的）`);
     const before = await evaluateLive(swipeSnap);
     await evaluateLive(recorder);
     for (const at of points) { await touch('touchStart', at); await touch('touchEnd', at); }
