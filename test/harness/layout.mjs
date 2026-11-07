@@ -2309,7 +2309,8 @@ try {
 
   // ---- 性能：三个样本，每个取 3 次的中位数；总时间 ≤ 1 秒，最长一批同步计算 ≤ 100 毫秒 ----
   const median = xs => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
-  const samples = [['1 MiB 普通文本，满 10000 处匹配', 'perf-plain.txt', 'needle'], ['高亮上限内、token 最密的上色文件，匹配跨 token', 'perf-dense.js', '1;y='], ['有很长一行的文件', 'perf-long.txt', 'ab cd']];
+  const samples = [['1 MiB 普通文本，满 10000 处匹配', 'perf-plain.txt', 'needle'], ['高亮上限内、token 最密的上色文件，匹配跨 token', 'perf-dense.js', '1;y=']];
+  const longSample = ['有很长一行的文件', 'perf-long.txt', 'ab cd']; // 放在最后跑：这个样本会把页面卡住，之后的检查要换新页面
   // 诊断（不是门槛）：密集 token 的文件里直接注册 N 个跨 token 的 Range，量两帧绘制的时间，看慢在哪、随 N 怎么长。
   await openFile('window', 'light', 'session=A&path=perf-dense.js', 'mac');
   await frames();
@@ -2318,22 +2319,8 @@ try {
       const t0 = performance.now(); CSS.highlights.set('find', hl); await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); out.push([count, Math.round(performance.now() - t0)]); CSS.highlights.delete('find'); }
     return { nodes: nodes.length, out }; })()`);
   console.log(`数字（诊断：${grow.nodes} 个文本节点的上色文件里直接注册 N 个跨 token 的 Range，到画完两帧）：${grow.out.map(([n, ms]) => `${n} 个 ${ms} 毫秒`).join('，')}`);
-  // 诊断（不是门槛）：单行文件随行长怎么慢下来（匹配都是 10000 处封顶，行越长每个匹配的位置越远）。
-  const lineTimes = [];
-  for (const kb_ of [20, 50, 100, 200]) {
-    await writeFile(join(fixture, `perf-long-${kb_}.txt`), 'ab cd '.repeat(Math.floor(kb_ * 1024 / 6)));
-    await openFile('window', 'light', `session=A&path=perf-long-${kb_}.txt`, 'mac');
-    await frames();
-    await kb('f', 'KeyF', 70, 4);
-    await evaluate(`${fq}.focus(); window.__t0 = performance.now(); performance.clearMarks('find-done')`);
-    await send('Input.insertText', { text: 'ab cd' });
-    const began = Date.now();
-    while (Date.now() - began < 20000 && !(await evaluateLive(`performance.getEntriesByName('find-done').length > 0`))) await wait(100);
-    lineTimes.push(`${kb_} KiB ${Date.now() - began >= 20000 ? '超过 20 秒' : `${Math.round(await evaluateLive(`performance.getEntriesByName('find-done')[0].startTime - window.__t0`))} 毫秒`}`);
-  }
-  console.log(`数字（诊断：单行文件，搜 ab cd，到标完）：${lineTimes.join('，')}`);
   const SLOW_MS = 20000; // 一次超过这么久就不再重复，直接记下数字（页面卡在绘制上，重复只是白等）
-  for (const [label, file, term] of samples) {
+  async function perfSample([label, file, term]) {
     await openFile('window', 'light', `session=A&path=${file}`, 'mac');
     await frames();
     await kb('f', 'KeyF', 70, 4);
@@ -2358,6 +2345,7 @@ try {
     if (slow) await evaluateLive(`${fq}.value = ''; ${fq}.dispatchEvent(new Event('input'))`);
     await kb('Escape', 'Escape', 27);
   }
+  for (const sample of samples) await perfSample(sample);
 
   // ---- 查找条：两端的布局（字号 ≥ 16 点，iPhone 按钮 ≥ 44 点，不随正文滚动，横屏一行放下）和截图 ----
   const findShot = async (size, platform, theme, name) => {
@@ -2386,6 +2374,21 @@ try {
   }
   const land = await findShot('landscape', 'ios', 'light', 'find-ios-landscape');
   check('查找 iPhone 横屏：输入框占剩下的宽度，计数「N/M」不换行，按钮至少 44 点，查找条在一行里，都在屏幕内', land.font >= 16 && land.minBtn >= 44 && land.countH < 30 && land.inside && land.fixed, JSON.stringify(land));
+  await perfSample(longSample);
+  // 诊断（不是门槛）：单行文件随行长怎么慢下来（匹配都是 10000 处封顶，行越长每个匹配的位置越远）。
+  const lineTimes = [];
+  for (const kb_ of [20, 50, 100, 200]) {
+    await writeFile(join(fixture, `perf-long-${kb_}.txt`), 'ab cd '.repeat(Math.floor(kb_ * 1024 / 6)));
+    await openFile('window', 'light', `session=A&path=perf-long-${kb_}.txt`, 'mac');
+    await frames();
+    await kb('f', 'KeyF', 70, 4);
+    await evaluate(`${fq}.focus(); window.__t0 = performance.now(); performance.clearMarks('find-done')`);
+    await send('Input.insertText', { text: 'ab cd' });
+    const began = Date.now();
+    while (Date.now() - began < 20000 && !(await evaluateLive(`performance.getEntriesByName('find-done').length > 0`))) await wait(100);
+    lineTimes.push(`${kb_} KiB ${Date.now() - began >= 20000 ? '超过 20 秒' : `${Math.round(await evaluateLive(`performance.getEntriesByName('find-done')[0].startTime - window.__t0`))} 毫秒`}`);
+  }
+  console.log(`数字（诊断：单行文件，搜 ab cd，到标完）：${lineTimes.join('，')}`);
   }
 
   exitCode = failures.length ? 1 : 0;
