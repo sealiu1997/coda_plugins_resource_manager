@@ -1510,7 +1510,7 @@ try {
   const savedTop = await treeTop();
   await reopen();
   await realClick(await evaluate(`(() => { const r = document.querySelector('.text').getBoundingClientRect(); return { x: r.left + 20, y: r.top + 10 }; })()`)); // 点正文：焦点进预览面板
-  check('点正文：焦点进预览面板（不靠选区）', await evaluate(`document.activeElement === document.getElementById('preview')`));
+  check('点正文：焦点进预览面板（不靠选区；正文 .pbody 可聚焦，关查找条后焦点回它，⌘↑ 照样冒泡到面板）', await evaluate(`document.getElementById('preview').contains(document.activeElement)`));
   await pressKey('ArrowUp', META);
   const a1 = await backed();
   check('预览里 ⌘↑（焦点在正文）：返回，目录树没被滚走', a1.tree && a1.top === savedTop, JSON.stringify(a1));
@@ -1639,7 +1639,7 @@ try {
     // ⋯ 菜单：只有刷新和复制路径（相对路径）。
     await openMore('ios');
     const labels = await evaluate(`[...document.querySelectorAll('#menu button')].map(x => x.textContent)`);
-    check(`iPhone ${size}：预览时 ⋯ 菜单只有 刷新、复制路径（没有显示隐藏文件和「显示」）`, JSON.stringify(labels) === JSON.stringify(['刷新', '复制路径']), JSON.stringify(labels));
+    check(`iPhone ${size}：预览时 ⋯ 菜单只有 刷新、查找（显示着文本时）、复制路径（没有显示隐藏文件和「显示」）`, JSON.stringify(labels) === JSON.stringify(['刷新', '查找', '复制路径']), JSON.stringify(labels));
     await evaluate(`window.__rpc.copies.length = 0`);
     await clickItem('复制路径');
     check(`iPhone ${size}：复制路径复制的是相对路径`, JSON.stringify(await evaluate(`window.__rpc.copies`)) === JSON.stringify(['notes.txt']));
@@ -2217,6 +2217,175 @@ try {
   check('搜索 bulk：匹配很多时最多 500 条（列表总高度是 500 行），状态行写明', await evaluate(`${total500} === 500 && ${statusText}.startsWith('结果太多，只显示先找到的 500 个')`), await evaluate(`JSON.stringify({ n: ${total500}, s: ${statusText} })`));
   check('搜索 bulk：500 条画出的节点数有上限（虚拟列表）', await evaluate(`document.querySelectorAll('#search .row.entry').length <= 60`), await evaluate(`document.querySelectorAll('#search .row.entry').length`));
   await fetch(`${serverUrl}ctl?action=session:A`);
+  }
+
+  { // ================= 文件内查找（0.8.0，设计第 18.6、18.8 节）：高亮范围数、当前这处在可见区、颜色门槛、性能、查找条的布局和截图 =================
+  await send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  const fq = `document.querySelector('.finput')`;
+  const kb = async (key, code, windowsVirtualKeyCode, modifiers = 0) => {
+    const base = { key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode, modifiers };
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+  };
+  const pngAt = buf => { // 同 0.7.2 的取像素：只认 8 位 RGB、RGBA
+    let pos = 8, width = 0, height = 0, depth = 0, kind = 0;
+    const idat = [];
+    while (pos < buf.length) { const length = buf.readUInt32BE(pos), type = buf.toString('ascii', pos + 4, pos + 8), data = buf.subarray(pos + 8, pos + 8 + length); pos += 12 + length;
+      if (type === 'IHDR') { width = data.readUInt32BE(0); height = data.readUInt32BE(4); depth = data[8]; kind = data[9]; } else if (type === 'IDAT') idat.push(data); else if (type === 'IEND') break; }
+    const bpp = kind === 6 ? 4 : kind === 2 ? 3 : 0;
+    if (depth !== 8 || !bpp) throw new Error(`不认识的 PNG：位深 ${depth}，颜色类型 ${kind}`);
+    const raw = inflateSync(Buffer.concat(idat)), stride = width * bpp, out = Buffer.alloc(height * stride);
+    for (let y = 0; y < height; y++) { const filter = raw[y * (stride + 1)];
+      for (let x = 0; x < stride; x++) { const a = x >= bpp ? out[y * stride + x - bpp] : 0, b = y > 0 ? out[(y - 1) * stride + x] : 0, c = x >= bpp && y > 0 ? out[(y - 1) * stride + x - bpp] : 0, v = raw[y * (stride + 1) + 1 + x];
+        const q = a + b - c, pa = Math.abs(q - a), pb = Math.abs(q - b), pc = Math.abs(q - c);
+        out[y * stride + x] = (v + (filter === 0 ? 0 : filter === 1 ? a : filter === 2 ? b : filter === 3 ? (a + b) >> 1 : (pa <= pb && pa <= pc ? a : pb <= pc ? b : c))) & 255; } }
+    return [out[0], out[1], out[2]];
+  };
+  const pixel = async at => pngAt(Buffer.from((await send('Page.captureScreenshot', { format: 'png', clip: { x: Math.floor(at.x), y: Math.floor(at.y), width: 2, height: 2, scale: 1 } })).result.data, 'base64'));
+  const lin = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const lum = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  const ratioOf = (a, b) => { const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+  const diffMax = (a, b) => Math.max(...[0, 1, 2].map(i => Math.abs(a[i] - b[i])));
+  const rgbOf = css => css.match(/[\d.]+/g).slice(0, 3).map(Number);
+  const marked = `(CSS.highlights.get('find')?.size ?? 0)`;
+  // 输入 text 并等到这个词的标记画完（find-done 在这次输入之后出现，不靠固定等待）。
+  async function findFor(text, { done = true } = {}) {
+    await evaluate(`${fq}.focus(); ${fq}.select(); window.__t0 = performance.now(); performance.clearMarks('find-done'); performance.clearMeasures('find-batch'); performance.clearMeasures('find-run')`);
+    await send('Input.insertText', { text });
+    if (done) await until(`performance.getEntriesByName('find-done').length > 0 || (${marked} > 0 && ${marked} === document.querySelector('.fcount') && false) || (document.querySelector('.fcount').textContent === '0')`, `查找「${text.slice(0, 12)}」标完`);
+  }
+  const clearFind = async () => { await evaluate(`${fq}.value = ''; ${fq}.dispatchEvent(new Event('input'))`); await until(`CSS.highlights.size === 0`, '清掉查找词后标记删除'); };
+
+  // ---- 夹具：上色的、纯文本的、长行的、密集 token 的、带一串串空格的 ----
+  const denseLine = `${'x=1;y="a";'.repeat(8)}\n`, dense = denseLine.repeat(Math.floor((HIGHLIGHT_LIMIT - 1000) / denseLine.length)); // 每行 81 个字符，没有长行：上色
+  const plain = Array.from({ length: 20000 }, (_, i) => `line ${i} needle ${'z'.repeat(20)}`).join('\n').slice(0, 1_000_000);
+  const longLine = 'ab cd '.repeat(90000);
+  const spaces = ['// 空格样本', 'const a = 1;', ...Array.from({ length: 40 }, () => `${' '.repeat(24)}return 1;`)].join('\n');
+  await Promise.all([writeFile(join(fixture, 'perf-dense.js'), dense), writeFile(join(fixture, 'perf-plain.txt'), plain), writeFile(join(fixture, 'perf-long.txt'), longLine), writeFile(join(fixture, 'spaces.js'), spaces)]);
+
+  // ---- 高亮：在上色的文件里搜一个跨 token 的词，范围数对，当前这处在可见区内 ----
+  await openFile('window', 'light', 'session=A&path=assets/sample.js', 'mac');
+  await frames();
+  await kb('f', 'KeyF', 70, 4);
+  await until(`document.activeElement === ${fq}`, '窗口：⌘F 聚焦查找条');
+  await findFor('name = "world", times');
+  const hl = await evalStrict(`(() => { const text = document.querySelector('.text').textContent, term = 'name = "world", times', want = text.split(term).length - 1;
+    const all = CSS.highlights.get('find'), now = CSS.highlights.get('find-current'), range = [...now][0], r = range.getBoundingClientRect(), b = document.querySelector('.pbody').getBoundingClientRect();
+    const spans = new Set([...all].map(x => x.startContainer)).size;
+    return { want, all: all.size, now: now.size, priority: [all.priority, now.priority], inView: r.top >= b.top - 1 && r.bottom <= b.bottom + 1 && r.left >= b.left - 1, crosses: range.startContainer !== range.endContainer, count: document.querySelector('.fcount').textContent, spans }; })()`);
+  check('查找 窗口：在上色的文件里搜跨 token 的词，find 里的范围数和原文里的出现次数一致，当前这处只有一个、priority 更高、在可见区内，匹配跨了文本节点', hl.want > 0 && hl.all === hl.want && hl.now === 1 && hl.priority[1] > hl.priority[0] && hl.inView && hl.crosses, JSON.stringify(hl));
+  await findFor('o');
+  await until(`${marked} > 5`, '搜 o：多处匹配');
+  const nav = await evaluate(`(() => { const before = document.querySelector('.fcount').textContent; document.querySelector('.fnext').click(); return { before, after: document.querySelector('.fcount').textContent }; })()`);
+  check('查找 窗口：下一个把计数从 1/N 变成 2/N', /^1\//.test(nav.before) && /^2\//.test(nav.after), JSON.stringify(nav));
+  await kb('Escape', 'Escape', 27);
+  await until(`CSS.highlights.size === 0 && document.querySelector('.fbar').hidden`, 'Esc 关查找条并清掉标记');
+  check('查找 窗口：Esc 关查找条，标记全部删除，焦点回正文', await evaluate(`document.activeElement === document.querySelector('.pbody')`));
+
+  // ---- 颜色门槛（固定主题、固定 DPR 2）：用一串空格作搜索词，在匹配的底色上取样，避开字形 ----
+  for (const theme of ['light', 'dark']) {
+    await openFile('window', theme, 'session=A&path=spaces.js', 'mac');
+    await frames();
+    await kb('f', 'KeyF', 70, 4);
+    await findFor(' '.repeat(8));
+    await frames();
+    const probe = await evalStrict(`(() => { const body = document.querySelector('.pbody'), b = body.getBoundingClientRect(), now = [...CSS.highlights.get('find-current')][0], nr = now.getBoundingClientRect();
+      const pick = [...CSS.highlights.get('find')].map(r => r.getBoundingClientRect()).find(r => r.top >= b.top && r.bottom <= b.bottom && Math.abs(r.top - nr.top) > 2);
+      const fg = getComputedStyle(document.querySelector('.text')).color, root = getComputedStyle(document.documentElement);
+      const tokens = [...document.styleSheets].flatMap(s => [...s.cssRules]).filter(r => r.selectorText === ':root' || r.selectorText === ':root.coda-dark').length;
+      const probeEl = document.createElement('span'); document.querySelector('.text').append(probeEl);
+      const colors = {}; for (const name of ['keyword', 'string', 'comment', 'number', 'title', 'type', 'attr', 'meta', 'tag', 'variable', 'regexp', 'addition', 'deletion', 'section']) { probeEl.style.color = 'var(--hl-' + name + ')'; colors[name] = getComputedStyle(probeEl).color; }
+      probeEl.remove();
+      return { now: { x: nr.left + nr.width / 2, y: nr.top + nr.height / 2 }, plain: pick ? { x: pick.left + pick.width / 2, y: pick.top + pick.height / 2 } : null, fg, colors, tokens }; })()`);
+    const pNow = await pixel(probe.now), pPlain = await pixel(probe.plain);
+    const fg = rgbOf(probe.fg), worst = Object.entries(probe.colors).map(([name, css]) => [name, Math.min(ratioOf(rgbOf(css), pPlain), ratioOf(rgbOf(css), pNow))]).sort((a, b) => a[1] - b[1]);
+    const diff = diffMax(pPlain, pNow), fgRatios = [ratioOf(fg, pPlain), ratioOf(fg, pNow)];
+    console.log(`数字（查找颜色，${theme}，DPR 2，截图取像素）：普通底色 rgb(${pPlain}) 当前底色 rgb(${pNow})；正文色 rgb(${fg}) 对比 ${fgRatios.map(x => x.toFixed(2)).join(' / ')}；token 最低三项 ${worst.slice(0, 3).map(([n, r]) => `${n} ${r.toFixed(2)}`).join('，')}；两种底色像素差 ${diff}`);
+    check(`查找 颜色 ${theme}：正文色对普通、当前两种合成底色的对比度都不低于 4.5:1`, fgRatios.every(r => r >= 4.5), JSON.stringify(fgRatios));
+    check(`查找 颜色 ${theme}：各个上色 token 的颜色（共 ${worst.length} 个）对普通、当前两种合成底色都不低于 3:1`, worst[0][1] >= 3, JSON.stringify(worst.slice(0, 4)));
+    check(`查找 颜色 ${theme}：普通和当前两种合成底色按按下底色同一种像素差算，不小于 20`, diff >= 20, `差 ${diff}`);
+    await kb('Escape', 'Escape', 27);
+  }
+
+  // ---- 性能：三个样本，每个取 3 次的中位数；总时间 ≤ 1 秒，最长一批同步计算 ≤ 100 毫秒 ----
+  const median = xs => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  const samples = [['1 MiB 普通文本，满 10000 处匹配', 'perf-plain.txt', 'needle'], ['高亮上限内、token 最密的上色文件，匹配跨 token', 'perf-dense.js', '1;y='], ['有很长一行的文件', 'perf-long.txt', 'ab cd']];
+  // 诊断（不是门槛）：密集 token 的文件里直接注册 N 个跨 token 的 Range，量两帧绘制的时间，看慢在哪、随 N 怎么长。
+  await openFile('window', 'light', 'session=A&path=perf-dense.js', 'mac');
+  await frames();
+  const grow = await evalStrict(`(async () => { const text = document.querySelector('.text'), nodes = []; const walker = document.createTreeWalker(text, NodeFilter.SHOW_TEXT); for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n);
+    const out = []; for (const count of [250, 500, 1000, 2000]) { const hl = new Highlight(); for (let i = 0; i < count; i++) { const k = (i * 3) % (nodes.length - 4), r = document.createRange(); r.setStart(nodes[k], 0); r.setEnd(nodes[k + 3], 1); hl.add(r); }
+      const t0 = performance.now(); CSS.highlights.set('find', hl); await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); out.push([count, Math.round(performance.now() - t0)]); CSS.highlights.delete('find'); }
+    return { nodes: nodes.length, out }; })()`);
+  console.log(`数字（诊断：${grow.nodes} 个文本节点的上色文件里直接注册 N 个跨 token 的 Range，到画完两帧）：${grow.out.map(([n, ms]) => `${n} 个 ${ms} 毫秒`).join('，')}`);
+  // 诊断（不是门槛）：单行文件随行长怎么慢下来（匹配都是 10000 处封顶，行越长每个匹配的位置越远）。
+  const lineTimes = [];
+  for (const kb_ of [20, 50, 100, 200]) {
+    await writeFile(join(fixture, `perf-long-${kb_}.txt`), 'ab cd '.repeat(Math.floor(kb_ * 1024 / 6)));
+    await openFile('window', 'light', `session=A&path=perf-long-${kb_}.txt`, 'mac');
+    await frames();
+    await kb('f', 'KeyF', 70, 4);
+    await evaluate(`${fq}.focus(); window.__t0 = performance.now(); performance.clearMarks('find-done')`);
+    await send('Input.insertText', { text: 'ab cd' });
+    const began = Date.now();
+    while (Date.now() - began < 20000 && !(await evaluateLive(`performance.getEntriesByName('find-done').length > 0`))) await wait(100);
+    lineTimes.push(`${kb_} KiB ${Date.now() - began >= 20000 ? '超过 20 秒' : `${Math.round(await evaluateLive(`performance.getEntriesByName('find-done')[0].startTime - window.__t0`))} 毫秒`}`);
+  }
+  console.log(`数字（诊断：单行文件，搜 ab cd，到标完）：${lineTimes.join('，')}`);
+  const SLOW_MS = 20000; // 一次超过这么久就不再重复，直接记下数字（页面卡在绘制上，重复只是白等）
+  for (const [label, file, term] of samples) {
+    await openFile('window', 'light', `session=A&path=${file}`, 'mac');
+    await frames();
+    await kb('f', 'KeyF', 70, 4);
+    const totals = [], batches = [], dones = [], layouts = [], notes = [];
+    let slow = false;
+    for (let i = 0; i < 3 && !slow; i++) {
+      await evaluate(`${fq}.focus(); ${fq}.select(); window.__t0 = performance.now(); performance.clearMarks('find-done'); performance.clearMeasures('find-batch'); performance.clearMeasures('find-run')`);
+      await send('Input.insertText', { text: term });
+      const began = Date.now();
+      let finished = false;
+      while (Date.now() - began < SLOW_MS && !(finished = await evaluateLive(`performance.getEntriesByName('find-done').length > 0`))) await wait(100);
+      if (!finished) { slow = true; totals.push(Infinity); notes.push(`超过 ${SLOW_MS / 1000} 秒还没标完`); batches.push(NaN); break; }
+      const run = await evaluateLive(`(() => { const a = performance.now(); document.body.offsetHeight; const b = performance.now(); const times = [...performance.getEntriesByName('find-batch'), ...performance.getEntriesByName('find-run')].map(e => e.duration);
+        return { total: b - window.__t0, doneAt: performance.getEntriesByName('find-done')[0].startTime - window.__t0, layout: b - a, longest: Math.max(...times, 0), marks: ${marked}, count: document.querySelector('.fcount').textContent }; })()`);
+      totals.push(run.total); batches.push(run.longest); dones.push(run.doneAt); layouts.push(run.layout); notes.push(`${run.marks} 处 ${run.count}`);
+      await clearFind();
+    }
+    const total = median(totals), longest = median(batches);
+    console.log(`数字（查找性能，${label}，无头 Chrome，${totals.length} 次${slow ? '（第一次就超时，不再重复）' : '取中位数'}）：从输入到标完（含强制排版）${total === Infinity ? `超过 ${SLOW_MS / 1000} 秒` : `${total.toFixed(0)} 毫秒`}（含 150 毫秒防抖）；其中标完的时刻 ${dones.map(x => x.toFixed(0))} 毫秒、强制排版 ${layouts.map(x => x.toFixed(0))} 毫秒；最长一批同步 ${Number.isNaN(longest) ? '—' : `${longest.toFixed(1)} 毫秒`}；${notes[0]}`);
+    check(`查找 性能「${label}」：输入到标完（计算、注册、强制排版）中位数不超过 1 秒`, total <= 1000, `${totals.map(x => x.toFixed(0))}`);
+    check(`查找 性能「${label}」：最长一批同步计算中位数不超过 100 毫秒`, longest <= 100, `${batches.map(x => Number(x).toFixed(1))}`);
+    if (slow) await evaluateLive(`${fq}.value = ''; ${fq}.dispatchEvent(new Event('input'))`);
+    await kb('Escape', 'Escape', 27);
+  }
+
+  // ---- 查找条：两端的布局（字号 ≥ 16 点，iPhone 按钮 ≥ 44 点，不随正文滚动，横屏一行放下）和截图 ----
+  const findShot = async (size, platform, theme, name) => {
+    await open(size, platform, theme);
+    if (platform === 'mac') { await evaluate(`window.__open([...document.querySelectorAll('.row.entry')].find(r => r.querySelector('.name').textContent === 'notes.txt'))`); }
+    else await evaluate(`window.__open([...document.querySelectorAll('.row.entry')].find(r => r.querySelector('.name').textContent === 'notes.txt'))`); // iPhone：一次 click 就是轻点打开
+    await until(`document.querySelector('.text') && !document.getElementById('preview').classList.contains('off')`, `${platform} 预览出现`);
+    await until(`!document.documentElement.classList.contains('moving')`, '过渡结束');
+    if (platform === 'mac') { await evaluate(`document.getElementById('preview').focus()`); await kb('f', 'KeyF', 70, 4); }
+    else { await evaluate(`document.querySelector('#preview [aria-label="更多"]').click()`); await until(`!document.getElementById('menu').hidden`, '⋯ 菜单');
+      await evaluate(`[...document.querySelectorAll('#menu button')].find(b => b.textContent === '查找').click()`); }
+    await until(`!document.querySelector('.fbar').hidden && document.activeElement === ${fq}`, `${platform}：查找条打开并聚焦`);
+    await findFor('line 1');
+    await until(`${marked} > 3`, '标出了匹配');
+    await shoot(name);
+    const geo = await evaluate(`(() => { const bar = document.querySelector('.fbar'), r = bar.getBoundingClientRect(), input = document.querySelector('.finput'), count = document.querySelector('.fcount'), btns = [...bar.querySelectorAll('button')].map(b => b.getBoundingClientRect()),
+      body = document.querySelector('.pbody'), top = r.top; body.scrollTop = 300; body.dispatchEvent(new Event('scroll'));
+      return { font: parseFloat(getComputedStyle(input).fontSize), minBtn: Math.min(...btns.map(b => Math.min(b.width, b.height))), barH: r.height, rows: new Set([input, count, ...bar.querySelectorAll('button')].map(n => { const q = n.getBoundingClientRect(); return Math.round((q.top + q.bottom) / 2 / 6); })).size, countH: count.getBoundingClientRect().height, fixed: bar.getBoundingClientRect().top === top, inside: btns.every(b => b.right <= innerWidth + 0.5), count: count.textContent }; })()`);
+    return geo;
+  };
+  for (const theme of ['light', 'dark']) {
+    const mac = await findShot('mac', 'mac', theme, `find-mac-${theme}`);
+    check(`查找 Mac ${theme}：输入框字号不小于 16 点，查找条不随正文滚动，按钮都在窗口内`, mac.font >= 16 && mac.fixed && mac.inside, JSON.stringify(mac));
+    const phone = await findShot('portrait', 'ios', theme, `find-ios-${theme}`);
+    check(`查找 iPhone 竖屏 ${theme}：输入框字号不小于 16 点，按钮至少 44 点，一行放下，不随正文滚动`, phone.font >= 16 && phone.minBtn >= 44 && phone.rows <= 2 && phone.fixed && phone.inside, JSON.stringify(phone));
+  }
+  const land = await findShot('landscape', 'ios', 'light', 'find-ios-landscape');
+  check('查找 iPhone 横屏：输入框占剩下的宽度，计数「N/M」不换行，按钮至少 44 点，查找条在一行里，都在屏幕内', land.font >= 16 && land.minBtn >= 44 && land.countH < 30 && land.inside && land.fixed, JSON.stringify(land));
   }
 
   exitCode = failures.length ? 1 : 0;

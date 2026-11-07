@@ -149,13 +149,13 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
     cancelWork();
     clearMarks();
     list = []; more = false; current = -1;
-    const mine = runId, ver = version;
+    const mine = runId, ver = version, began = globalThis.performance?.now?.() ?? 0;
     if (term !== '' && content) {
       ({ list, more } = findMatches(content.text, term));
       if (list.length) current = near === null ? firstAfterTop() : nearest(near);
     }
     paint();
-    if (list.length === 0) return;
+    if (list.length === 0) { mark('find-run', { start: began }); globalThis.performance?.mark?.('find-done'); return; }
     if (highlightsSupported()) {
       const all = new globalThis.Highlight(), now = new globalThis.Highlight();
       all.priority = 0;
@@ -165,7 +165,7 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
       globalThis.CSS.highlights.set('find-current', now);
     }
     showCurrent(scroll);
-    if (!marks) return;
+    if (!marks) { mark('find-run', { start: began }); globalThis.performance?.mark?.('find-done'); return; }
     let at = 0;
     const step = () => {
       if (mine !== runId || ver !== version) return; // 换词、换正文、关闭：停
@@ -177,6 +177,7 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
       else globalThis.performance?.mark?.('find-done');
     };
     step();
+    mark('find-run', { start: began }); // 这次查找同步算的部分：找匹配、定当前这处、标第一批
   }
 
   const go = step => {
@@ -190,7 +191,6 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
     term = input.value;
     cancelWork();
     if (term === '') return run();
-    paint();
     debounce = setTimeout(() => { debounce = null; run(); }, FIND_DEBOUNCE_MS);
   });
   input.addEventListener('keydown', event => {
