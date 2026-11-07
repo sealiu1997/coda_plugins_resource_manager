@@ -1998,8 +1998,8 @@ try {
   for (const theme of ['light', 'dark']) {
     await open('portrait', 'ios', theme);
     await frames();
-    await evaluateLive(`document.querySelector('[aria-label="更多"]').click()`);
-    const anim = await evaluateLive(`document.getAnimations().filter(a => a.effect.target?.id === 'menu').map(a => ({ duration: a.effect.getTiming().duration, opacity: a.effect.getKeyframes().map(k => k.opacity), transform: a.effect.getKeyframes().map(k => k.transform), origin: getComputedStyle(a.effect.target).transformOrigin }))`);
+    // 同一次页面求值里同步点并取动画：分两次求值时，机器忙、CDP 排队超过 150 毫秒动画就播完消失了
+    const anim = await evaluateLive(`(() => { document.querySelector('[aria-label="更多"]').click(); return document.getAnimations().filter(a => a.effect.target?.id === 'menu').map(a => ({ duration: a.effect.getTiming().duration, opacity: a.effect.getKeyframes().map(k => k.opacity), transform: a.effect.getKeyframes().map(k => k.transform), origin: getComputedStyle(a.effect.target).transformOrigin })); })()`);
     await until(`document.getAnimations().length === 0`, `iPhone ${theme}：菜单动画播完`);
     const final = await evaluate(`(() => { const m = document.getElementById('menu'), cs = getComputedStyle(m); return { opacity: cs.opacity, transform: cs.transform, shadow: cs.boxShadow }; })()`);
     check(`iPhone ${theme}：菜单出现有动画（约 150 毫秒，透明度 0→1、缩放 0.96→1），终态不透明、无缩放`,
