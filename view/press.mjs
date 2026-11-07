@@ -62,7 +62,7 @@ export function mountPress({ identity = () => '', consumed = () => false, doc = 
     mine.minTimer = setTimeout(() => { mine.minDone = true; if (mine.released && state === mine) finish(); }, MIN_MS);
   }
 
-  const on = (type, fn, target = doc) => { target.addEventListener(type, fn, true); return () => target.removeEventListener(type, fn, true); };
+  const on = (type, fn, target = doc, capture = true) => { target.addEventListener(type, fn, capture); return () => target.removeEventListener(type, fn, capture); };
   const offs = [
     on('pointerdown', event => {
       if (event.isPrimary === false) return clear(); // 第二根手指
@@ -89,7 +89,7 @@ export function mountPress({ identity = () => '', consumed = () => false, doc = 
     on('scroll', clear), // 滚动事件不冒泡，捕获才收得到
     on('dragstart', clear),
     on('contextmenu', clear),
-    on('blur', clear, globalThis.window ?? doc),
+    on('blur', clear, globalThis.window ?? doc, false), // 窗口失焦。不能用捕获：元素失焦（点按钮时焦点从目录树移走）的 blur 也会经过 window 的捕获阶段
     on('visibilitychange', () => { if (doc.hidden) clear(); }),
   ];
 
