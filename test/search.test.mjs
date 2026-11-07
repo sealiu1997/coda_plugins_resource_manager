@@ -382,3 +382,54 @@ test('同一时间最多一次走树的读取在途：连续搜索之间读取�
   assert.equal(peak, 4, '只有 r0 的那一批在途，后来的搜索等它排空才读');
   assert.equal(tree.counts.readdir, 3, 'r0 读根目录，最后一个读根目录和 d，中间的没有读');
 });
+
+// ---- 反向核对补上的 ----
+
+test('排序：路径逐段比较，不是整串比（a-b/c 的第一段 a-b 排在 a 之后）', async t => {
+  const tree = fakeTree({ '': ['a/', 'a-b/'], a: ['x/'], 'a-b': ['x/'], 'a/x': ['hit'], 'a-b/x': ['hit'] });
+  assert.deepEqual(paths(await ask(make(tree), tree, 'hit')), ['a/x/hit', 'a-b/x/hit'], '同深度同名：先比第一段 a 和 a-b，a 在前（整串比 - 排在 / 前面，会反过来）');
+});
+
+test('收集顺序：按层、先出队的目录先读（不是栈）：到 1 条就停时是第一个目录里的', async t => {
+  const tree = fakeTree({ '': ['a/', 'b/'], a: ['m-a'], b: ['m-b'] });
+  assert.deepEqual(paths(await ask(make(tree, { results: 1 }), tree, 'm')), ['a/m-a']);
+});
+
+test('单槽：新的搜索中止旧的走树，旧的不再派发新的读取', async t => {
+  const tree = fakeTree({ '': ['d/', 'x'], d: ['inner'] }), gate = deferred(), searcher = make(tree);
+  tree.gates.lstat.set('/r/x', gate);
+  const first = ask(searcher, tree, 'zzz', { id: 'A' });
+  await waitFor(() => tree.counts.lstat === 2, 'A 的第一批已发出');
+  const second = ask(searcher, tree, 'zzz', { id: 'B' });
+  assert.equal(await first, null);
+  gate.resolve();
+  await second;
+  assert.deepEqual(tree.order.readdir, ['/r', '/r', '/r/d'], 'A 只读过根目录，没有进 d；B 读了根目录和 d');
+});
+
+test('停止原因 time：到点之后走树停止派发，已发出的读取回来也不再往下读', async t => {
+  trackTimers(t);
+  const tree = fakeTree({ '': ['d/'], d: ['inner/'], 'd/inner': ['hit'] }), gate = deferred();
+  tree.gates.readdir.set('/r/d', gate);
+  const answer = ask(make(tree), tree, 'hit');
+  await waitFor(() => tree.counts.readdir === 2, '进了 d');
+  t.mock.timers.tick(5000);
+  assert.equal((await answer).stop, 'time');
+  gate.resolve();
+  await flush();
+  assert.deepEqual(tree.order.readdir, ['/r', '/r/d'], '没有进 d/inner');
+});
+
+test('等屏障的时间算在 5 秒里：屏障排空时已经过了 5 秒，不开始读', async t => {
+  trackTimers(t);
+  const tree = fakeTree({ '': ['hit'] }), gate = deferred(), searcher = make(tree);
+  tree.gates.lstat.set('/r/hit', gate);
+  const a = ask(searcher, tree, 'hit', { id: 'A' });
+  await waitFor(() => tree.counts.lstat === 1, 'A 的读取已发出');
+  const b = ask(searcher, tree, 'hit', { id: 'B' });
+  await a;
+  t.mock.timers.tick(5000);
+  gate.resolve();
+  assert.deepEqual(await b, { results: [], stop: 'time', scanned: 0, unreadable: 0 });
+  assert.equal(tree.counts.readdir, 1, '排空之后也没有读');
+});

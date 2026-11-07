@@ -175,3 +175,14 @@ test('结算之后不再派发新的读取，回来的结果不再计入', async
   assert.deepEqual(seen, []);
   assert.equal(tree.counts.lstat, 0);
 });
+
+test('项数到上限：立刻结算 items，不再发读取；正好看完最后一项且没有剩余是 done', async t => {
+  const tree = fakeTree({ '': ['a', 'b', 'c', 'd', 'e', 'f'] });
+  const done = await start(tree, { limit: 5 }).result;
+  assert.deepEqual([done.reason, done.items], ['items', 5]);
+  assert.equal(tree.counts.lstat, 5, '只对上限内的条目发 lstat');
+  const exact = fakeTree({ '': ['a', 'b', 'c'] });
+  assert.equal((await start(exact, { limit: 3 }).result).reason, 'done');
+  const pending = fakeTree({ '': ['a', 'd/'], d: ['x'] });
+  assert.equal((await start(pending, { limit: 2 }).result).reason, 'items', '还有没进去的目录');
+});
