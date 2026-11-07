@@ -1,11 +1,14 @@
-// 资源管理器的页面入口：消息收发、状态保留、工具栏和「更多」菜单、图标视图的进入和返回。状态在 model.mjs，渲染在 tree.mjs、grid.mjs、preview.mjs 和 info.mjs，菜单和提示在 menu.mjs 和 hint.mjs，滚动位置的恢复在 restore.mjs。
+// 资源管理器的页面入口：消息收发、状态保留、工具栏和「更多」菜单、图标视图的进入和返回、搜索。状态在 model.mjs，渲染在 tree.mjs、grid.mjs、preview.mjs 和 info.mjs，菜单和提示在 menu.mjs 和 hint.mjs，滚动位置的恢复在 restore.mjs，
+// 文件名搜索的状态在 search.mjs、搜索框在 searchbar.mjs、「在目录中显示」在 locate.mjs。
 import { EXIT, paintBar } from './bar.mjs';
 import { createChat } from './chat.mjs';
 import { connect } from './connection.mjs';
 import { infoText, sortName } from './format.mjs';
+import { h } from './dom.mjs';
 import { mountGrid } from './grid.mjs';
 import { mountHint } from './hint.mjs';
 import { mountInfo } from './info.mjs';
+import { createLocator } from './locate.mjs';
 import { mountMenu } from './menu.mjs';
 import { Model, STATE_LIMIT, View, noticeText, parseState, putSession, trimState } from './model.mjs';
 import { showNotice } from './notice.mjs';
@@ -13,6 +16,8 @@ import { mountPreview } from './preview.mjs';
 import { mountPress, onMotionChange, reducedMotion } from './press.mjs';
 import { EntryKind, RootState, SortKey, Type } from './protocol.mjs';
 import { createRestore, createTrail } from './restore.mjs';
+import { createSearch } from './search.mjs';
+import { mountSearchbar } from './searchbar.mjs';
 import { browseAction, previewAction } from './keys.mjs';
 import { mountTree, rootName } from './tree.mjs';
 
@@ -59,6 +64,70 @@ const grid = mountGrid($('grid'), model, {
 }, { draggable: !isIOS, longPress: isIOS, keyboard: !isIOS, press, consumed: menu.consumed });
 const restore = createRestore(model, { tree, grid });
 const trail = createTrail();
+
+// ---- 文件名搜索（第 18 节）：搜索框常驻在 #browse 顶上，有字时结果换掉目录树和图标视图 ----
+// 搜索的身份是会话和根目录（model.scope）：回答回来时对不上就作废。
+const search = createSearch({
+  call: (fields, signal) => conn.link.call(Type.SEARCH, fields, { signal, cancel: Type.SEARCH_CANCEL }),
+  hidden: () => model.showHidden,
+  identity: () => `${model.session}\n${model.scope}`,
+  onChange: () => schedule(),
+});
+const searchbar = mountSearchbar($('searchbar'), { onInput: searchInput, onClear: () => { clearSearch(); searchbar.focus(); }, onKey: searchBoxKey, onEnter: () => { if (isIOS) searchbar.blur(); } });
+const hitStatus = h('span', { class: 'sstatus-text' }), hitRetry = h('button', { class: 'link', onclick: () => search.research() }, '重试'), hitsEl = h('div', { class: 'shits', role: 'listbox' });
+hitRetry.hidden = true;
+$('search').replaceChildren(h('div', { class: 'sstatus secondary', role: 'status' }, hitStatus, hitRetry), hitsEl);
+// 结果自己的选中（不改 model.selected）和键盘焦点；单击只切 .sel，不重画行（双击要落在还在容器里的节点上）。
+const hits = mountTree(hitsEl, model, {
+  open: path => openResult(path),
+  toggle: path => revealResult(path, true), // 结果里的文件夹：同「在目录中显示」，然后展开它或进入它
+  more() {}, retry() {},
+  menu: (event, row) => resultMenu(event, row),
+  select: isIOS ? null : path => { if (search.select(path)) hits.select(); },
+}, { draggable: !isIOS, longPress: isIOS, keyboard: !isIOS, press, consumed: menu.consumed, rows: () => search.rows(), selected: () => search.selected, view: 'search', title: false });
+
+// 用户接管计数：浏览区上的 pointerdown、wheel、touchstart、keydown 各加一（点已选中的条目、点空白、右键和长按的起手都算，不管选中变没变）；
+// 经菜单、按钮执行的打开预览、属性页等在入口处另计一次。程序自己的展开、进入目录、滚动、选中都不经过这里。「在目录中显示」靠它判断用户有没有动过。
+let takeover = 0;
+for (const type of ['pointerdown', 'wheel', 'touchstart', 'keydown']) $('browse').addEventListener(type, () => { takeover++; }, true);
+const taken = fn => (...args) => { takeover++; return fn(...args); };
+const locator = createLocator({
+  model,
+  // 会话、根目录、排序、视图、隐藏开关和模型的刷新轮次：任何一个变了，定位就作废。
+  identity: () => [model.session, model.scope, model.sort, model.view, model.showHidden, model.round].join('\n'),
+  takeover: () => takeover,
+  ops: {
+    // 开始：清空搜索（搜索轮次加一）；丢掉目标视图还在等的滚动恢复；图标视图进入目标所在的目录（和 enterDir 一样记 trail、滚到顶部，但不触发 landed 的补滚动）。
+    begin(parent) {
+      clearSearch();
+      restore.drop('tree');
+      restore.drop('grid');
+      if (parent === null || parent === model.cwd) return;
+      trail.remember(model.cwd, grid.scroll());
+      selectEntry(null);
+      model.enter(parent);
+      shownCwd = model.cwd;
+      grid.scrollTo(0);
+      declareBack();
+    },
+    render: () => browser().render(),
+    select: path => selectEntry(path),
+    center: path => browser().center(path),
+    // 文件夹结果：定位到它之后，列表视图展开它，图标视图进入它（程序自己的，不算接管）。
+    openFolder(path) { if (model.view === View.ICONS) enterInto(path); else if (!model.expanded.has(path)) model.toggle(path); },
+    notify: text => hint.show(text, { warn: false }),
+  },
+});
+function searchInput(value) {
+  locator.cancel(); // 重新输入搜索词：定位作废
+  search.input(value);
+  searchbar.set(value);
+}
+// 清空搜索：搜索词、结果、结果的选中都清掉（定位自己开始时、Esc、清除按钮）。
+function clearSearch() {
+  search.reset();
+  searchbar.set('');
+}
 const preview = mountPreview($('preview'), {
   read: (path, offset) => conn.link.call('read', { path, offset }), copy: text => coda.copy(text),
   // iPhone 预览头部右边的 ⋯（刷新、复制路径）：顶部工具条在预览时只有「返回」，只留头部一行标题
@@ -91,10 +160,11 @@ function openInView(path) {
 }
 // 两端都在页内打开：model.openFile 设 selected 和 opened，经 onChange 切到预览。iPhone 触屏没有键盘焦点，不交焦点；
 // 快速两次轻点：第一次已切到预览，目录树 .off 不接指针事件，第二次落不到条目上。
-function openFile(path) {
+// 打开文件的统一入口（目录树、图标视图和搜索结果）：焦点交接和过渡意图在这里记，不随调用方复制。select 为假（搜索结果）时只设预览，不改 model.selected。
+function openFile(path, { select = true } = {}) {
   openPressed = !isIOS; // 用户在 Mac 上打开的：render 把焦点交给预览面板
   note({ kind: 'push', from: mode(), to: 'preview' });
-  model.openFile(path);
+  model.openFile(path, { select });
 }
 
 // ---- 渲染：同一批变化合并成一次 ----
@@ -113,6 +183,16 @@ function selectEntry(path) {
   queueSave();
 }
 const browser = () => (model.view === View.ICONS ? grid : tree);
+// 浏览区里键盘该落在哪：搜索时是结果，否则是目录树或图标视图。
+const focusBrowse = () => (searching() ? hits : browser()).focus();
+
+// 结果上面的状态行。
+function paintSearch() {
+  const { text, retry } = search.statusLine();
+  if (hitStatus.textContent !== text) hitStatus.textContent = text;
+  hitRetry.hidden = !retry;
+  hits.render();
+}
 // Mac 在按下时选中（选中条目或在空白处取消）：和键盘一样算用户接管，这个视图还在等的滚动恢复作废，免得恢复到达时把刚选中的条目滚走。
 function mouseSelect(path) {
   restore.drop(model.view === View.ICONS ? 'grid' : 'tree');
@@ -126,8 +206,14 @@ function closePreview() {
 }
 // 用户点了预览头部的返回：render 据此决定焦点要不要交给浏览区，别的模式变化不动焦点。
 let backPressed = false;
+let wantFocus = false; // 清空搜索后，等重画把目录树或图标视图放出来再把焦点交给它
 let openPressed = false; // 用户打开了文件：同返回对称，页面持有焦点时 render 把焦点交给预览面板
-const mode = () => (infoOpen ? 'info' : !model.ready ? 'notice' : model.opened !== null ? 'preview' : model.view === View.ICONS ? 'grid' : 'tree');
+// 两级（第 18.3 节）：外层是层（browse、preview、notice、info），管过渡、inert 和离开那层的释放；内层是 #browse 里当前的面板（search、grid、tree），只管三个面板的可见性。
+// 预览或属性页盖在结果上面时，内层仍是结果：搜索不改外层。
+const mode = () => (infoOpen ? 'info' : !model.ready ? 'notice' : model.opened !== null ? 'preview' : 'browse');
+const searching = () => model.ready && search.active;
+const pane = () => (searching() ? 'search' : model.view === View.ICONS ? 'grid' : 'tree');
+const INNER = ['tree', 'grid', 'search'];
 
 // 说明区只在内容变了才重画，免得重试按钮在点击中途被换掉。
 let noticeKey = null;
@@ -143,7 +229,7 @@ function paintNotice() {
 // 只在用户操作引起时做：入口（openFile、openInfo、goBack、enterDir、leaveDir）在改模型之前记一个一次性的「过渡意图」，render 消费它：
 // 前后对得上就播，对不上就丢掉。换会话、换根目录、恢复、notice、changed 的刷新都没有意图，不播。意图由最外层的入口记，goBack 内部调用的 closeInfo、leaveDir 不记。
 // 层级的深浅：浏览区（tree、grid）浅，预览和属性页深。深的一层永远在上：打开时滑入盖住浅层，返回时滑出、露出浅层。
-const PANES = ['tree', 'grid', 'preview', 'notice', 'info'];
+const PANES = ['browse', 'preview', 'notice', 'info'];
 const DEEP = new Set(['preview', 'info']);
 const SLIDE_MS = 280, FADE_IN_MS = 150;
 let intent = null; // { kind: 'push' | 'pop' | 'fade', from?, to }：from、to 是模式；fade 的 to 是目标 cwd
@@ -173,12 +259,18 @@ function begin(anims, { ids = [], leaving = null, after = [] } = {}) {
 }
 
 // 面板的可见和可操作：只有当前的一层能操作；离开的那一层在退场期间还看得见，但 inert 且不接指针。
+// 内层（#browse 里的三个面板）按状态直接换，不做过渡，也不管外层在不在播过渡。
 function applyPanes(current) {
   const leaving = running?.leaving ?? null;
   for (const id of PANES) {
     $(id).classList.toggle('off', current !== id && leaving !== id);
     $(id).classList.toggle('leaving', leaving === id);
     $(id).inert = current !== id;
+  }
+  const inner = pane();
+  for (const id of INNER) {
+    $(id).classList.toggle('off', inner !== id);
+    $(id).inert = current !== 'browse' || inner !== id; // 外层不是浏览区（被预览、属性页盖住）时里面的面板也不能操作
   }
 }
 
@@ -210,7 +302,7 @@ function slide({ kind, from, to }, after) {
 // 图标视图进出目录：内容到了才播，只给内容播，不给「正在读取」播。
 function takeFade(current) {
   if (intent?.kind !== 'fade') return;
-  if (current !== 'grid' || model.cwd !== intent.to) { intent = null; return; } // 中途换了目录、或打开了文件：作废
+  if (current !== 'browse' || pane() !== 'grid' || model.cwd !== intent.to) { intent = null; return; } // 中途换了目录、或打开了文件：作废
   const state = model.dirs.get(model.cwd);
   if (!state || !(state.loaded || state.error)) return; // 还在读取：意图留着，内容到了的那次 render 播
   intent = null;
@@ -224,12 +316,14 @@ let infoStopped = false;
 
 function render() {
   const current = mode();
-  const refocus = backPressed && document.hasFocus(), handoff = openPressed && document.hasFocus();
-  backPressed = openPressed = false;
+  const refocus = (backPressed || wantFocus) && document.hasFocus(), handoff = openPressed && document.hasFocus();
+  backPressed = openPressed = wantFocus = false;
   const slideIn = takeSlide(current);
   if (current === 'notice') paintNotice();
-  const browsing = current === 'tree' || current === 'grid';
+  const browsing = current === 'browse';
   (model.view === View.ICONS ? grid : tree).render(); // 只画正在用的视图，另一个留着它的内容和滚动位置
+  searchbar.set(search.text);
+  if (searching()) paintSearch();
   landed();
   restore.settle();
   // 待恢复的位置只属于它那个文件：opened 清了或换成别的文件，位置作废。
@@ -250,7 +344,7 @@ function render() {
   lastMode = current;
   // 返回按钮随预览一起 inert，焦点会掉到页面外：用户刚点了返回、页面又持有焦点时交给目录树或网格。
   // 后台刷新、切会话、root 变化造成的切换不动焦点，免得抢走客户端输入框的焦点。
-  if (refocus && browsing) browser().focus();
+  if (refocus && browsing) focusBrowse();
   // 打开时浏览区变 inert，焦点本来就会掉：交给预览面板，⌘↑ 才收得到。
   if (handoff && current === 'preview') $('preview').focus();
   syncToolbar();
@@ -351,11 +445,13 @@ function act(id, button) {
     model.setShowHidden(!model.showHidden);
     persisted.hidden = model.showHidden;
     invalidateScroll(); // 不管在哪种视图切换：显示的条目变了，两种视图的旧位置都对不上
+    search.research(); // 隐藏开关变了：有搜索词就按新的 hidden 重搜
   }
   else if (id === 'refresh') {
     conn.refresh();
     model.refresh();
     preview.refresh();
+    search.research();
   }
 }
 // 原生按钮的事件是 { id }：只认 more，别的什么都不做。
@@ -398,18 +494,45 @@ function pathMenu(event, row) {
   const dead = row.kind === EntryKind.LINK || row.kind === EntryKind.OTHER;
   // Mac 的第一项和双击是同一个动作（右键不改选中）；文件夹在列表里写展开或收起，别的写打开。iPhone 轻点就是打开，菜单不变。
   const folder = row.kind === EntryKind.DIR, listed = model.view !== View.ICONS;
-  const open = isIOS || dead ? [] : [{ label: folder && listed ? (row.open ? '收起' : '展开') : '打开', run: () => browser().activate(row) }, { separator: true }];
+  const open = isIOS || dead ? [] : [{ label: folder && listed ? (row.open ? '收起' : '展开') : '打开', run: taken(() => browser().activate(row)) }, { separator: true }];
   menu.open(event, { title: row.path, detail: dead ? undefined : infoText(row) || undefined, items: [
     ...open,
-    ...(dead ? [] : [{ label: '添加到聊天', run: () => chat.add(row.path) }]),
-    { label: '复制相对路径', run: () => coda.copy(row.path) },
-    { label: '复制绝对路径', run: () => coda.copy(`${model.root.path}/${row.path}`) },
+    ...(dead ? [] : [{ label: '添加到聊天', run: taken(() => chat.add(row.path)) }]),
+    { label: '复制相对路径', run: taken(() => coda.copy(row.path)) },
+    { label: '复制绝对路径', run: taken(() => coda.copy(`${model.root.path}/${row.path}`)) },
     { separator: true },
-    { label: '属性', run: () => openInfo(row) },
+    { label: '属性', run: taken(() => openInfo(row)) },
   ] });
 }
+
+// 结果的行菜单：同目录树（打开、添加到聊天、复制路径、属性），另加「在目录中显示」。
+// 菜单是按打开菜单时那一行的路径和来源（结果）做的：菜单开着时结果被换掉，执行的操作仍按那时的路径，来源仍算结果。
+// iPhone 轻点就是打开，菜单里不放「打开」。
+function resultMenu(event, row) {
+  press.reset();
+  const dead = row.kind === EntryKind.LINK || row.kind === EntryKind.OTHER, { path } = row;
+  menu.open(event, { title: path, items: [
+    ...(isIOS || dead ? [] : [{ label: '打开', run: taken(() => (row.kind === EntryKind.DIR ? revealResult(path, true) : openResult(path))) }, { separator: true }]),
+    ...(dead ? [] : [{ label: '添加到聊天', run: taken(() => chat.add(path)) }]),
+    { label: '复制相对路径', run: taken(() => coda.copy(path)) },
+    { label: '复制绝对路径', run: taken(() => coda.copy(`${model.root.path}/${path}`)) },
+    { separator: true },
+    { label: '在目录中显示', run: taken(() => revealResult(path)) },
+    { label: '属性', run: taken(() => openInfo(row)) },
+  ] });
+}
+// 结果里打开文件：设预览，不设 selected；结果自己的选中是刚打开的那个，返回后回到结果。
+function openResult(path) {
+  if (search.select(path)) hits.select();
+  openFile(path, { select: false });
+}
+// 在目录中显示（open 为真：文件夹结果，找到之后再展开它或进入它）。
+function revealResult(path, open = false) { locator.show(path, { open }); }
 $('tree').addEventListener('scroll', menu.hide, { passive: true });
 grid.onScroll(menu.hide);
+hitsEl.addEventListener('scroll', menu.hide, { passive: true });
+// iPhone：开始滚动结果时收起键盘。
+hitsEl.addEventListener('scroll', () => { if (isIOS && searchbar.focused) searchbar.blur(); }, { passive: true });
 
 // ---- 键盘（Mac）----
 // 两个作用域各管各的，匹配的键同步 preventDefault，不匹配的不拦；菜单开着不处理，两处都不主动抢焦点。
@@ -426,6 +549,38 @@ function browseKey(event) {
 }
 tree.onKey(browseKey);
 grid.onKey(browseKey);
+// 搜索框和结果的键盘（第 18.5 节的分派表）：输入法组字中的按键一律不管；菜单开着时 Esc 归菜单（关菜单、消费掉这个 Esc），这里不处理。
+// ⌘F 在浏览区（含结果和页面本身）聚焦搜索框并选中里面的字；预览、属性页、说明区不拦；菜单开着时先关菜单。
+function searchBoxKey(event) {
+  if (isIOS || event.isComposing || !menu.hidden) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    const clearing = search.text !== '';
+    if (clearing) clearSearch();
+    if (clearing) wantFocus = true; else focusBrowse(); // 清空之后结果让位给目录树：等重画把它放出来再交焦点
+  } else if (event.key === 'ArrowDown' && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && searching() && search.rows().length > 0) {
+    event.preventDefault();
+    hits.focus();
+    hits.key('down');
+  }
+}
+hits.onKey(event => {
+  if (isIOS || event.isComposing || !menu.hidden) return;
+  if (event.key === 'Escape') { event.preventDefault(); searchbar.focus(); return; }
+  const action = browseAction(event);
+  if (!action) return;
+  event.preventDefault();
+  // ← →、⌘↑ 什么都不做：不改被遮住的目录树和图标视图的目录
+  if (action === 'up' || action === 'down') hits.key(action);
+  else if (action === 'open') hits.openSelected();
+});
+document.addEventListener('keydown', event => {
+  if (isIOS || event.isComposing || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key?.toLowerCase() !== 'f') return;
+  if (!menu.hidden) menu.hide();
+  if (mode() !== 'browse') return;
+  event.preventDefault();
+  searchbar.select();
+});
 // 侧栏预览：只有 ⌘↑，返回。焦点要在面板里才收得到（点正文、打开时交接）。
 $('preview').addEventListener('keydown', event => {
   if (isIOS || infoOpen || !menu.hidden || !previewAction(event)) return;
@@ -437,7 +592,8 @@ $('preview').addEventListener('keydown', event => {
 // 进入子目录滚到顶部，先记下上层的位置；回上一层恢复进去之前的位置（记录在内存里，页面卸载后没有，回到顶部）。
 // shownCwd：页面已经处理过的 cwd；它被模型自己换掉（目录没了退到上一层、根目录变了回到根目录）时，在 landed 里补上滚动。
 let shownCwd = '';
-function enterDir(path) {
+const enterDir = taken(path => enterInto(path));
+function enterInto(path) {
   trail.remember(model.cwd, grid.scroll());
   selectEntry(null); // 进入新的一层：选中清空
   model.enter(path);
@@ -449,6 +605,7 @@ function enterDir(path) {
 }
 // 退 levels 层（到根为止）；已经在根目录返回 false。record 为假时不记过渡意图（goBack 里的内部调用：意图由它记）。
 function leaveDir(levels = 1, record = true) {
+  takeover++; // 用户经按钮、键盘、返回退出图标视图的一层
   if (model.cwd === '') return false;
   const from = model.cwd.split('/');
   model.leave(levels);
@@ -473,12 +630,14 @@ function landed() {
 // 路径是上层的标题，由远到近，不含当前页：图标视图在 a/b 是 [根目录名, 'a']；列表视图没有。属性页、预览各多一层当前页（要回到的那一页）：列表视图是 '资源管理器'，图标视图是当前目录名。
 // 预览开着是 opened 不为空、且根目录就绪；没就绪时页面是说明区，路径为空。
 // 标题是当前目录名：根目录是根目录名。
-const dirTitle = () => (model.cwd === '' || model.view !== View.ICONS ? rootName(model.root.path) : model.cwd.slice(model.cwd.lastIndexOf('/') + 1));
+// 搜索时结果盖住了图标视图的目录：标题是根目录名。
+const dirTitle = () => (model.cwd === '' || model.view !== View.ICONS || searching() ? rootName(model.root.path) : model.cwd.slice(model.cwd.lastIndexOf('/') + 1));
 const previewOpen = () => model.ready && model.opened !== null;
+// 搜索本身不是一级：搜索模式下图标视图的目录层级不声明（搜索盖住了它们），从结果打开的预览和属性页要回到的那一页叫「搜索」（第 18.5 节的表）。
 function backPath() {
-  const icons = model.view === View.ICONS && model.ready;
+  const icons = model.view === View.ICONS && model.ready && !searching();
   const upper = icons && model.cwd !== '' ? [rootName(model.root.path), ...model.cwd.split('/').slice(0, -1)] : [];
-  const here = icons ? dirTitle() : '资源管理器';
+  const here = searching() ? '搜索' : icons ? dirTitle() : '资源管理器';
   return [...upper, ...(infoOpen ? [here] : []), ...(previewOpen() ? [here] : [])];
 }
 let declared = [];
@@ -499,7 +658,7 @@ function goBack(steps) {
   let used = 0, layer = false;
   if (previewOpen() && steps > used) { model.closeFile(); used++; layer = true; } // 走和 Mac 一样的 closeFile：opened 清，selected 留着
   if (infoOpen && steps > used) { closeInfo(false); used++; layer = true; }
-  const levels = Math.min(steps - used, model.view === View.ICONS && model.cwd !== '' ? model.cwd.split('/').length : 0);
+  const levels = Math.min(steps - used, model.view === View.ICONS && model.cwd !== '' && !searching() ? model.cwd.split('/').length : 0); // 搜索模式下不消耗被遮住的图标视图目录
   if (levels > 0) { leaveDir(levels, false); used += levels; }
   if (used > 0) note(layer ? { kind: 'pop', from, to: mode() } : { kind: 'fade', to: model.cwd });
   return used > 0;
@@ -539,6 +698,9 @@ function onSession(data) {
   menu.hide();
   tree.reset();
   grid.reset();
+  hits.reset();
+  locator.cancel();
+  clearSearch(); // 换会话：搜索词、结果、结果的选中、定位都清掉
   epoch++;
   hint.hide();
   const saved = persisted.sessions[data.session] ?? null;
@@ -558,8 +720,10 @@ function onRoot(data) {
   if (data.state !== before?.state || data.path !== before?.path) { menu.hide(); intent = null; endRunning(); } // 开着的菜单里的路径是旧根目录下的；换根目录不播过渡
   if (data.state !== RootState.READY || before?.path !== data.path) closeInfo(false, true); // 属性页看的是旧根目录下的路径
   const scope = model.scope;
+  if (data.state !== RootState.READY) search.suspend(); // 根目录暂不可用：取消在途搜索，丢掉结果，搜索词留着
   const done = model.receive(data);
-  if (model.scope !== scope) { invalidateScroll(); pending.preview = null; press.reset(); } // 换了根目录（同根重建不算）：旧根目录的位置和记录不能给新的用，待恢复的预览位置也是
+  if (model.scope !== scope) { invalidateScroll(); pending.preview = null; press.reset(); clearSearch(); locator.cancel(); } // 换了根目录（同根重建不算）：旧根目录的位置和记录不能给新的用，待恢复的预览位置也是；搜索词和结果清空
+  else if (data.state === RootState.READY) search.resume(); // 再就绪时 scope 没变：重搜
   if (done && data.state === RootState.READY) {
     if (before?.path !== data.path) { if (model.opened !== null) preview.reload(); } else preview.refresh(); // 换了根目录，opened 已清空：旧预览随即关掉，不再读
   }
@@ -571,6 +735,7 @@ function onChanged(data) {
   dataRound++;
   preview.refresh();
   info.refresh();
+  search.research(); // 搜索期间目录模型照常刷新；有搜索词就重搜，旧结果留到新结果来
 }
 
 const remeasure = () => { tree.remeasure(); grid.remeasure(); };

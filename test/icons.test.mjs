@@ -96,7 +96,7 @@ test('每个种类的 glyph 都有形状，造得出图标；表里没有写却�
     assert.ok(svg.kids.every(node => ['path', 'rect', 'circle', 'ellipse', 'text'].includes(node.tag)), kind.glyph);
   }
   const used = new Set(kinds.map(kind => kind.glyph));
-  const tools = new Set(['chevron', 'warning', 'back', 'check', 'ellipsis', 'refresh', 'copy', 'window', 'turn']);
+  const tools = new Set(['chevron', 'warning', 'back', 'check', 'ellipsis', 'refresh', 'copy', 'window', 'turn', 'search', 'clear']);
   assert.deepEqual(Object.keys(SHAPES).filter(name => !used.has(name) && !tools.has(name)), [], '形状表里有种类表用不到的种类图标');
 });
 

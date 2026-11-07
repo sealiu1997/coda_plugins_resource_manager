@@ -62,12 +62,18 @@ export const rootName = path => path.split('/').filter(Boolean).pop() ?? path;
 export const TITLES = { [EntryKind.LINK]: '指向工作目录外的链接，不能打开', [EntryKind.OTHER]: '不能打开的文件' };
 
 // handlers: { open(path), toggle(path), more(path), retry(path), menu(event, row), select(path | null) }；select 是 Mac 单击选中，不给就是 iPhone 的轻点打开
+// 搜索结果复用这份画行和虚拟列表（设计见 docs/design/phase-3.md 第 18.3 节）：rows() 给行（缺省是目录树的 visibleRows），selected() 给选中的路径（缺省 model.selected），
+// view 是按下反馈里的画面名（'tree' 或 'search'，search 的行带 .hit），title 为假时没有根目录名的分区标题。
+// 结果行多三个字段：place（所在目录，Mac 在右侧、iPhone 在第二行）、bold（名字里要加粗的 [起点, 终点)）、chevron: false（没有展开箭头的位置）。
 // menu 收到整行（路径、种类、大小、修改时间）。
 // draggable：触屏上拖行没有用处，还会抢滚动，关掉。now：当前时间，日期的相对格式用，测试可注入。
 // longPress：触屏上按住一行打开 handlers.menu（Mac 用右键）。不设 touch-action，滚动照旧，滚动接管时收到 pointercancel 作废。
 // keyboard：滚动容器可以获得焦点，键盘才接得上（Mac）。
 // press：按下反馈（press.mjs），画行时问它这一行是不是正在按下的；consumed(event)：菜单消费掉的按下（gestures.mjs）。
-export function mountTree(el, model, handlers, { draggable = true, longPress = false, keyboard = false, now = Date.now, press = null, consumed = () => false } = {}) {
+export function mountTree(el, model, handlers, {
+  draggable = true, longPress = false, keyboard = false, now = Date.now, press = null, consumed = () => false,
+  rows: rowsOf = () => visibleRows(model), selected = () => model.selected, view = 'tree', title: showTitle = true,
+} = {}) {
   const title = document.createElement('div'), spacer = document.createElement('div'), win = document.createElement('div');
   title.className = 'section truncate'; spacer.className = 'spacer'; win.className = 'win';
   title.hidden = true;
@@ -88,7 +94,7 @@ export function mountTree(el, model, handlers, { draggable = true, longPress = f
 
   // 分区标题：根目录的名字（root.path 的最后一段），不是 ready 时不显示。iPhone 上由 CSS 隐藏。
   const paintTitle = () => {
-    const text = model.ready ? rootName(model.root.path) : '';
+    const text = showTitle && model.ready ? rootName(model.root.path) : '';
     if (title.textContent !== text) title.textContent = text;
     title.hidden = text === '';
   };
@@ -112,32 +118,34 @@ export function mountTree(el, model, handlers, { draggable = true, longPress = f
     if (row.type !== 'entry') {
       node.textContent = row.text;
       if (row.retry) { node.classList.add('retry'); node.title = row.text; } // 长原因在行里被截断，Mac 悬停看全
-      if (row.retry || row.type === 'more') press?.paint(node, 'tree', row.retry ? 'retry' : 'more', row.path);
+      if (row.retry || row.type === 'more') press?.paint(node, view, row.retry ? 'retry' : 'more', row.path);
       return node;
     }
-    press?.paint(node, 'tree', 'entry', row.path);
+    press?.paint(node, view, 'entry', row.path);
+    if (view === 'search') node.classList.add('hit');
     const dead = row.kind === EntryKind.LINK || row.kind === EntryKind.OTHER;
     node.classList.add(row.kind);
     if (dead) node.classList.add('dead');
-    if (row.path === model.selected) node.classList.add('sel');
+    if (row.path === selected()) node.classList.add('sel');
     if (row.kind === EntryKind.DIR) node.setAttribute('aria-expanded', row.open);
     if (!dead && draggable) node.draggable = true;
     // 一份 DOM：箭头、图标、名字（iPhone 下面跟日期 · 大小）、Mac 的 meta、尾标；iPhone 的箭头用 CSS order 排到最后，两端各用 CSS 藏起另一端的那段。
     const chevron = document.createElement('span'), glyph = document.createElement('span'), main = document.createElement('span'), label = document.createElement('span'), tail = document.createElement('span');
     chevron.className = 'chev';
     if (row.busy) chevron.textContent = '…';
-    else if (!dead) chevron.append(icon('chevron', 12)); // 文件的箭头 Mac 上由 CSS 藏起来，只占位
+    else if (!dead && row.chevron !== false) chevron.append(icon('chevron', 12)); // 文件的箭头 Mac 上由 CSS 藏起来，只占位
     if (row.open) node.classList.add('open');
     glyph.className = 'ico';
     glyph.append(icon(iconFor(row)));
     main.className = 'main';
     label.className = 'name truncate';
-    label.textContent = row.name;
+    if (row.bold) label.append(row.name.slice(0, row.bold[0]), Object.assign(document.createElement('b'), { textContent: row.name.slice(...row.bold) }), row.name.slice(row.bold[1]));
+    else label.textContent = row.name;
     main.append(label);
-    const parts = [chevron, glyph, main];
+    const parts = row.chevron === false ? [glyph, main] : [chevron, glyph, main];
     if (!dead) {
       // 能打开的条目带信息；link、other 没有。文件夹没有的部分整个不画：iPhone 名字垂直居中，Mac 右侧不留空位。
-      const subContent = subText(row, time), metaContent = model.sort === SortKey.DATE ? dateText(row, time) : sizeText(row);
+      const subContent = row.place ?? subText(row, time), metaContent = row.place ?? (model.sort === SortKey.DATE ? dateText(row, time) : sizeText(row));
       if (subContent) {
         const sub = document.createElement('span');
         sub.className = 'sub caption secondary truncate';
@@ -154,7 +162,7 @@ export function mountTree(el, model, handlers, { draggable = true, longPress = f
     tail.className = row.failed ? 'tail warn' : 'tail';
     if (row.failed) tail.append(icon('warning', 14));
     else if (row.link) tail.append(icon('turn', 14));
-    const info = row.failed || TITLES[row.kind] ? '' : infoText(row);
+    const info = row.failed || TITLES[row.kind] || row.place !== undefined ? '' : infoText(row);
     node.title = row.failed ? `${row.path}\n读取失败：${row.failed}` : TITLES[row.kind] ? `${row.path}\n${TITLES[row.kind]}` : info ? `${row.path}\n${info}` : row.path;
     node.append(...parts, tail);
     return node;
@@ -179,7 +187,7 @@ export function mountTree(el, model, handlers, { draggable = true, longPress = f
     consumed,
   });
   // 选中变了只在现有节点上切 .sel，不重建：双击的 dblclick 要落在还在容器里的节点上。
-  const mark = () => { for (const node of win.children) node.classList.toggle('sel', rows[node.dataset.i]?.path === model.selected && rows[node.dataset.i]?.type === 'entry'); };
+  const mark = () => { for (const node of win.children) node.classList.toggle('sel', rows[node.dataset.i]?.path === selected() && rows[node.dataset.i]?.type === 'entry'); };
   // 滚到这一行能看见，只滚最少的距离；按行号算位置，不找节点（没画出来的行也行）。
   const reveal = index => {
     const top = (spacer.offsetTop || 0) + index * rowH;
@@ -187,21 +195,30 @@ export function mountTree(el, model, handlers, { draggable = true, longPress = f
     else if (top + rowH > el.scrollTop + el.clientHeight) el.scrollTop = top + rowH - el.clientHeight;
     paint();
   };
+  // 滚到这一行在可见区中间（定位操作的最后一步）；找不到返回 false。rows 要是最新的：调用前先 render()。
+  const center = path => {
+    const index = rows.findIndex(row => row.type === 'entry' && row.path === path);
+    if (index < 0) return false;
+    el.scrollTop = Math.max(0, (spacer.offsetTop || 0) + index * rowH - (el.clientHeight - rowH) / 2);
+    paint();
+    return true;
+  };
   el.addEventListener('scroll', paint, { passive: true });
   new ResizeObserver(paint).observe(el);
 
   return {
-    render() { rows = visibleRows(model); spacer.style.height = `${rows.length * rowH}px`; paintTitle(); paint(); },
+    render() { rows = rowsOf(); spacer.style.height = `${rows.length * rowH}px`; paintTitle(); paint(); },
     remeasure() { measure(); this.render(); },
     scroll: () => el.scrollTop,
     scrollTo(top) { el.scrollTop = top; },
     select: mark,
+    center,
     activate,
     focus() { el.focus(); },
     onKey(fn) { el.addEventListener('keydown', fn); },
     // 键盘一步：选中移动并滚到能看见，→ ← 展开收起。
     key(action) {
-      const step = stepRows(rows, model.selected, action);
+      const step = stepRows(rows, selected(), action);
       if (!step) return;
       if (step.toggle !== undefined) return handlers.toggle(rows[step.toggle].path);
       handlers.select(rows[step.select].path);
@@ -209,7 +226,7 @@ export function mountTree(el, model, handlers, { draggable = true, longPress = f
     },
     // ⌘↓：和双击同一个动作；没有选中或选中的不在了什么都不做。
     openSelected() {
-      const row = model.selected === null ? undefined : rows.find(item => item.type === 'entry' && item.path === model.selected);
+      const row = selected() === null ? undefined : rows.find(item => item.type === 'entry' && item.path === selected());
       if (row) activate(row);
     },
     // 切会话时调用：长按的等待和吞点击的标记都属于上一个会话。

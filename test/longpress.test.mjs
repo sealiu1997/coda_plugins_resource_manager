@@ -124,7 +124,7 @@ test('快速两次轻点：第一次切到预览，目录树不再接指针事�
   click(page, 'a.txt'); // 假 DOM 不模拟 pointer-events：第二次仍会到达 openFile，这里只证明重复打开同一个文件是幂等的
   await flush();
   assert.ok(visible(page.preview));
-  assert.ok(page.tree.classList.contains('off') && page.tree.inert, '树 off 且 inert：真实的第二次轻点落在预览上（指针事件由 harness 验证）');
+  assert.ok(page.browse.classList.contains('off') && page.tree.inert, '浏览区 off、树 inert：真实的第二次轻点落在预览上（指针事件由 harness 验证）');
   assert.equal(host.reads().length, 1);
   assert.equal(host.calls.open.length, 0);
 });

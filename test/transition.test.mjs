@@ -22,7 +22,8 @@ async function start(t, { state, reduce = false, motion = { reduce }, session = 
   if (session) { ctx.host.session('s1', '/A'); await flush(); }
   return { ...ctx, saved };
 }
-const PANES = ['tree', 'grid', 'preview', 'notice', 'info'];
+// 层（第 18.3 节）：#browse 是浅层，里面的目录树、图标视图、搜索结果只切可见性，不参与过渡。
+const PANES = ['browse', 'preview', 'notice', 'info'];
 const shown = page => PANES.filter(id => !page[id].classList.contains('off'));
 const operable = page => PANES.filter(id => !page[id].inert);
 const live = ctx => ctx.page.motion.animations.filter(anim => !anim.finished && !anim.canceled);
@@ -46,19 +47,19 @@ test('场景：浏览区 → 打开文件（轻点）：预览滑入在上、能
   const ctx = await start(t);
   const { page, host } = ctx;
   await tap(ctx, 'a.txt');
-  const [deep] = forPane(ctx, 'preview'), [shallow] = forPane(ctx, 'tree');
+  const [deep] = forPane(ctx, 'preview'), [shallow] = forPane(ctx, 'browse');
   assert.deepEqual(deep.frames, { transform: ['translateX(100%)', 'translateX(0)'] }, '深层从右边滑入');
   assert.equal(deep.options.duration, 280);
   assert.deepEqual(shallow.frames.transform, ['translateX(0)', 'translateX(-25%)'], '浅层同时向左移一小段');
   assert.deepEqual(shallow.frames.filter, ['brightness(1)', 'brightness(.9)'], '稍微变暗');
-  assert.deepEqual(shown(page), ['tree', 'preview'], '两层都看得见');
+  assert.deepEqual(shown(page), ['browse', 'preview'], '两层都看得见');
   assert.deepEqual(operable(page), ['preview'], '目标页立刻能操作，离开的那层 inert');
-  assert.ok(page.tree.classList.contains('leaving') && page.tree.classList.contains('layer') && page.preview.classList.contains('layer'), '两层都不透明，离开的那层不接指针');
+  assert.ok(page.browse.classList.contains('leaving') && page.browse.classList.contains('layer') && page.preview.classList.contains('layer'), '两层都不透明，离开的那层不接指针');
   assert.equal(host.reads().length, 1, '预览开始读');
   assert.equal(previewName(page), 'a.txt');
   finishAll(ctx);
   assert.deepEqual(shown(page), ['preview'], '结束后只有一层可见');
-  assert.equal(page.tree.classList.contains('layer') || page.tree.classList.contains('leaving') || page.preview.classList.contains('layer'), false);
+  assert.equal(page.browse.classList.contains('layer') || page.browse.classList.contains('leaving') || page.preview.classList.contains('layer'), false);
   assert.ok(rowNamed(page, 'a.txt'), '浏览区的内容原样留着，没有释放');
 });
 
@@ -72,18 +73,18 @@ test('场景：预览 → 返回（系统返回）：预览滑出、浏览区能
   host.back(1);
   await flush();
   const added = ctx.page.motion.animations.slice(before);
-  const deep = added.find(anim => anim.el === page.preview), shallow = added.find(anim => anim.el === page.tree);
+  const deep = added.find(anim => anim.el === page.preview), shallow = added.find(anim => anim.el === page.browse);
   assert.deepEqual(deep.frames, { transform: ['translateX(0)', 'translateX(100%)'] }, '深层向右滑出');
   assert.deepEqual(shallow.frames.transform, ['translateX(-25%)', 'translateX(0)'], '返回时完全反过来');
-  assert.deepEqual(shown(page), ['tree', 'preview'], '退场期间旧页还在，不是空白');
-  assert.deepEqual(operable(page), ['tree'], '浏览区能操作');
+  assert.deepEqual(shown(page), ['browse', 'preview'], '退场期间旧页还在，不是空白');
+  assert.deepEqual(operable(page), ['browse'], '浏览区能操作');
   assert.equal(previewText(page), 'AAA', '退场期间旧页内容还在');
   assert.ok(page.preview.classList.contains('leaving'));
   host.changed();
   await flush();
   assert.equal(host.reads().length, 1, '已停止的预览不再读');
   finishAll(ctx);
-  assert.deepEqual(shown(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse']);
   assert.equal(previewText(page), '', '退场结束时释放');
 });
 
@@ -93,7 +94,7 @@ test('场景：浏览区 → 属性页（长按菜单「属性」）：属性页
   await openInfo(ctx, 'a.txt');
   const [deep] = forPane(ctx, 'info');
   assert.deepEqual(deep.frames, { transform: ['translateX(100%)', 'translateX(0)'] });
-  assert.deepEqual(shown(page), ['tree', 'info']);
+  assert.deepEqual(shown(page), ['browse', 'info']);
   assert.deepEqual(operable(page), ['info']);
   assert.equal((await host.requests(Type.STAT)).length, 1, '属性页开始读');
   finishAll(ctx);
@@ -112,14 +113,14 @@ test('场景：属性页 → 返回：属性页滑出、浏览区能操作；立
   assert.ok(text(page.info).includes('完整路径'), '属性已显示');
   host.back(1);
   await flush();
-  assert.deepEqual(shown(page), ['tree', 'info']);
-  assert.deepEqual(operable(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse', 'info']);
+  assert.deepEqual(operable(page), ['browse']);
   assert.ok(text(page.info).includes('完整路径'), '退场期间旧页内容还在');
   host.changed();
   await flush();
   assert.equal((await host.requests(Type.STAT)).length, 1, '已停止的属性页 changed 不再取属性');
   finishAll(ctx);
-  assert.deepEqual(shown(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse']);
   assert.equal(text(page.info), '', '退场结束时释放');
 });
 
@@ -133,8 +134,10 @@ test('场景：图标视图子目录里的预览，一次退几级（steps 为 2
   await flush();
   const added = ctx.page.motion.animations.slice(before);
   assert.equal(added.length, 2, '预览滑出加网格移回：只有这一对');
-  assert.deepEqual(added.map(anim => anim.el), [page.preview, page.grid]);
-  assert.deepEqual(operable(page), ['grid']);
+  assert.deepEqual(added.map(anim => anim.el), [page.preview, page.browse]);
+  assert.deepEqual(operable(page), ['browse']);
+  assert.equal(page.grid.classList.contains('off'), false, '内层是图标视图');
+  assert.equal(page.tree.classList.contains('off'), true);
   assert.equal(host.calls.back.at(-1).join('/'), 'A', '退到 dir：声明的路径只剩根目录名');
   assert.ok(cell(page, 'x.txt') && cell(page, 'inner'), '网格直接显示目标层（dir）');
   finishAll(ctx);
@@ -157,7 +160,7 @@ test('场景：退场还没结束又打开（同一个文件）：上一个动�
   const fresh = live(ctx);
   assert.equal(fresh.length, 2, '新的一对');
   assert.deepEqual(operable(page), ['preview']);
-  assert.deepEqual(shown(page), ['tree', 'preview']);
+  assert.deepEqual(shown(page), ['browse', 'preview']);
   assert.equal(host.heldReads.length, 2, '重新读');
   assert.equal(page.preview.find(node => node.classList.contains('pmeta'))[0].textContent, '读取中…', '旧动画的释放没有擦掉新打开的状态（比对打开次数）');
   await (async () => { host.release(first); await flush(); })();
@@ -202,7 +205,7 @@ test('场景：过渡中换会话：动画立即结束，停止并立即释放�
   await flush();
   assert.ok(running.every(anim => anim.canceled), '动画结束');
   assert.equal(ctx.page.motion.animations.length, total, '换会话不播');
-  assert.deepEqual(shown(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse']);
   assert.equal(previewText(page), '', '立即释放');
 });
 
@@ -214,7 +217,7 @@ test('场景：过渡中换根目录：动画立即结束，意图清掉', async
   page.post({ type: 'root', generation: host.generation, state: 'ready', path: '/other' });
   await flush();
   assert.ok(running.every(anim => anim.canceled));
-  assert.deepEqual(shown(page), ['tree'], '换根目录：回到浏览区');
+  assert.deepEqual(shown(page), ['browse'], '换根目录：回到浏览区');
   assert.equal(live(ctx).length, 0);
   assert.equal(previewText(page), '');
 });
@@ -231,7 +234,7 @@ test('场景：过渡中 changed、刷新：过渡不变，已停止的那层不
   await flush();
   assert.ok(running.every(anim => !anim.canceled && !anim.finished), '过渡没被打断');
   assert.equal(host.reads().length, 1);
-  assert.deepEqual(shown(page), ['tree', 'preview']);
+  assert.deepEqual(shown(page), ['browse', 'preview']);
 });
 
 // ---- 其余规则 ----
@@ -247,8 +250,8 @@ test('快速打开再返回、连续返回：不留下两层都可见', async t 
     await flush();
   }
   finishAll(ctx);
-  assert.deepEqual(shown(page), ['tree']);
-  assert.deepEqual(operable(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse']);
+  assert.deepEqual(operable(page), ['browse']);
   assert.equal(previewText(page), '');
   assert.equal(live(ctx).length, 0);
 });
@@ -381,7 +384,7 @@ test('减弱动态效果：没有任何过渡，面板直接切换，停止和�
   host.back(1);
   await flush();
   assert.equal(ctx.page.motion.animations.length, 0);
-  assert.deepEqual(shown(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse']);
   assert.equal(previewText(page), '', '没有退场：立即释放');
 });
 
@@ -487,10 +490,10 @@ test('滑动期间收到 back 事件照常处理：上一个动画先结束到�
   await flush();
   assert.ok(opening.every(anim => anim.canceled), '打开的动画结束');
   assert.equal(moving(), true, '新的返回在播');
-  assert.deepEqual(operable(ctx.page), ['tree']);
+  assert.deepEqual(operable(ctx.page), ['browse']);
   finishAll(ctx);
   assert.equal(moving(), false);
-  assert.deepEqual(shown(ctx.page), ['tree']);
+  assert.deepEqual(shown(ctx.page), ['browse']);
 });
 
 // ---- 动画被取消（浏览器自己取消只触发 cancel，不触发 finish）----
@@ -504,12 +507,12 @@ test('取消一条动画、另一条正常完成：过渡结束，.moving 去掉
   const [first, second] = live(ctx);
   first.cancel();
   assert.equal(moving(), false);
-  assert.deepEqual(shown(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse']);
   assert.equal(previewText(page), '', '释放');
   assert.ok(second.canceled, '其余动画被结束');
   second.finish(); // 迟到的 finish：什么都不做
   assert.equal(moving(), false);
-  assert.deepEqual(shown(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse']);
 });
 
 test('两条都被取消：只结束一次，释放一次', async t => {
@@ -525,7 +528,7 @@ test('两条都被取消：只结束一次，释放一次', async t => {
   body.replaceChildren = (...nodes) => { releases++; return real(...nodes); };
   for (const anim of live(ctx)) anim.cancel();
   assert.equal(moving(), false);
-  assert.deepEqual(shown(page), ['tree']);
+  assert.deepEqual(shown(page), ['browse']);
   assert.equal(releases, 1, '释放只执行一次');
 });
 

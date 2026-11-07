@@ -54,13 +54,35 @@ p { margin: 0; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [hidden] { display: none !important; }
 
-/* 面板（目录树、图标、预览、说明、属性页）叠在同一处，只切可见性：隐藏的树保留滚动位置，切换不改变布局。 */
+/* 面板（目录树、图标、预览、说明、属性页）叠在同一处，只切可见性：隐藏的树保留滚动位置，切换不改变布局。
+   两级：外层是层（#browse、#preview、#notice、#info），#browse 里再叠三个面板（目录树、图标、搜索结果），搜索框在它们上面。 */
 #stage { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; } /* 裁掉层级过渡时横向溢出的那一层；菜单、提示是它的兄弟节点，不受裁切 */
 .pane { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; padding-bottom: var(--safe-bottom); }
 .pane.off { visibility: hidden; pointer-events: none; }
 /* iPhone 层级切换（第 17.6 节）：深的一层（预览、属性页）永远在上，打开时它滑入盖住浅层，返回时它滑出露出浅层。
    .layer 只在过渡期间加：两层都要不透明，否则透出对面；.leaving 是离开的那一层，不接指针，点在它上面等于点在下面的目标页。 */
 #preview, #info { z-index: 1; }
+.browse { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; } /* 底部的安全区归里面的三个面板 */
+#panes { position: relative; flex: 1 1 auto; min-height: 0; }
+/* 搜索框（第 18.3 节）：常驻在 #browse 顶上，不随列表滚动。字号不小于 16 点：iPhone 上小于 16 点聚焦时页面会放大。颜色只用 --coda-*。 */
+.searchbar { flex: none; padding: 6px 8px; }
+.sfield { display: flex; align-items: center; gap: 6px; padding: 0 8px; border-radius: var(--coda-radius, 6px); background: var(--coda-fill, var(--hover)); }
+.sico { flex: none; display: grid; place-items: center; color: var(--coda-secondary, #6e6e73); }
+.sico svg { display: block; }
+.sfield input { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; font-size: max(16px, 1em); -webkit-user-select: text; user-select: text; -webkit-appearance: none; appearance: none; }
+.sfield input::placeholder { color: var(--coda-tertiary, #a1a1a6); }
+.sfield input::-webkit-search-cancel-button, .sfield input::-webkit-search-decoration { -webkit-appearance: none; display: none; }
+.sfield:focus-within { outline: 2px solid var(--coda-accent, #0a84ff); outline-offset: -1px; }
+button.sclear { width: 22px; height: 22px; }
+.coda-ios .sfield input { height: 36px; }
+.coda-ios .searchbar { padding: 8px 16px 4px; }
+/* 结果面板：状态行一行，下面是结果列表（复用目录树的行和虚拟列表）。结果行的名字里匹配的部分加粗。 */
+.search { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.sstatus { flex: none; display: flex; align-items: center; gap: 8px; min-height: calc(var(--row-h) * .7); padding: 2px 16px; font-size: .85em; }
+.shits { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; padding-bottom: var(--safe-bottom); container: tree / inline-size; }
+.shits:focus { outline: none; }
+.shits:focus-visible { outline: 1px solid var(--coda-accent, #0a84ff); outline-offset: -2px; }
+.row .name b { font-weight: 700; }
 .pane.layer { background: var(--coda-background, #fff); }
 .pane.leaving { pointer-events: none; }
 /* 滑动期间（约 280 毫秒）整页不响应点按；app.mjs 在过渡开始和结束（含强制结束）时加上和去掉。 */

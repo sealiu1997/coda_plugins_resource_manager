@@ -93,11 +93,11 @@ test('真实模块：iPhone 单击文件在页内预览，声明的路径多一�
   assert.deepEqual(first.calls.back.at(-1), ['repo', 'sub'], '多一级：要回到的 sub');
 
   first.events.back({ steps: 1 });
-  await waitFor(() => !first.page.grid.classList.contains('off'), '一次 back 关预览');
+  await waitFor(() => !first.page.browse.classList.contains('off'), '一次 back 关预览');
   assert.deepEqual(first.calls.back.at(-1), ['repo'], '路径回到打开前');
   assert.ok(cell(first.page, 'inner.txt').classList.contains('sel'), '选中留着');
   cell(first.page, 'inner.txt').dispatch('click');
-  await waitFor(() => first.page.grid.classList.contains('off'), '再打开');
+  await waitFor(() => first.page.browse.classList.contains('off'), '再打开');
   first.events.back({ steps: 2 });
   await waitFor(() => names(first.page).includes('sub'), 'steps 为 2：关预览并退到根目录');
   assert.deepEqual(first.calls.back.at(-1), []);

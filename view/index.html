@@ -9,8 +9,14 @@
 <body>
   <div id="bar" class="bar" hidden></div>
   <main id="stage">
-    <div id="tree" class="pane tree" role="tree"></div>
-    <div id="grid" class="pane grid"></div>
+    <div id="browse" class="pane browse">
+      <div id="searchbar" class="searchbar" role="search"></div>
+      <div id="panes">
+        <div id="tree" class="pane tree" role="tree"></div>
+        <div id="grid" class="pane grid"></div>
+        <div id="search" class="pane search"></div>
+      </div>
+    </div>
     <div id="preview" class="pane preview" tabindex="-1"></div>
     <div id="notice" class="pane empty secondary"></div>
     <div id="info" class="pane preview info"></div>

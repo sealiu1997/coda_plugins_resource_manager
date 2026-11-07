@@ -15,13 +15,14 @@ export const onMotionChange = fn => globalThis.matchMedia?.(QUERY)?.addEventList
 
 // 点到的可按元素：{ node, key }。key 是列表里一行的身份（视图、种类、路径），按钮没有（按节点记）。
 // 可按：没有 disabled 的 button、.row.entry、.row.more、.row.retry、.cell、.gnote.more、.gnote.retry；.dead 的条目也算（它们能选中、能右键）。
+// 列表的行有三种画面：目录树（tree）、搜索结果（search，行上带 .hit）、图标视图（grid），身份里记哪一种，同一路径在不同画面里不是同一个按下。
 function targetOf(event) {
   const node = event.target?.closest?.('.row, .cell, .gnote, button');
   if (!node) return null;
   if (node.tagName === 'BUTTON') return node.disabled || node.getAttribute('disabled') !== null ? null : { node, key: null };
   const has = name => node.classList.contains(name), path = node.dataset.path;
   const kind = has('cell') || has('entry') ? 'entry' : has('retry') ? 'retry' : has('more') ? 'more' : null;
-  return kind === null || path === undefined ? null : { node, key: `${has('row') ? 'tree' : 'grid'}\n${kind}\n${path}` };
+  return kind === null || path === undefined ? null : { node, key: `${has('hit') ? 'search' : has('row') ? 'tree' : 'grid'}\n${kind}\n${path}` };
 }
 
 // identity()：会话和根目录的身份（model.session、model.scope 拼成的字符串）；换了就不是同一个按下。

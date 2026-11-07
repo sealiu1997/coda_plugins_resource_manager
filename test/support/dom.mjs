@@ -56,7 +56,9 @@ export class Element extends Emitter {
   getAttribute(name) { return this.attributes.get(name) ?? null; }
 
   // 焦点：和浏览器一样，聚焦的元素被摘掉后 activeElement 回到没有。
-  focus() { globalThis.document.activeElement = this; }
+  focus() { if (!this.inert) globalThis.document.activeElement = this; }
+  blur() { if (globalThis.document.activeElement === this) globalThis.document.activeElement = null; }
+  select() { this.selected = true; }
   replaceChildren(...nodes) {
     for (const child of this.children) { if (child.contains?.(globalThis.document?.activeElement)) globalThis.document.activeElement = null; child.parent = null; }
     this.children = [];
@@ -112,8 +114,10 @@ let instance = 0;
 // motion：给了就装上 matchMedia（prefers-reduced-motion，motion.reduce 为真时「减弱」）和 Element.prototype.animate 的桩，页面才会播动画；
 // 不给时没有 matchMedia，页面按「减弱动态效果」处理（旧测试都不受动画影响）。返回的 page.motion：{ reduce, animations, set(reduce) }，
 // animations 是所有 animate 调用（{ el, frames, options, finished, canceled, finish() }），set 改设置并触发 change。
-export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'tree', 'grid', 'preview', 'notice', 'menu', 'submenu', 'hint', 'info'], motion = null } = {}) {
+export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'browse', 'searchbar', 'tree', 'grid', 'search', 'preview', 'notice', 'menu', 'submenu', 'hint', 'info'], motion = null } = {}) {
   const elements = Object.fromEntries(ids.map(id => [id, new Element('div')]));
+  // 和 index.html 一样：#browse 里是搜索框和三个面板（树页以外的页面没有这些 id）。
+  if (elements.browse) elements.browse.append(...['searchbar', 'tree', 'grid', 'search'].map(id => elements[id]));
   elements.bar.hidden = true;
   for (const id of ['menu', 'submenu', 'hint']) if (elements[id]) elements[id].hidden = true;
   const windowEmitter = new Emitter(), documentEmitter = new Emitter(), resizers = [];
