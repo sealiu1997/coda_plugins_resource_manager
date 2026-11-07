@@ -654,7 +654,7 @@ try {
   check('Mac：预览头部最左边是「返回」图标按钮，尺寸和其他图标按钮一致', back.label === '返回/返回' && back.icon && back.leftmost && back.w === back.ow && back.h === back.oh && back.w === 28, JSON.stringify(back));
   await send('Emulation.setFocusEmulationEnabled', { enabled: true }); // 无头 Chrome 的页面默认没有焦点，document.hasFocus() 为假
   await evaluate(`(() => { const b = document.querySelector('.phead').firstElementChild; b.focus(); b.click(); })()`); // 键盘激活时焦点在按钮上
-  await until(`!document.getElementById('preview').matches(':not(.off)') && !document.getElementById('tree').classList.contains('off')`, '回到目录树');
+  await until(`!document.getElementById('preview').matches(':not(.off)') && !document.getElementById('browse').classList.contains('off')`, '回到目录树');
   check('Mac：点返回回到目录树，焦点在目录树', await evaluate(`document.querySelectorAll('.row.entry').length > 0 && document.activeElement === document.getElementById('tree')`));
   const after = await evaluate(`({ src: document.querySelector('.row.dir[aria-expanded="true"]')?.textContent, child: [...document.querySelectorAll('.row')].some(r => r.textContent.includes('app.js')), top: document.getElementById('tree').scrollTop })`);
   check('Mac：返回后展开的目录、它的子项和滚动位置都在', kept > 0 && after.src?.includes('src') && after.child && after.top === kept, `${JSON.stringify(after)}，滚动值 ${kept}`);
@@ -2027,8 +2027,8 @@ try {
   const release = () => evaluateLive(`(() => { window.__hold = null; document.getAnimations().forEach(a => a.finish()); return true; })()`);
   const probePanes = `(() => { const q = id => document.getElementById(id), cls = id => [...q(id).classList].join(' ');
     const off = id => q(id).classList.contains('off'), r = id => q(id).getBoundingClientRect();
-    return { tree: { off: off('tree'), inert: q('tree').inert, cls: cls('tree'), left: r('tree').left, filter: getComputedStyle(q('tree')).filter, bg: getComputedStyle(q('tree')).backgroundColor, rows: q('tree').querySelectorAll('.row').length },
-      preview: { off: off('preview'), inert: q('preview').inert, cls: cls('preview'), left: r('preview').left, width: r('preview').width, z: Number(getComputedStyle(q('preview')).zIndex) || 0, treeZ: Number(getComputedStyle(q('tree')).zIndex) || 0, bg: getComputedStyle(q('preview')).backgroundColor, text: q('preview').querySelector('.text')?.textContent.length ?? 0, name: q('preview').querySelector('.pname')?.textContent ?? null },
+    return { tree: { off: off('browse'), inert: q('browse').inert, cls: cls('browse'), left: r('browse').left, filter: getComputedStyle(q('browse')).filter, bg: getComputedStyle(q('browse')).backgroundColor, rows: q('tree').querySelectorAll('.row').length }, // 浅层是 #browse（第 18.3 节两级层），树是它里面的面板
+      preview: { off: off('preview'), inert: q('preview').inert, cls: cls('preview'), left: r('preview').left, width: r('preview').width, z: Number(getComputedStyle(q('preview')).zIndex) || 0, treeZ: Number(getComputedStyle(q('browse')).zIndex) || 0, bg: getComputedStyle(q('preview')).backgroundColor, text: q('preview').querySelector('.text')?.textContent.length ?? 0, name: q('preview').querySelector('.pname')?.textContent ?? null },
       anims: document.getAnimations().length }; })()`;
   // 滑动期间整页不响应点按：真实触摸点这几个位置，什么都不触发（不发请求、不换预览、不选中、没有 .pressed、没开菜单）。
   const swipeSnap = `({ log: window.__rpc.log.length, name: document.querySelector('#preview .pname')?.textContent ?? null, sel: document.querySelectorAll('.row.sel').length, menu: !document.getElementById('menu').hidden, moving: document.documentElement.classList.contains('moving') })`;
@@ -2059,7 +2059,7 @@ try {
   check('iPhone 打开的中途：离开的目录树 inert 且 .leaving', mid.tree.inert && /leaving/.test(mid.tree.cls), JSON.stringify({ tree: mid.tree.inert }));
   await shotKeep('ios-open-mid');
   await release();
-  await until(`document.getElementById('tree').classList.contains('off')`, '打开：过渡结束（finish 事件是异步的，等页面处理完它）');
+  await until(`document.getElementById('browse').classList.contains('off')`, '打开：过渡结束（finish 事件是异步的，等页面处理完它）');
   let done = await evaluate(probePanes);
   const moreAt = await spotOf(`document.querySelector('#preview .phead button[aria-label="更多"]')`, 'top');
   await touch('touchStart', moreAt);
@@ -2127,6 +2127,96 @@ try {
   await send('Emulation.setEmulatedMedia', { features: [] });
   await evaluateLive(`window.__hold = null`);
   }
+  }
+
+  { // ================= 文件名搜索（0.8.0，设计第 18.3、18.8 节）：真实 Chrome 里的搜索框、结果、清空后的浏览状态，两端、深浅色 =================
+  await send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  const q = `document.getElementById('q')`;
+  const centerAt = expr => evaluate(`(() => { const el = ${expr}; const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  const click = async at => {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'left', buttons: 1, clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'left', buttons: 0, clickCount: 1 });
+  };
+  const cdpKey = async (key, code, windowsVirtualKeyCode, modifiers = 0) => {
+    const base = { key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode, modifiers };
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+  };
+  const rowOf = name => `[...document.querySelectorAll('#tree .row.entry')].find(r => r.querySelector('.name').textContent === ${JSON.stringify(name)})`;
+  const browseState = `({ top: document.getElementById('tree').scrollTop, open: [...document.querySelectorAll('#tree .row.dir[aria-expanded="true"] .name')].map(x => x.textContent).join('|'), sel: [...document.querySelectorAll('#tree .row.sel .name')].map(x => x.textContent).join('|') })`;
+  const hitPaths = `[...document.querySelectorAll('#search .row.entry')].map(r => r.dataset.path)`;
+  const statusText = `document.querySelector('#search .sstatus-text').textContent`;
+  // 输入搜索词，等到对应这个词的结果画出来：等「状态行不是正在搜索」且第一条结果的路径含 first（词不同，结果的路径也不同，所以不会被上一轮的结果骗过去）。
+  async function typeQuery(text, first) {
+    await evaluate(`${q}.focus(); ${q}.select()`);
+    await send('Input.insertText', { text });
+    await until(`document.getElementById('search') && !document.getElementById('search').classList.contains('off') && ${statusText} !== '正在搜索…' && ${hitPaths}.some(p => p.includes(${JSON.stringify(first)}))`, `搜「${text}」的结果画出来`);
+  }
+
+  for (const [size, platform] of [['mac', 'mac'], ['portrait', 'ios']]) {
+    const side = platform === 'mac' ? 'Mac' : 'iPhone';
+    await open(size, platform, 'light');
+    // 搜索之前的浏览状态：展开 src、选中 package.json、滚到 40。
+    await evaluate(`window.__open(${rowOf('src')})`);
+    await until(`${rowOf('app.js')} !== undefined`, 'src 展开');
+    if (platform === 'mac') { await click(await centerAt(rowOf('package.json'))); await until(`document.querySelector('#tree .row.sel .name')?.textContent === 'package.json'`, '选中 package.json'); }
+    await evaluate(`(() => { const t = document.getElementById('tree'); t.scrollTop = 40; t.dispatchEvent(new Event('scroll')); })()`);
+    await frames();
+    const before = await evaluate(browseState);
+    const barTop = await evaluate(`document.getElementById('searchbar').getBoundingClientRect().top`);
+
+    if (platform === 'mac') {
+      await evaluate(`document.activeElement.blur()`);
+      await cdpKey('f', 'KeyF', 70, 4); // ⌘F
+      await until(`document.activeElement === ${q}`, `${side}：⌘F 聚焦搜索框`);
+      check(`搜索 ${side}：⌘F 聚焦搜索框并选中里面的字，浏览区不跟着滚`, await evaluate(`document.activeElement === ${q}`));
+    }
+    await typeQuery('app', 'app.');
+    const results = await evaluate(`({ paths: ${hitPaths}, status: ${statusText}, bold: [...document.querySelectorAll('#search .row.entry .name b')].map(b => b.textContent), places: [...document.querySelectorAll('#search .row.entry')].map(r => (r.querySelector('${platform === 'mac' ? '.meta' : '.sub'}')?.textContent ?? '')) })`);
+    check(`搜索 ${side}：结果有 src/app.js 和 assets/app.ts，匹配的部分加粗，每行带所在目录，状态行「共 N 个」`,
+      results.paths.includes('src/app.js') && results.paths.includes('assets/app.ts') && results.bold.length === results.paths.length && results.bold.every(b => b.toLowerCase() === 'app') && results.places.includes('src') && /^共 \d+ 个( · \d+ 项读不到)?$/.test(results.status), JSON.stringify(results)); // 夹具里有一个读不到的目录（locked），所以状态行会带「1 项读不到」
+    // 搜索框和状态行不随结果滚动
+    const fixed = await evaluate(`(() => { const list = document.querySelector('#search .shits'), bar = document.getElementById('searchbar'), st = document.querySelector('#search .sstatus'), a = bar.getBoundingClientRect().top, b = st.getBoundingClientRect().top;
+      list.scrollTop = list.scrollHeight; list.dispatchEvent(new Event('scroll')); return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r({ bar: bar.getBoundingClientRect().top === a, status: st.getBoundingClientRect().top === b })))); })()`);
+    check(`搜索 ${side}：搜索框和状态行不随结果滚动`, fixed.bar && fixed.status, JSON.stringify(fixed));
+    check(`搜索 ${side}：搜索框字号不小于 16 点（iPhone 聚焦时页面不放大）`, await evaluate(`parseFloat(getComputedStyle(${q}).fontSize) >= 16`), await evaluate(`getComputedStyle(${q}).fontSize`));
+    check(`搜索 ${side}：搜索框在顶上、面板在它下面占满剩余高度`, await evaluate(`(() => { const bar = document.getElementById('searchbar').getBoundingClientRect(), pane = document.getElementById('search').getBoundingClientRect(), stage = document.getElementById('stage').getBoundingClientRect();
+      return Math.abs(bar.top - stage.top) < 1 && Math.abs(pane.top - bar.bottom) < 1 && Math.abs(pane.bottom - stage.bottom) < 1; })()`));
+    for (const theme of ['light', 'dark']) {
+      if (theme === 'dark') { await send('Emulation.setEmulatedMedia', { features: [] }); await evaluate(`window.postMessage({ harness: 'theme', kind: 'dark' }, '*')`); await frames(); }
+      await shoot(`search-${platform}-${theme}`);
+    }
+    await evaluate(`window.postMessage({ harness: 'theme', kind: 'light' }, '*')`);
+    // 清空：回到搜索之前的样子（展开、滚动、选中都一样）
+    await evaluate(`(() => { ${q}.focus(); return true; })()`);
+    if (platform === 'mac') { await cdpKey('Escape', 'Escape', 27); }
+    else await click(await centerAt(`document.querySelector('.sclear')`));
+    await until(`document.getElementById('search').classList.contains('off') && ${q}.value === ''`, `${side}：清空后回到目录树`);
+    await frames();
+    const after = await evaluate(browseState);
+    check(`搜索 ${side}：清空后目录树的 scrollTop、展开、选中都和搜索之前一样`, after.top === before.top && after.open === before.open && after.sel === before.sel, JSON.stringify({ before, after }));
+    check(`搜索 ${side}：搜索框的位置不因搜索而变`, (await evaluate(`document.getElementById('searchbar').getBoundingClientRect().top`)) === barTop);
+  }
+
+  // 2 万条的 bulk 目录加几层子目录：搜一个名字，等对应轮次的结果画出来
+  await mkdir(join(bulkRoot, 'small', 'deeper', 'deepest'), { recursive: true });
+  await writeFile(join(bulkRoot, 'small', 'deeper', 'deepest', 'needle-final.txt'), 'x');
+  await fetch(`${serverUrl}ctl?action=session:B`);
+  await open('mac', 'mac', 'light', { ready: '.row.entry' });
+  await until(`document.querySelector('#tree .section')?.textContent === 'bulk-project'`, '会话 B 的根目录');
+  const started = Date.now();
+  await typeQuery('item-19999', 'item-19999');
+  const elapsed = Date.now() - started;
+  check(`搜索 bulk（${BULK} 条的目录）：搜 item-19999，结果就一条 bulk/item-19999.txt，状态行「共 1 个」`, await evaluate(`JSON.stringify(${hitPaths}) === '["bulk/item-19999.txt"]' && ${statusText} === '共 1 个'`), await evaluate(`JSON.stringify({ p: ${hitPaths}, s: ${statusText} })`));
+  console.log(`数字（本机无头 Chrome）：${BULK} 条目录里搜名字，从输入到结果画出来 ${elapsed} 毫秒（含 0.3 秒防抖）`);
+  await typeQuery('needle-final', 'needle-final');
+  check('搜索 bulk：几层子目录里的文件也找得到', await evaluate(`JSON.stringify(${hitPaths}) === '["small/deeper/deepest/needle-final.txt"]'`), await evaluate(`JSON.stringify(${hitPaths})`));
+  await typeQuery('item-0', 'item-0');
+  const total500 = `Math.round(parseFloat(document.querySelector('#search .spacer').style.height) / document.querySelector('#search .row.entry').getBoundingClientRect().height)`;
+  check('搜索 bulk：匹配很多时最多 500 条（列表总高度是 500 行），状态行写明', await evaluate(`${total500} === 500 && ${statusText}.startsWith('结果太多，只显示先找到的 500 个')`), await evaluate(`JSON.stringify({ n: ${total500}, s: ${statusText} })`));
+  check('搜索 bulk：500 条画出的节点数有上限（虚拟列表）', await evaluate(`document.querySelectorAll('#search .row.entry').length <= 60`), await evaluate(`document.querySelectorAll('#search .row.entry').length`));
+  await fetch(`${serverUrl}ctl?action=session:A`);
   }
 
   exitCode = failures.length ? 1 : 0;

@@ -738,7 +738,7 @@ function onChanged(data) {
   search.research(); // 搜索期间目录模型照常刷新；有搜索词就重搜，旧结果留到新结果来
 }
 
-const remeasure = () => { tree.remeasure(); grid.remeasure(); };
+const remeasure = () => { tree.remeasure(); grid.remeasure(); hits.remeasure(); };
 remeasure();
 quiet(() => coda.on('theme', remeasure));
 render();
