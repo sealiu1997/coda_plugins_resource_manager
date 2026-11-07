@@ -3,7 +3,7 @@
 // 菜单可以有一层二级菜单（项里写 submenu）。「整次菜单」（current）和「当前层」（layer、fly）分开记：
 // 在面板里切到下一层、退回来，整次菜单还是同一次，但上一层的按钮不再响应。第二个面板（sub）也算菜单里面，点它不是点外面。
 import { icon } from './icons.mjs';
-import { reducedMotion } from './press.mjs';
+import { onMotionChange, reducedMotion } from './press.mjs';
 
 const CLOSE_MS = 150; // 鼠标移到别的项之后，侧面板收起前等多久：斜着移过去不会误关
 const GAP = 2; // 侧面板和根面板之间留的空隙
@@ -40,6 +40,7 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
   }
   // 停止开着的动画：没有 fill，取消就是停在终点；根层的出现动画还没播完就换层、或关闭时调用。
   function settle() { const mine = playing; playing = null; mine?.cancel(); }
+  onMotionChange(settle); // 设置在动画进行中变成减弱：结束到终点
 
   // items：[{ label, run, checked?, radio? } | { label, submenu: { items } } | { separator: true } | { heading }]，checked 不是 undefined 的带对勾（radio 的是单选，其余是开关）；
   // 分隔线和小标题不是菜单项，不可点。hover：这一层的项在鼠标移上去时管侧面板（只有根层，且 flyout）。

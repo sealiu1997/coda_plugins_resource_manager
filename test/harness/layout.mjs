@@ -2030,39 +2030,64 @@ try {
     return { tree: { off: off('tree'), inert: q('tree').inert, cls: cls('tree'), left: r('tree').left, filter: getComputedStyle(q('tree')).filter, bg: getComputedStyle(q('tree')).backgroundColor, rows: q('tree').querySelectorAll('.row').length },
       preview: { off: off('preview'), inert: q('preview').inert, cls: cls('preview'), left: r('preview').left, width: r('preview').width, z: Number(getComputedStyle(q('preview')).zIndex) || 0, treeZ: Number(getComputedStyle(q('tree')).zIndex) || 0, bg: getComputedStyle(q('preview')).backgroundColor, text: q('preview').querySelector('.text')?.textContent.length ?? 0, name: q('preview').querySelector('.pname')?.textContent ?? null },
       anims: document.getAnimations().length }; })()`;
-  const hit = (x, y) => evaluateLive(`(() => { const e = document.elementFromPoint(${x}, ${y}); return { preview: !!e?.closest('#preview'), tree: !!e?.closest('#tree'), row: !!e?.closest('#tree .row'), tag: e?.tagName ?? null }; })()`);
+  // 滑动期间整页不响应点按：真实触摸点这几个位置，什么都不触发（不发请求、不换预览、不选中、没有 .pressed、没开菜单）。
+  const swipeSnap = `({ log: window.__rpc.log.length, name: document.querySelector('#preview .pname')?.textContent ?? null, sel: document.querySelectorAll('.row.sel').length, menu: !document.getElementById('menu').hidden, moving: document.documentElement.classList.contains('moving') })`;
+  async function tapsIgnored(label, points) {
+    const before = await evaluateLive(swipeSnap);
+    await evaluateLive(recorder);
+    for (const at of points) { await touch('touchStart', at); await touch('touchEnd', at); }
+    await untilLive(`__rec.frames.length >= 14`, `${label}：记录了足够多的帧`);
+    await evaluateLive(framesAfter);
+    const after = await evaluateLive(swipeSnap), spans = await evaluateLive(spansAfter), pressedNowLive = await evaluateLive(pressedNow);
+    check(`${label}：滑动期间（html.moving）整页不响应点按——不发请求、不换预览、不选中、没有 .pressed、没开菜单`,
+      before.moving && after.moving && after.log === before.log && after.name === before.name && after.sel === before.sel && !after.menu && spans.length === 0 && !pressedNowLive, JSON.stringify({ before, after, spans }));
+  }
   const opaque = bg => /^rgb\(/.test(bg); // rgb(...) 不带透明度，rgba(0, 0, 0, 0) 才是透明
   await open('portrait', 'ios', 'light');
   await evaluate(noOpens);
   await holdAnims(0.3);
-  await realClick(await centerOf(rowBy('notes.txt'), '.name'));
+  const openAt = await spotOf(rowBy('notes.txt'), 'edge');
+  await touch('touchStart', openAt);
+  await touch('touchEnd', openAt);
   await untilLive(`document.getElementById('preview').querySelector('.pname')?.textContent === 'notes.txt'`, '打开文件：预览头部出现');
   let mid = await evaluateLive(probePanes);
   const yMid = 400;
   check('iPhone 打开的中途：两层都在、都不透底（背景不透明）、浅层向左移并变暗、深层（预览）从右边滑入盖在上面，旧页内容还在',
     !mid.tree.off && !mid.preview.off && opaque(mid.tree.bg) && opaque(mid.preview.bg) && mid.tree.left < 0 && mid.tree.filter !== 'none' && mid.preview.left > 0 && mid.preview.left < mid.preview.width && mid.tree.rows > 0 && /layer/.test(mid.tree.cls) && /layer/.test(mid.preview.cls), JSON.stringify(mid));
-  const coveredHit = await hit(mid.preview.left + 12, yMid), openHit = mid.preview.left > 24 ? await hit(mid.preview.left - 12, yMid) : null;
-  check('iPhone 打开的中途：被预览盖住的地方 elementFromPoint 落在预览；预览左边露出的地方不落在正在离开的目录树上（点它不触发条目）', coveredHit.preview && openHit !== null && !openHit.tree && !openHit.preview, JSON.stringify({ coveredHit, openHit }));
-  check('iPhone 打开的中途：目标页（预览）能操作，离开的目录树 inert', mid.tree.inert && !mid.preview.inert && /leaving/.test(mid.tree.cls), JSON.stringify({ tree: mid.tree.inert, preview: mid.preview.inert }));
+  await tapsIgnored('iPhone 打开的中途', [{ x: mid.preview.left + 12, y: yMid }, ...(mid.preview.left > 24 ? [{ x: mid.preview.left - 12, y: yMid }] : [])]);
+  check('iPhone 打开的中途：离开的目录树 inert 且 .leaving', mid.tree.inert && /leaving/.test(mid.tree.cls), JSON.stringify({ tree: mid.tree.inert }));
   await shotKeep('ios-open-mid');
   await release();
   await until(`document.getElementById('tree').classList.contains('off')`, '打开：过渡结束（finish 事件是异步的，等页面处理完它）');
   let done = await evaluate(probePanes);
+  const moreAt = await spotOf(`document.querySelector('#preview .phead button[aria-label="更多"]')`, 'top');
+  await touch('touchStart', moreAt);
+  await touch('touchEnd', moreAt);
+  await until(`!document.getElementById('menu').hidden`, '打开结束后：目标页（预览）能点：头部 ⋯ 打开菜单');
+  check('iPhone 打开结束后（html.moving 已去掉）：目标页能点，同一位置的点按生效', await evaluate(`!document.documentElement.classList.contains('moving')`));
+  await closeMenu();
   check('iPhone 打开结束后：只有预览一层可见，目录树 .off 且 inert，没有 layer、leaving 残留，没有动画', done.tree.off && done.tree.inert && !done.preview.off && !done.preview.inert && !/layer|leaving/.test(done.tree.cls + done.preview.cls) && done.anims === 0, JSON.stringify(done));
   await evaluateLive(`window.__hold = 0.3`);
   await backEvent();
   await untilLive(`document.getAnimations().length > 0`, '返回：过渡开始');
   mid = await evaluateLive(probePanes);
-  const popCovered = await hit(mid.preview.left + 12, yMid), popExposed = mid.preview.left > 24 ? await hit(mid.preview.left - 12, yMid) : null;
-  check('iPhone 返回的中途：预览在上面（层叠更高、背景不透明、盖住重叠的部分）、内容还在不是空白，目录树能操作；点在预览（离开的那层）上落到下面的目录树，不触发预览的东西',
+  await tapsIgnored('iPhone 返回的中途', [{ x: mid.preview.left + 12, y: yMid }, ...(mid.preview.left > 24 ? [{ x: mid.preview.left - 12, y: yMid }] : [])]);
+  check('iPhone 返回的中途：预览在上面（层叠更高、背景不透明、盖住重叠的部分）、内容还在不是空白，预览 inert 且 .leaving',
     !mid.tree.off && !mid.preview.off && opaque(mid.tree.bg) && opaque(mid.preview.bg) && mid.preview.z > mid.preview.treeZ && mid.preview.left < mid.preview.width && mid.preview.text > 0 && mid.preview.name === 'notes.txt' && mid.tree.rows > 0
-    && popCovered.tree && !popCovered.preview && popExposed !== null && popExposed.tree && !popExposed.preview && !mid.tree.inert && mid.preview.inert && /leaving/.test(mid.preview.cls), JSON.stringify({ mid, popCovered, popExposed }));
+    && mid.preview.inert && /leaving/.test(mid.preview.cls), JSON.stringify({ mid }));
   await shotKeep('ios-back-mid');
   await release();
   await until(`document.getElementById('preview').classList.contains('off')`, '返回：过渡结束（finish 事件是异步的，等页面处理完它）');
   done = await evaluate(probePanes);
   check('iPhone 返回结束后：只有目录树可见，预览 .off 且 inert、内容在退场结束时释放，没有 layer、leaving 残留', !done.tree.off && !done.tree.inert && done.preview.off && done.preview.inert && done.preview.text === 0 && !/layer|leaving/.test(done.tree.cls + done.preview.cls) && done.anims === 0, JSON.stringify(done));
   await evaluateLive(`window.__hold = null`);
+  const rowAt = await spotOf(rowBy('notes.txt'), 'edge');
+  await touch('touchStart', rowAt);
+  await touch('touchEnd', rowAt);
+  await until(previewOn, '返回结束后：目录树能点：轻点条目打开预览');
+  check('iPhone 返回结束后（html.moving 已去掉）：目录树能点，同一位置的点按生效', true);
+  await backEvent();
+  await until(`document.getElementById('preview').classList.contains('off')`, '返回结束后：再返回');
 
   // ---- 减弱动态效果：没有动画和过渡，按下反馈照常；动画进行中改设置：结束到终点 ----
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });

@@ -435,3 +435,60 @@ test('意图只记一个：goBack 退预览加一层目录时只播预览的返�
   finishAll(ctx);
   assert.equal(fades(ctx).length, 0);
 });
+
+// ---- 滑动期间整页不响应点按：页面加 html.moving，CSS 的 pointer-events: none 盖住整页（真实的点按在 harness 里用触摸验证）----
+const moving = () => globalThis.document.documentElement.classList.contains('moving');
+
+test('滑动期间（打开、返回都算）html 带 .moving，播完去掉', async t => {
+  const ctx = await start(t);
+  assert.equal(moving(), false);
+  await tap(ctx, 'a.txt');
+  assert.equal(moving(), true, '打开的滑动期间');
+  finishAll(ctx);
+  assert.equal(moving(), false, '结束后目标页能点');
+  ctx.host.back(1);
+  await flush();
+  assert.equal(moving(), true, '返回的滑动期间');
+  finishAll(ctx);
+  assert.equal(moving(), false);
+});
+
+test('强制结束也去掉 .moving：又打开、换会话、换根目录、resize、设置改成减弱', async t => {
+  const cases = {
+    又打开: async ({ host, page }, ctx) => { finishAll(ctx); host.back(1); await flush(); await tap(ctx, 'b.txt'); assert.equal(moving(), true, '新的滑动'); finishAll(ctx); },
+    换会话: async ({ host }) => host.session('s2', '/B'),
+    换根目录: async ({ page, host }) => { page.post({ type: 'root', generation: host.generation, state: 'ready', path: '/other' }); await flush(); },
+    resize: async () => globalThis.window.emit({ type: 'resize' }),
+    减弱: async ({ page }) => page.motion.set(true),
+  };
+  for (const [name, force] of Object.entries(cases)) {
+    const ctx = await start(t);
+    await tap(ctx, 'a.txt');
+    assert.equal(moving(), true, `${name}：滑动中`);
+    await force(ctx, ctx);
+    await flush();
+    assert.equal(moving(), false, `${name}：强制结束后去掉`);
+  }
+});
+
+test('目录淡入期间页面照常能点（不加 .moving）', async t => {
+  const ctx = await start(t, { state: stateOf(record(), 'icons') });
+  cell(ctx.page, 'dir').dispatch('click');
+  await flush();
+  assert.equal(fades(ctx).length, 1);
+  assert.equal(moving(), false);
+});
+
+test('滑动期间收到 back 事件照常处理：上一个动画先结束到终点，再按新的返回处理', async t => {
+  const ctx = await start(t);
+  await tap(ctx, 'a.txt');
+  const opening = live(ctx);
+  ctx.host.back(1);
+  await flush();
+  assert.ok(opening.every(anim => anim.canceled), '打开的动画结束');
+  assert.equal(moving(), true, '新的返回在播');
+  assert.deepEqual(operable(ctx.page), ['tree']);
+  finishAll(ctx);
+  assert.equal(moving(), false);
+  assert.deepEqual(shown(ctx.page), ['tree']);
+});

@@ -63,6 +63,8 @@ p { margin: 0; }
 #preview, #info { z-index: 1; }
 .pane.layer { background: var(--coda-background, #fff); }
 .pane.leaving { pointer-events: none; }
+/* 滑动期间（约 280 毫秒）整页不响应点按；app.mjs 在过渡开始和结束（含强制结束）时加上和去掉。 */
+html.moving, html.moving body, html.moving #stage { pointer-events: none; }
 .empty { display: grid; align-content: start; justify-items: center; gap: 6px; padding: 32px 20px; text-align: center; }
 .notice-icon { display: grid; place-items: center; margin-bottom: 6px; color: var(--coda-secondary, #6e6e73); }
 .notice-icon svg { display: block; color: inherit; } /* 说明区的图标不上色 */

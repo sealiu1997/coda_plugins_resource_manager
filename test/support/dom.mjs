@@ -119,7 +119,7 @@ export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'tree'
   const windowEmitter = new Emitter(), documentEmitter = new Emitter(), resizers = [];
   const dom = {
     window: Object.assign(windowEmitter, { coda, innerWidth: 320, innerHeight: 600 }),
-    document: Object.assign(documentEmitter, { getElementById: id => elements[id], createElement: tag => new Element(tag), createElementNS: (_ns, tag) => new Element(tag),
+    document: Object.assign(documentEmitter, { documentElement: new Element('html'), getElementById: id => elements[id], createElement: tag => new Element(tag), createElementNS: (_ns, tag) => new Element(tag),
       // 页面是否持有焦点：测试里把 document.windowBlurred 设成 true 模拟窗口失焦。
       hasFocus: () => !globalThis.document.windowBlurred }),
     innerWidth: 320,

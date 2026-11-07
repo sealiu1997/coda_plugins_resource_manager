@@ -63,6 +63,7 @@ export function mountPress({ identity = () => '', consumed = () => false, doc = 
   }
 
   const on = (type, fn, target = doc, capture = true) => { target.addEventListener(type, fn, capture); return () => target.removeEventListener(type, fn, capture); };
+  onMotionChange(unfade); // 设置在淡出进行中变成减弱：淡出结束到终点；仍按着的反馈保留
   const offs = [
     on('pointerdown', event => {
       if (event.isPrimary === false) return clear(); // 第二根手指
@@ -96,7 +97,9 @@ export function mountPress({ identity = () => '', consumed = () => false, doc = 
   return {
     // 画行时问：这一行是不是正在按下的（会话和根目录、视图、种类、路径都对得上），是就带上 .pressed。
     paint(node, view, kind, path) {
-      if (state?.shown && state.key === `${view}\n${kind}\n${path}` && state.base === identity()) tag(node);
+      if (!state || state.key !== `${view}\n${kind}\n${path}` || state.base !== identity()) return;
+      state.node = node; // 还没亮（触摸等待期间）重画了：show() 要给新节点加，旧节点已经脱离
+      if (state.shown) tag(node);
     },
     // 正在亮着的：{ key }，没有就是 null。测试用。
     current: () => (state?.shown ? { key: state.key } : null),

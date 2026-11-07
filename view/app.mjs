@@ -155,9 +155,12 @@ const note = next => { if (isIOS) intent = next; };
 function endRunning() { running?.end(); }
 function begin(anims, { ids = [], leaving = null, after = [] } = {}) {
   let ended = false, pending = anims.length;
+  const slides = ids.length > 0; // 滑动期间整页不响应点按（同 iOS 原生的导航切换）；目录淡入不算
+  if (slides) document.documentElement?.classList.add('moving');
   const mine = running = { leaving, after, end() {
     if (ended) return;
     ended = true;
+    if (slides) document.documentElement?.classList.remove('moving');
     for (const anim of anims) anim.cancel();
     for (const id of ids) $(id).classList.remove('layer');
     if (running === mine) running = null;

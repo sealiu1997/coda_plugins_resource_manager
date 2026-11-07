@@ -102,3 +102,21 @@ test('没有 matchMedia 的环境按减弱动态效果处理，不播', async t 
   more(ctx.page).dispatch('click');
   assert.ok(visible(ctx.page.menu));
 });
+
+test('根层动画进行中改成减弱动态效果：动画结束到终点', async t => {
+  const ctx = await start(t);
+  more(ctx.page).dispatch('click');
+  const [root] = menuAnims(ctx);
+  ctx.page.motion.set(true);
+  assert.ok(root.canceled);
+});
+
+test('换层的淡入进行中改成减弱动态效果：动画结束到终点', async t => {
+  const ctx = await start(t);
+  more(ctx.page).dispatch('click');
+  item(ctx.page, '显示').dispatch('click');
+  const layer = menuAnims(ctx).at(-1);
+  assert.ok(!layer.canceled);
+  ctx.page.motion.set(true);
+  assert.ok(layer.canceled);
+});

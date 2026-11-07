@@ -278,3 +278,52 @@ test('Mac 页面里的 startMac 也装上按下反馈（同一个入口）', asy
   rowNamed(page, 'a.txt').dispatch('pointerdown', mouse());
   assert.deepEqual(names(page), ['a.txt']);
 });
+
+test('触摸等待显示期间重画：80 毫秒到时新节点亮（旧节点已脱离）', async t => {
+  const { page, host, tick } = await start(t);
+  const old = rowNamed(page, 'a.txt');
+  old.dispatch('pointerdown', touch());
+  tick(20);
+  host.changed();
+  await flush();
+  const fresh = rowNamed(page, 'a.txt');
+  assert.notEqual(fresh, old, '节点换过了');
+  tick(60);
+  assert.ok(fresh.classList.contains('pressed'), '新节点亮');
+  assert.equal(old.classList.contains('pressed'), false);
+});
+
+test('触摸快点：重画后才抬起，补亮在新节点上', async t => {
+  const { page, host, tick } = await start(t);
+  const old = rowNamed(page, 'a.txt');
+  old.dispatch('pointerdown', touch());
+  tick(20);
+  host.changed();
+  await flush();
+  const fresh = rowNamed(page, 'a.txt');
+  fresh.dispatch('pointerup', touch());
+  assert.ok(fresh.classList.contains('pressed'), '抬起时补在新节点上');
+  assert.equal(old.classList.contains('pressed'), false);
+});
+
+test('按下淡出进行中系统改成减弱动态效果：淡出结束到终点，定时器清掉', async t => {
+  const { page, tick } = await start(t);
+  const row = rowNamed(page, 'a.txt');
+  row.dispatch('pointerdown', touch());
+  tick(80);
+  tick(100);
+  row.dispatch('pointerup', touch());
+  assert.ok(row.classList.contains('fade'));
+  page.motion.set(true);
+  assert.equal(row.classList.contains('fade'), false, '淡出结束');
+  assert.equal(names(page).length, 0);
+});
+
+test('仍按着时改成减弱动态效果：反馈保留', async t => {
+  const { page, tick } = await start(t);
+  const row = rowNamed(page, 'a.txt');
+  row.dispatch('pointerdown', touch());
+  tick(80);
+  page.motion.set(true);
+  assert.deepEqual(names(page), ['a.txt']);
+});
