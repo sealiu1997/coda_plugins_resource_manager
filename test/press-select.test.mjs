@@ -153,3 +153,16 @@ test('不选中的按下不作废滚动恢复：右键、Control 左键、被菜
     assert.equal(ctx.page.tree.scrollTop, 24 * 20, `${name}：恢复照常`);
   }
 });
+
+test('按在滚动条上不取消选中：目标是滚动容器自己、位置在内容区之外；按在内容区空白仍取消', async t => {
+  const { page } = await startMac(t);
+  down(rowNamed(page, 'a.txt'));
+  Object.assign(page.tree, { clientWidth: 285 });
+  down(page.tree, { offsetX: 290, offsetY: 40 });
+  assert.deepEqual(selectedRows(page), ['a.txt'], '竖向滚动条');
+  Object.assign(page.tree, { clientHeight: 100 });
+  down(page.tree, { offsetX: 40, offsetY: 105 });
+  assert.deepEqual(selectedRows(page), ['a.txt'], '横向滚动条');
+  down(page.tree, { offsetX: 40, offsetY: 40 });
+  assert.deepEqual(selectedRows(page), [], '内容区空白：取消');
+});

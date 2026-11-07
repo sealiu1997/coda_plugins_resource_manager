@@ -1922,10 +1922,14 @@ try {
   check('Mac：按钮（预览头部、菜单）的光标是箭头，不是手形', await evaluate(`(() => { const b = document.querySelector('#preview .phead button'); return getComputedStyle(b).cursor; })()`) === 'default');
 
   // ---- 快点和滑动（iPhone，触摸）：逐帧记录 .pressed ----
-  const recorder = `(() => { window.__rec = { frames: [], on: true };
+  // 逐帧记录证明画面上出现过；.pressed 实际挂了多久用 MutationObserver 记加上和去掉的时刻（不靠帧数、帧间隔，机器忙时掉帧不影响）。
+  const recorder = `(() => { window.__rec = { frames: [], on: true, spans: [], since: null };
+    const watch = () => { const any = document.querySelector('.pressed') !== null, now = performance.now();
+      if (any && __rec.since === null) __rec.since = now; else if (!any && __rec.since !== null) { __rec.spans.push(now - __rec.since); __rec.since = null; } };
+    new MutationObserver(watch).observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true, childList: true });
     const tick = t => { if (!__rec.on) return; __rec.frames.push({ t, pressed: document.querySelectorAll('.pressed').length, fade: document.querySelectorAll('.fade').length,
       transitions: document.getAnimations().filter(a => a instanceof CSSTransition).length }); requestAnimationFrame(tick); }; requestAnimationFrame(tick); })()`;
-  const framesAfter = `(() => { __rec.on = false; return __rec.frames; })()`;
+  const framesAfter = `(() => { __rec.on = false; return __rec.frames; })()`, spansAfter = `__rec.spans`;
   await touchMode(true);
   await open('portrait', 'ios', 'light');
   await evaluateLive(recorder);
@@ -1934,10 +1938,10 @@ try {
   await touch('touchEnd', tapAt); // 快点：80 毫秒之前就抬起
   await until(`(() => { const f = __rec.frames, first = f.findIndex(x => x.pressed > 0); return first >= 0 && f.slice(first).some(x => x.pressed === 0) && f.at(-1).fade === 0 && f.at(-1).transitions === 0; })()`, '快点：.pressed 出现又去掉、淡出结束');
   const tapFrames = await evaluateLive(framesAfter);
-  const lit = tapFrames.filter(f => f.pressed > 0);
-  check('iPhone 快点：.pressed 在抬起时补上，至少出现在约 100 毫秒内的若干帧；去掉时有淡出（.fade、CSS transition）',
-    lit.length >= 3 && lit.at(-1).t - lit[0].t >= 75 && tapFrames.some(f => f.fade > 0) && tapFrames.some(f => f.transitions > 0),
-    JSON.stringify({ litFrames: lit.length, span: lit.length ? lit.at(-1).t - lit[0].t : 0, fade: tapFrames.some(f => f.fade > 0), transitions: tapFrames.some(f => f.transitions > 0) }));
+  const lit = tapFrames.filter(f => f.pressed > 0), spans = await evaluateLive(spansAfter);
+  check('iPhone 快点：.pressed 在抬起时补上，实际挂了至少 95 毫秒（MutationObserver 记的时刻），画面上出现过；去掉时有淡出（.fade、CSS transition）',
+    spans.length === 1 && spans[0] >= 95 && lit.length >= 1 && tapFrames.some(f => f.fade > 0) && tapFrames.some(f => f.transitions > 0),
+    JSON.stringify({ litFrames: lit.length, spans, fade: tapFrames.some(f => f.fade > 0), transitions: tapFrames.some(f => f.transitions > 0) }));
   await evaluateLive(recorder);
   const swipeAt = await spotOf(rowBy('LICENSE'), 'edge');
   await touch('touchStart', swipeAt);
@@ -1977,6 +1981,18 @@ try {
   await settled('真实双击读文件');
   check('Mac 真实双击：按下时就选中、节点身份不变（dblclick 派发时目标还是那个节点），dblclick 一次，只读了一次，预览打开',
     identityAfterDown && await evaluate(`window.__dbl`) === 1 && await evaluate(`window.__dblMark`) === 'same' && await reqCount('read', 'LICENSE', 0) === readsBefore + 1, JSON.stringify({ identityAfterDown, dbl: await evaluate(`window.__dbl`), mark: await evaluate(`window.__dblMark`) }));
+
+  // ---- Mac 在滚动条上按下不取消选中（真实 CDP 鼠标）----
+  await open('mac', 'mac', 'light');
+  await realClick(await centerOf(rowBy('notes.txt'), '.name'));
+  const bar = await evaluate(`(() => { const t = document.getElementById('tree'), r = t.getBoundingClientRect(); return { width: t.offsetWidth - t.clientWidth, right: r.right, y: r.top + r.height / 2 }; })()`);
+  if (bar.width > 0) {
+    const spot = { x: bar.right - bar.width / 2, y: bar.y };
+    await mousePress('mousePressed', spot);
+    await mousePress('mouseReleased', spot);
+    await frames();
+    check('Mac 真实鼠标按在 #tree 的竖向滚动条上：选中不变（不当作点空白）', await evaluate(`document.querySelector('.row.sel .name')?.textContent`) === 'notes.txt', JSON.stringify(bar));
+  } else console.log('跳过：无头 Chrome 的滚动条是叠加式（宽度 0），点不到滚动条，滚动条上按下的检查只有单元测试');
 
   // ---- 菜单：阴影（两种外观）、iPhone 出现动画 ----
   for (const theme of ['light', 'dark']) {

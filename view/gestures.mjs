@@ -41,6 +41,8 @@ export function mountGestures(el, { hit, pressable, activate, select, direct = (
 
   if (select) on(el, 'pointerdown', event => {
     if (event.button > 0 || event.ctrlKey || event.isPrimary === false || consumed(event)) return;
+    // 按在滚动条上（目标是滚动容器自己，点的位置在内容区之外）：不是点空白，不取消选中。
+    if (event.target === scroller && (event.offsetX >= scroller.clientWidth || event.offsetY >= scroller.clientHeight)) return;
     const item = hit(event);
     if (!item) select(null);
     else if (pressable(item) && !direct(event, item)) select(item);
