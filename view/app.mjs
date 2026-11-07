@@ -552,7 +552,7 @@ grid.onKey(browseKey);
 // 搜索框和结果的键盘（第 18.5 节的分派表）：输入法组字中的按键一律不管；菜单开着时 Esc 归菜单（关菜单、消费掉这个 Esc），这里不处理。
 // ⌘F 在浏览区（含结果和页面本身）聚焦搜索框并选中里面的字；预览、属性页、说明区不拦；菜单开着时先关菜单。
 function searchBoxKey(event) {
-  if (isIOS || event.isComposing || !menu.hidden) return;
+  if (isIOS || event.isComposing || !menu.hidden || menu.consumed(event)) return;
   if (event.key === 'Escape') {
     event.preventDefault();
     const clearing = search.text !== '';
@@ -565,7 +565,7 @@ function searchBoxKey(event) {
   }
 }
 hits.onKey(event => {
-  if (isIOS || event.isComposing || !menu.hidden) return;
+  if (isIOS || event.isComposing || !menu.hidden || menu.consumed(event)) return;
   if (event.key === 'Escape') { event.preventDefault(); searchbar.focus(); return; }
   const action = browseAction(event);
   if (!action) return;
@@ -720,7 +720,7 @@ function onRoot(data) {
   if (data.state !== before?.state || data.path !== before?.path) { menu.hide(); intent = null; endRunning(); } // 开着的菜单里的路径是旧根目录下的；换根目录不播过渡
   if (data.state !== RootState.READY || before?.path !== data.path) closeInfo(false, true); // 属性页看的是旧根目录下的路径
   const scope = model.scope;
-  if (data.state !== RootState.READY) search.suspend(); // 根目录暂不可用：取消在途搜索，丢掉结果，搜索词留着
+  if (data.state !== RootState.READY) { search.suspend(); locator.cancel(); } // 根目录暂不可用：取消在途搜索，丢掉结果，搜索词留着；定位作废（再就绪也不接着做）
   const done = model.receive(data);
   if (model.scope !== scope) { invalidateScroll(); pending.preview = null; press.reset(); clearSearch(); locator.cancel(); } // 换了根目录（同根重建不算）：旧根目录的位置和记录不能给新的用，待恢复的预览位置也是；搜索词和结果清空
   else if (data.state === RootState.READY) search.resume(); // 再就绪时 scope 没变：重搜

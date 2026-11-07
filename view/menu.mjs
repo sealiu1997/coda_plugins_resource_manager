@@ -216,7 +216,12 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
   document.addEventListener('click', event => {
     if (dismissed) { dismissed = false; event.stopPropagation(); }
   }, true);
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') hide(); });
+  // Esc 关菜单时同样标成「已消费」：同一次按键上的搜索框、结果列表不再清搜索或移焦点（第 18.5 节），不靠事件到达的先后顺序。
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if (!el.hidden) eaten.add(event);
+    hide();
+  });
   window.addEventListener('blur', hide);
   window.addEventListener('resize', hide); // 旋转、拖窄侧栏：位置对不上了
   sub?.addEventListener('pointerenter', keep);
