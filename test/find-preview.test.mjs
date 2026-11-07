@@ -438,3 +438,32 @@ test('iPhone：预览头部 ⋯ 里有「查找」（只有显示着文本时）
   assert.equal(env.registry.size, 0);
   assert.equal(input(ctx.page).getAttribute('enterkeyhint'), 'search');
 });
+
+// ---- 18.5 键盘表里补上的格子 ----
+
+test('查找条开着、焦点在正文：⌘F 聚焦查找条并选中输入框的字', async t => {
+  const { page } = await finding(t);
+  pbody(page).focus();
+  input(page).selected = false;
+  assert.equal(onDoc('f', cmd).prevented, true);
+  assert.equal(document.activeElement, input(page));
+  assert.equal(input(page).selected, true);
+});
+
+test('说明区（根目录不可用）和预览读取中：⌘F 不拦', async t => {
+  installHighlights(t);
+  const ctx = await startSearch(t, { listing: { '': ['a.txt'] } });
+  Object.assign(ctx.host, { autoRead: true, files: { 'a.txt': TEXT }, holdReads: true });
+  const row = ctx.page.tree.find(n => n.classList.contains('row') && n.textContent.includes('a.txt'))[0];
+  row.dispatch('click');
+  row.dispatch('dblclick');
+  await flush();
+  assert.equal(visible(ctx.page.preview), true, '预览开着，但还在读取');
+  document.activeElement = null;
+  assert.equal(onDoc('f', cmd).prevented, false, '读取中：不拦');
+  assert.equal(pick(ctx.page, 'fbar').hidden, true);
+  ctx.page.post({ type: 'root', generation: ctx.host.generation, state: 'gone', path: '/A' });
+  await flush();
+  assert.equal(visible(ctx.page.notice), true);
+  assert.equal(onDoc('f', cmd).prevented, false, '说明区：不拦');
+});
