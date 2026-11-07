@@ -72,9 +72,15 @@ export class Element extends Emitter {
   }
   remove() { this.parent?.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; }
   contains(node) { for (let at = node; at; at = at.parent) if (at === this) return true; return false; }
-  // 只支持 .class。
+  // 选择器只支持逗号分隔的列表，每项是 标签名 加任意个 .类（如 .row.entry、button、.a, .b），不支持后代、伪类。
+  matches(selector) {
+    return selector.split(',').some(part => {
+      const [, tag, classes] = /^\s*([a-z]*)((?:\.[\w-]+)*)\s*$/i.exec(part) ?? [];
+      return tag !== undefined && (tag === '' || this.tagName === tag.toUpperCase()) && classes.split('.').filter(Boolean).every(name => this.classList.contains(name));
+    });
+  }
   closest(selector) {
-    for (let at = this; at instanceof Element; at = at.parent) if (at.classList.contains(selector.slice(1))) return at;
+    for (let at = this; at instanceof Element; at = at.parent) if (at.matches(selector)) return at;
     return null;
   }
   getBoundingClientRect() { return { left: 0, top: 0, right: 100, bottom: 24, height: 24, width: 100 }; }
@@ -103,7 +109,10 @@ export function visible(node) {
 
 // 装上 window、document 等全局并加载真实的页面入口（默认 view/app.mjs），每次得到全新的模块实例。
 let instance = 0;
-export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'tree', 'grid', 'preview', 'notice', 'menu', 'submenu', 'hint', 'info'] } = {}) {
+// motion：给了就装上 matchMedia（prefers-reduced-motion，motion.reduce 为真时「减弱」）和 Element.prototype.animate 的桩，页面才会播动画；
+// 不给时没有 matchMedia，页面按「减弱动态效果」处理（旧测试都不受动画影响）。返回的 page.motion：{ reduce, animations, set(reduce) }，
+// animations 是所有 animate 调用（{ el, frames, options, finished, canceled, finish() }），set 改设置并触发 change。
+export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'tree', 'grid', 'preview', 'notice', 'menu', 'submenu', 'hint', 'info'], motion = null } = {}) {
   const elements = Object.fromEntries(ids.map(id => [id, new Element('div')]));
   elements.bar.hidden = true;
   for (const id of ['menu', 'submenu', 'hint']) if (elements[id]) elements[id].hidden = true;
@@ -118,6 +127,20 @@ export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'tree'
     // 观察到的尺寸变化：测试改了 clientWidth 之后调用返回的 resize()。
     ResizeObserver: class { constructor(fn) { resizers.push(fn); } observe() {} },
   };
+  let motionApi = null;
+  if (motion) {
+    const listeners = new Set(), animations = [];
+    motionApi = { reduce: motion.reduce ?? false, animations, set(reduce) { motionApi.reduce = reduce; for (const fn of listeners) fn({ matches: reduce }); } };
+    dom.matchMedia = () => ({ get matches() { return motionApi.reduce; }, addEventListener: (_type, fn) => listeners.add(fn), removeEventListener: (_type, fn) => listeners.delete(fn) });
+    Element.prototype.animate = function animate(frames, options) {
+      const anim = { el: this, frames, options, finished: false, canceled: false,
+        finish() { if (anim.finished || anim.canceled) return; anim.finished = true; anim.onfinish?.(); },
+        cancel() { if (anim.finished || anim.canceled) return; anim.canceled = true; anim.oncancel?.(); } };
+      animations.push(anim);
+      return anim;
+    };
+    t.after(() => { delete Element.prototype.animate; });
+  }
   const saved = Object.fromEntries(Object.keys(dom).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   Object.assign(globalThis, dom);
   t.after(() => {
@@ -128,6 +151,7 @@ export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'tree'
     ...elements,
     // 入口模块的导出和尺寸变化。
     app,
+    motion: motionApi,
     resize: () => resizers.forEach(fn => fn()),
     // 模块发给页面的消息。
     post: data => windowEmitter.emit({ type: 'message', data }),

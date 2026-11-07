@@ -3,15 +3,18 @@
 // 菜单可以有一层二级菜单（项里写 submenu）。「整次菜单」（current）和「当前层」（layer、fly）分开记：
 // 在面板里切到下一层、退回来，整次菜单还是同一次，但上一层的按钮不再响应。第二个面板（sub）也算菜单里面，点它不是点外面。
 import { icon } from './icons.mjs';
+import { reducedMotion } from './press.mjs';
 
 const CLOSE_MS = 150; // 鼠标移到别的项之后，侧面板收起前等多久：斜着移过去不会误关
 const GAP = 2; // 侧面板和根面板之间留的空隙
+const APPEAR_MS = 150; // iPhone 菜单出现：透明度 0→1，根层同时缩放 0.96→1；换层只淡入
 
 // el：页面里的 #menu。sub：侧面板（#submenu），没有就不能弹出，二级菜单总是在 el 里切到下一层。
 // flyout：true 时（Mac）鼠标移上去或点击「显示」这类项，侧面板在根面板左边弹出；放不下就退成切到下一层（iPhone 总是这样）。
 // open 之后的位置按安全区夹住（横屏时客户端不替页面留）；offsetWidth 在显示后才量得到。
 // 高度有上限（style.css 的 .menu）：内容多时在菜单里滚动，不超出安全区。
-export function mountMenu(el, sub = null, { flyout = false } = {}) {
+// animate：iPhone 的出现动画（Mac 的原生菜单立刻出现，不做）；关闭不做动画。减弱动态效果时也不做。
+export function mountMenu(el, sub = null, { flyout = false, animate = false } = {}) {
   let opener = null; // 打开菜单的按钮；用点打开的没有
   let current = null; // 这一次打开的标记：关闭之后留在手里的按钮不再响应
   let layer = 0; // el 里现在是哪一层：每次换层（进下一层、退回、重新打开、关闭）加一，旧层的按钮据此作废
@@ -19,6 +22,24 @@ export function mountMenu(el, sub = null, { flyout = false } = {}) {
   let spec = null, anchor = null; // 根层的内容和锚点：退回根层、换层后重新定位要用
   let flyButton = null; // 展开着侧面板的那个项
   let closeTimer = null;
+  let playing = null; // 正在播的出现动画
+
+  // 出现动画：scale 为真是根层（从锚点那一侧缩放），否则只淡入。开着的动画先停在终点，免得叠在一起。
+  function appear(scale) {
+    settle();
+    if (!animate || reducedMotion() || typeof el.animate !== 'function') return;
+    const frames = scale ? [{ opacity: 0, transform: 'scale(.96)' }, { opacity: 1, transform: 'scale(1)' }] : [{ opacity: 0 }, { opacity: 1 }];
+    if (scale) {
+      // 缩放原点按夹进安全区之后的最终位置定：菜单在锚点下方从上沿缩放，在上方从下沿；横向贴着锚点的右边或点的位置。
+      const box = el.getBoundingClientRect(), at = anchor.getBoundingClientRect?.();
+      const below = box.top >= (at ? at.bottom : anchor.clientY) - 1;
+      el.style.transformOrigin = `${at ? 'right' : `${Math.max(0, Math.min(box.width, anchor.clientX - box.left))}px`} ${below ? 'top' : 'bottom'}`;
+    }
+    const mine = playing = el.animate(frames, { duration: APPEAR_MS, easing: 'ease-out' });
+    mine.onfinish = mine.oncancel = () => { if (playing === mine) playing = null; };
+  }
+  // 停止开着的动画：没有 fill，取消就是停在终点；根层的出现动画还没播完就换层、或关闭时调用。
+  function settle() { const mine = playing; playing = null; mine?.cancel(); }
 
   // items：[{ label, run, checked?, radio? } | { label, submenu: { items } } | { separator: true } | { heading }]，checked 不是 undefined 的带对勾（radio 的是单选，其余是开关）；
   // 分隔线和小标题不是菜单项，不可点。hover：这一层的项在鼠标移上去时管侧面板（只有根层，且 flyout）。
@@ -99,6 +120,7 @@ export function mountMenu(el, sub = null, { flyout = false } = {}) {
     paintRoot();
     el.hidden = false;
     place();
+    appear(true);
     if (at.getBoundingClientRect) { opener = at; opener.setAttribute?.('aria-expanded', 'true'); }
   }
 
@@ -144,10 +166,12 @@ export function mountMenu(el, sub = null, { flyout = false } = {}) {
       if (!alive()) return;
       paintRoot();
       place();
+      appear(false);
     });
     el.replaceChildren(back, Object.assign(document.createElement('hr'), { className: 'menu-sep' }), ...build(item.submenu.items, alive, false));
     el.scrollTop = 0;
     place();
+    appear(false);
   }
 
   // 鼠标回到「显示」或侧面板：取消正在等的收起。
@@ -169,6 +193,7 @@ export function mountMenu(el, sub = null, { flyout = false } = {}) {
   const safeLeft = () => { const px = parseFloat(globalThis.getComputedStyle?.(document.body)?.paddingLeft); return Number.isFinite(px) ? px : 0; };
 
   function hide() {
+    settle();
     current = null;
     layer++;
     collapse();
@@ -179,9 +204,12 @@ export function mountMenu(el, sub = null, { flyout = false } = {}) {
 
   // 两个面板都算菜单里面。菜单开着时点菜单外：只关菜单，紧接着的那次点击不交给页面。
   const inside = target => el.contains(target) || (sub !== null && sub.contains(target));
+  // 关菜单的那一下按下标成「已消费」：按下反馈和 Mac 的按下即选中都先看它（consumed），消费过的不加反馈、不选中。
   let dismissed = false;
+  const eaten = new WeakSet();
   document.addEventListener('pointerdown', event => {
     dismissed = !el.hidden && !inside(event.target);
+    if (dismissed) eaten.add(event);
     if (!inside(event.target)) hide();
   }, true);
   document.addEventListener('click', event => {
@@ -195,6 +223,7 @@ export function mountMenu(el, sub = null, { flyout = false } = {}) {
   return {
     open, hide,
     get hidden() { return el.hidden; },
+    consumed: event => eaten.has(event),
     // 谁打开的菜单：同一个按钮再次激活就关闭（键盘激活没有 pointerdown，上面那条规则管不到）。
     get opener() { return opener; },
   };

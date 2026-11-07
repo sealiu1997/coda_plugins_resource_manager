@@ -66,7 +66,8 @@ export const TITLES = { [EntryKind.LINK]: '指向工作目录外的链接，不�
 // draggable：触屏上拖行没有用处，还会抢滚动，关掉。now：当前时间，日期的相对格式用，测试可注入。
 // longPress：触屏上按住一行打开 handlers.menu（Mac 用右键）。不设 touch-action，滚动照旧，滚动接管时收到 pointercancel 作废。
 // keyboard：滚动容器可以获得焦点，键盘才接得上（Mac）。
-export function mountTree(el, model, handlers, { draggable = true, longPress = false, keyboard = false, now = Date.now } = {}) {
+// press：按下反馈（press.mjs），画行时问它这一行是不是正在按下的；consumed(event)：菜单消费掉的按下（gestures.mjs）。
+export function mountTree(el, model, handlers, { draggable = true, longPress = false, keyboard = false, now = Date.now, press = null, consumed = () => false } = {}) {
   const title = document.createElement('div'), spacer = document.createElement('div'), win = document.createElement('div');
   title.className = 'section truncate'; spacer.className = 'spacer'; win.className = 'win';
   title.hidden = true;
@@ -107,11 +108,14 @@ export function mountTree(el, model, handlers, { draggable = true, longPress = f
     node.className = `row ${row.type}`;
     node.dataset.i = index;
     node.style.cssText = `--d: ${row.depth}`; // 缩进由 CSS 按 --d 算，分隔线的起点也用它
+    node.dataset.path = row.path; // 按下反馈认的身份：同一路径的条目、「重试」说明行、「再显示」靠种类区分
     if (row.type !== 'entry') {
       node.textContent = row.text;
       if (row.retry) { node.classList.add('retry'); node.title = row.text; } // 长原因在行里被截断，Mac 悬停看全
+      if (row.retry || row.type === 'more') press?.paint(node, 'tree', row.retry ? 'retry' : 'more', row.path);
       return node;
     }
+    press?.paint(node, 'tree', 'entry', row.path);
     const dead = row.kind === EntryKind.LINK || row.kind === EntryKind.OTHER;
     node.classList.add(row.kind);
     if (dead) node.classList.add('dead');
@@ -172,6 +176,7 @@ export function mountTree(el, model, handlers, { draggable = true, longPress = f
     menu: (event, row) => handlers.menu(event, row),
     dragText: row => row.path,
     longPress,
+    consumed,
   });
   // 选中变了只在现有节点上切 .sel，不重建：双击的 dblclick 要落在还在容器里的节点上。
   const mark = () => { for (const node of win.children) node.classList.toggle('sel', rows[node.dataset.i]?.path === model.selected && rows[node.dataset.i]?.type === 'entry'); };

@@ -122,9 +122,9 @@ export function stepCells(cells, layout, selected, action) {
 // handlers: { open(path), enter(path), more(path), retry(path), menu(event, cell), back?, select?(path | null) }
 // select 是 Mac 单击选中，不给就是 iPhone 的轻点打开。
 // back 给了就在头部最左边放「返回」（Mac，和没有原生返回的环境）；不给就没有头部，iPhone 用原生返回，标题在工具条上。
-// draggable、longPress 同 mountTree。
+// draggable、longPress、press、consumed 同 mountTree。
 // keyboard：滚动容器（.gbody）可以获得焦点，键盘才接得上（Mac）。
-export function mountGrid(el, model, handlers, { draggable = true, longPress = false, keyboard = false } = {}) {
+export function mountGrid(el, model, handlers, { draggable = true, longPress = false, keyboard = false, press = null, consumed = () => false } = {}) {
   const head = h('div', { class: 'ghead' }), body = h('div', { class: 'gbody' }), spacer = h('div', { class: 'gspacer' }), win = h('div', { class: 'gwin' });
   head.hidden = true;
   if (keyboard) body.tabIndex = 0;
@@ -172,14 +172,17 @@ export function mountGrid(el, model, handlers, { draggable = true, longPress = f
   function cellNode(cell, index) {
     const node = h('div', { class: 'gi' });
     node.dataset.i = index;
+    node.dataset.path = cell.path; // 按下反馈认的身份
     if (cell.type !== 'entry') {
       node.className = `gi gnote ${cell.type}`;
       node.textContent = cell.text;
       if (cell.retry) { node.classList.add('retry'); node.title = cell.text; } // 长原因在行里被截断，Mac 悬停看全
+      if (cell.retry || cell.type === 'more') press?.paint(node, 'grid', cell.retry ? 'retry' : 'more', cell.path);
       return node;
     }
     const dead = cell.kind === EntryKind.LINK || cell.kind === EntryKind.OTHER;
     node.className = `gi cell ${cell.kind}${dead ? ' dead' : ''}${cell.path === model.selected ? ' sel' : ''}`;
+    press?.paint(node, 'grid', 'entry', cell.path);
     if (!dead && draggable) node.draggable = true;
     // 扩展名前给一个优先断点：package.json 折成 package / .json，不在字母中间断；没有点（或点在最前面）、太长时 overflow-wrap 才在任意位置断。
     const dot = cell.name.lastIndexOf('.');
@@ -219,6 +222,7 @@ export function mountGrid(el, model, handlers, { draggable = true, longPress = f
     menu: (event, cell) => handlers.menu(event, cell),
     dragText: cell => cell.path,
     longPress,
+    consumed,
     scroller: body,
   });
   // 选中变了只在现有节点上切 .sel，不重建：双击的 dblclick 要落在还在容器里的节点上。
@@ -244,6 +248,8 @@ export function mountGrid(el, model, handlers, { draggable = true, longPress = f
     },
     remeasure() { measuredWidth = body.clientWidth; measure(); this.render(); },
     scroll: () => body.scrollTop,
+    // 进出目录的淡入：只给内容（win），头部和滚动条不动；返回动画，由页面记着并在需要时结束。
+    fadeIn(duration) { return typeof win.animate === 'function' ? win.animate([{ opacity: 0 }, { opacity: 1 }], { duration, easing: 'ease-out' }) : null; },
     scrollTo(top) { body.scrollTop = top; paint(); }, // 浏览器的滚动事件随后还会画一次；这里先画，位置才马上对
     onScroll(fn) { body.addEventListener('scroll', fn, { passive: true }); },
     get layout() { return layout; },

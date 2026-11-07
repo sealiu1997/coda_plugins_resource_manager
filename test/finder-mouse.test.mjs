@@ -4,7 +4,7 @@ import test from 'node:test';
 import { mountGestures } from '../view/gestures.mjs';
 import { Element, visible } from './support/dom.mjs';
 import { flush } from './support/fake.mjs';
-import { LISTING, doubleClick, drain, press, savedOf, selectedRows, startMac } from './support/finder.mjs';
+import { LISTING, doubleClick, drain, press, savedOf, selectedRows, startMac, clickOn } from './support/finder.mjs';
 import { rowNamed, rowsOf } from './support/treehost.mjs';
 
 const reads = host => host.sent.filter(m => m.type === 'read');
@@ -14,7 +14,7 @@ const labels = page => page.menu.find(node => node.tagName === 'BUTTON').map(nod
 test('单击只选中：文件、文件夹、不能打开的条目都不打开、不展开', async t => {
   const { page, host } = await startMac(t);
   for (const name of ['a.txt', 'dir', 'to', 'dev']) {
-    rowNamed(page, name).dispatch('click');
+    clickOn(rowNamed(page, name));
     await flush();
     assert.deepEqual(selectedRows(page), [name], `${name} 选中`);
     assert.equal(reads(host).length, 0);
@@ -44,7 +44,7 @@ test('双击文件在侧栏打开预览，选中的就是它；双击文件夹�
 
 test('先单击别的条目再双击这个也对', async t => {
   const { page, host } = await startMac(t);
-  rowNamed(page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(page, 'b.txt'));
   await flush();
   await doubleClick(page.tree, rowNamed(page, 'a.txt'));
   assert.equal(reads(host).length, 1);
@@ -54,11 +54,11 @@ test('先单击别的条目再双击这个也对', async t => {
 test('选中不重画：节点身份不变，.sel 移到新节点上；两次 click 之后 dblclick 的目标还在容器里', async t => {
   const { page } = await startMac(t);
   const a = rowNamed(page, 'a.txt'), b = rowNamed(page, 'b.txt');
-  a.dispatch('click');
+  clickOn(a);
   await flush();
   assert.equal(rowNamed(page, 'a.txt'), a, '同一个节点');
   assert.ok(a.classList.contains('sel'));
-  b.dispatch('click');
+  clickOn(b);
   await flush();
   assert.equal(rowNamed(page, 'b.txt'), b);
   assert.deepEqual([a.classList.contains('sel'), b.classList.contains('sel')], [false, true]);
@@ -67,16 +67,16 @@ test('选中不重画：节点身份不变，.sel 移到新节点上；两次 cl
 
 test('单击箭头展开或收起，选中不变；双击箭头不再多切一次', async t => {
   const { page } = await startMac(t);
-  rowNamed(page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(page, 'b.txt'));
   const chevron = name => rowNamed(page, name).find(node => node.classList.contains('chev'))[0];
-  chevron('dir').dispatch('click');
+  clickOn(chevron('dir'));
   await flush();
   assert.equal(rowNamed(page, 'dir').getAttribute('aria-expanded'), 'true');
   assert.deepEqual(selectedRows(page), ['b.txt'], '选中不变');
   chevron('dir').dispatch('dblclick'); // dblclick 落在箭头上：click 已经切过了，不再重复
   await flush();
   assert.equal(rowNamed(page, 'dir').getAttribute('aria-expanded'), 'true');
-  chevron('dir').dispatch('click');
+  clickOn(chevron('dir'));
   await flush();
   assert.equal(rowNamed(page, 'dir').getAttribute('aria-expanded'), 'false', '双击箭头两次 click：回到原状');
   assert.deepEqual(selectedRows(page), ['b.txt']);
@@ -84,9 +84,9 @@ test('单击箭头展开或收起，选中不变；双击箭头不再多切一�
 
 test('单击空白处取消选中；点在条目上不算空白', async t => {
   const { page } = await startMac(t);
-  rowNamed(page, 'a.txt').dispatch('click');
+  clickOn(rowNamed(page, 'a.txt'));
   assert.deepEqual(selectedRows(page), ['a.txt']);
-  page.tree.dispatch('click');
+  clickOn(page.tree);
   await flush();
   assert.deepEqual(selectedRows(page), []);
 });
@@ -101,14 +101,14 @@ test('说明行（重试）单击照旧立即执行，不用双击', async t => 
   assert.ok(failed);
   host.failing.clear();
   const before = host.lists().length;
-  failed.dispatch('click');
+  clickOn(failed);
   await flush();
   assert.deepEqual(host.lists().slice(before).map(m => m.path), ['dir'], '单击就重试');
 });
 
 test('右键：不改选中；菜单第一项「打开」「展开」「收起」各自生效；不能打开的条目没有这一项', async t => {
   const { page, host } = await startMac(t);
-  rowNamed(page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(page, 'b.txt'));
   const right = name => rowNamed(page, name).dispatch('contextmenu', { clientX: 5, clientY: 6 });
   right('dir');
   assert.deepEqual(selectedRows(page), ['b.txt'], '右键不改选中');
@@ -140,11 +140,11 @@ test('选中会保存：页面稳定后单击、取消选中、键盘移动，�
   const { page, tick, saves } = ctx;
   await drain(ctx);
   const before = saves.length;
-  rowNamed(page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(page, 'b.txt'));
   assert.equal(saves.length, before, '还没到延迟');
   tick(300);
   assert.equal(savedOf(ctx).selected, 'b.txt');
-  page.tree.dispatch('click');
+  clickOn(page.tree);
   tick(300);
   assert.equal(savedOf(ctx).selected, null, '取消选中也保存');
   press(page.tree, 'ArrowDown');
@@ -156,17 +156,17 @@ test('选中会保存：页面稳定后单击、取消选中、键盘移动，�
 
 test('选中同一个路径什么都不做：不重新保存', async t => {
   const ctx = await startMac(t);
-  rowNamed(ctx.page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(ctx.page, 'b.txt'));
   ctx.tick(300);
   const count = ctx.saves.length;
-  rowNamed(ctx.page, 'b.txt').dispatch('click');
+  clickOn(rowNamed(ctx.page, 'b.txt'));
   ctx.tick(300);
   assert.equal(ctx.saves.length, count);
 });
 
 test('iPhone：轻点打开（文件夹展开、文件在页内预览，不调 coda.open），dblclick 不触发任何东西', async t => {
   const { page, host } = await startMac(t, { platform: 'ios' });
-  rowNamed(page, 'dir').dispatch('click');
+  clickOn(rowNamed(page, 'dir'));
   await flush();
   assert.equal(rowNamed(page, 'dir').getAttribute('aria-expanded'), 'true');
   rowNamed(page, 'dir').dispatch('dblclick');
@@ -175,7 +175,7 @@ test('iPhone：轻点打开（文件夹展开、文件在页内预览，不调 c
   rowNamed(page, 'b.txt').dispatch('dblclick');
   await flush();
   assert.equal(host.reads().length, 0);
-  rowNamed(page, 'a.txt').dispatch('click');
+  clickOn(rowNamed(page, 'a.txt'));
   await flush();
   assert.equal(host.reads().length, 1, '页内预览读一次');
   assert.deepEqual(host.calls.open, [], '不再推入文件页');
@@ -215,14 +215,19 @@ function gestureHost({ withSelect = true } = {}) {
   return { el, row, chev, calls };
 }
 
-test('gestures：Mac 模式单击条目选中、双击条目激活；箭头单击直接激活、双击不再激活；空白取消选中', () => {
+test('gestures：Mac 模式按下条目就选中（click 不再选）、双击条目激活；箭头在 click 时激活、按下不选中、双击不再激活；按下空白取消选中', () => {
   const { el, row, chev, calls } = gestureHost();
+  const down = node => node.dispatch('pointerdown', { button: 0, pointerId: 1 });
+  down(row);
+  assert.deepEqual(calls, [['select', 'e']], '按下的那一刻就选中了，还没有 click');
   row.dispatch('click');
   row.dispatch('dblclick');
+  down(chev);
   chev.dispatch('click');
   chev.dispatch('dblclick');
+  down(el);
   el.dispatch('click');
-  assert.deepEqual(calls, [['select', 'e'], ['activate', 'e'], ['activate', 'e'], ['select', null]]);
+  assert.deepEqual(calls, [['select', 'e'], ['activate', 'e'], ['activate', 'e'], ['select', null]], 'click 里不再重复选中');
 });
 
 test('gestures：没有 select（iPhone）单击就激活，不监听 dblclick', () => {

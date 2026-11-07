@@ -10,6 +10,7 @@ import { mountMenu } from './menu.mjs';
 import { Model, STATE_LIMIT, View, noticeText, parseState, putSession, trimState } from './model.mjs';
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
+import { mountPress, onMotionChange, reducedMotion } from './press.mjs';
 import { EntryKind, RootState, SortKey, Type } from './protocol.mjs';
 import { createRestore, createTrail } from './restore.mjs';
 import { browseAction, previewAction } from './keys.mjs';
@@ -32,7 +33,9 @@ model.showHidden = persisted.hidden;
 model.sort = persisted.sort;
 model.view = persisted.view;
 const hint = mountHint($('hint'));
-const menu = mountMenu($('menu'), $('submenu'), { flyout: !isIOS }); // Mac 的二级菜单在左边弹出，iPhone 在菜单里切到下一层
+const menu = mountMenu($('menu'), $('submenu'), { flyout: !isIOS, animate: isIOS }); // Mac 的二级菜单在左边弹出，iPhone 在菜单里切到下一层，菜单出现时有动画
+// 按下反馈：页面里只有一份（press.mjs）；菜单开着时点外面的那一下已被菜单消费，不加反馈、不选中。
+const press = mountPress({ identity: () => `${model.session}\n${model.scope}`, consumed: menu.consumed });
 const chat = createChat({ link: conn.link, copy: text => coda.copy(text), hint });
 // 属性页和图标视图的上一层：iPhone 用原生返回（coda.back）；Mac 的客户端会替声明了返回的页面画一个带小箭头的导航，
 // 和侧栏标题重复，所以 Mac 和没有 coda.back 的环境一样，头部最左边自己放返回。
@@ -43,8 +46,8 @@ const tree = mountTree($('tree'), model, {
   more: path => model.loadMore(path),
   retry: path => model.retry(path),
   menu: (event, row) => pathMenu(event, row),
-  select: isIOS ? null : path => selectEntry(path),
-}, { draggable: !isIOS, longPress: isIOS, keyboard: !isIOS });
+  select: isIOS ? null : path => mouseSelect(path),
+}, { draggable: !isIOS, longPress: isIOS, keyboard: !isIOS, press, consumed: menu.consumed });
 const grid = mountGrid($('grid'), model, {
   open: openFile,
   enter: path => enterDir(path),
@@ -52,8 +55,8 @@ const grid = mountGrid($('grid'), model, {
   retry: path => model.retry(path),
   menu: (event, cell) => pathMenu(event, cell),
   back: nativeBack ? null : () => leaveDir(),
-  select: isIOS ? null : path => selectEntry(path),
-}, { draggable: !isIOS, longPress: isIOS, keyboard: !isIOS });
+  select: isIOS ? null : path => mouseSelect(path),
+}, { draggable: !isIOS, longPress: isIOS, keyboard: !isIOS, press, consumed: menu.consumed });
 const restore = createRestore(model, { tree, grid });
 const trail = createTrail();
 const preview = mountPreview($('preview'), {
@@ -90,6 +93,7 @@ function openInView(path) {
 // 快速两次轻点：第一次已切到预览，目录树 .off 不接指针事件，第二次落不到条目上。
 function openFile(path) {
   openPressed = !isIOS; // 用户在 Mac 上打开的：render 把焦点交给预览面板
+  note({ kind: 'push', from: mode(), to: 'preview' });
   model.openFile(path);
 }
 
@@ -109,6 +113,11 @@ function selectEntry(path) {
   queueSave();
 }
 const browser = () => (model.view === View.ICONS ? grid : tree);
+// Mac 在按下时选中（选中条目或在空白处取消）：和键盘一样算用户接管，这个视图还在等的滚动恢复作废，免得恢复到达时把刚选中的条目滚走。
+function mouseSelect(path) {
+  restore.drop(model.view === View.ICONS ? 'grid' : 'tree');
+  selectEntry(path);
+}
 
 // 预览头部的返回和预览里的 ⌘↑ 是同一个动作：opened 清掉，selected 留着。
 function closePreview() {
@@ -130,14 +139,90 @@ function paintNotice() {
   showNotice($('notice'), failed ? { failure: conn.failure, retry: conn.hello } : { text: key });
 }
 
+// ---- iPhone 层级切换的过渡（第 17.6 节）----
+// 只在用户操作引起时做：入口（openFile、openInfo、goBack、enterDir、leaveDir）在改模型之前记一个一次性的「过渡意图」，render 消费它：
+// 前后对得上就播，对不上就丢掉。换会话、换根目录、恢复、notice、changed 的刷新都没有意图，不播。意图由最外层的入口记，goBack 内部调用的 closeInfo、leaveDir 不记。
+// 层级的深浅：浏览区（tree、grid）浅，预览和属性页深。深的一层永远在上：打开时滑入盖住浅层，返回时滑出、露出浅层。
+const PANES = ['tree', 'grid', 'preview', 'notice', 'info'];
+const DEEP = new Set(['preview', 'info']);
+const SLIDE_MS = 280, FADE_IN_MS = 150;
+let intent = null; // { kind: 'push' | 'pop' | 'fade', from?, to }：from、to 是模式；fade 的 to 是目标 cwd
+let lastMode = null; // 上一次画出的模式
+let running = null; // 正在播的过渡：{ leaving, after, end }
+const note = next => { if (isIOS) intent = next; };
+
+// 结束正在播的过渡到终点，立刻。结束和自然播完走同一个函数，幂等：强制结束之后迟到的 finish 事件什么都不做。
+function endRunning() { running?.end(); }
+function begin(anims, { ids = [], leaving = null, after = [] } = {}) {
+  let ended = false, pending = anims.length;
+  const mine = running = { leaving, after, end() {
+    if (ended) return;
+    ended = true;
+    for (const anim of anims) anim.cancel();
+    for (const id of ids) $(id).classList.remove('layer');
+    if (running === mine) running = null;
+    for (const fn of mine.after) fn();
+    applyPanes(mode());
+  } };
+  for (const anim of anims) anim.onfinish = () => { if (--pending === 0) mine.end(); };
+  return mine;
+}
+
+// 面板的可见和可操作：只有当前的一层能操作；离开的那一层在退场期间还看得见，但 inert 且不接指针。
+function applyPanes(current) {
+  const leaving = running?.leaving ?? null;
+  for (const id of PANES) {
+    $(id).classList.toggle('off', current !== id && leaving !== id);
+    $(id).classList.toggle('leaving', leaving === id);
+    $(id).inert = current !== id;
+  }
+}
+
+// 这次 render 要不要播层级切换：消费意图。fade 要等内容到了，不在这里。
+function takeSlide(current) {
+  const taken = intent;
+  if (!taken || taken.kind === 'fade') return null;
+  intent = null;
+  if (!isIOS || reducedMotion() || taken.from !== lastMode || taken.to !== current || lastMode === current) return null;
+  if (DEEP.has(taken.from) === DEEP.has(taken.to) || typeof $(current).animate !== 'function') return null;
+  return taken;
+}
+
+function slide({ kind, from, to }, after) {
+  const leaving = $(from), entering = $(to), deep = kind === 'push' ? entering : leaving, shallow = kind === 'push' ? leaving : entering;
+  const options = { duration: SLIDE_MS, easing: 'cubic-bezier(.2,.8,.2,1)' };
+  const shift = kind === 'push' ? ['translateX(0)', 'translateX(-25%)'] : ['translateX(-25%)', 'translateX(0)'];
+  const dim = kind === 'push' ? ['brightness(1)', 'brightness(.9)'] : ['brightness(.9)', 'brightness(1)'];
+  const away = ['translateX(100%)', 'translateX(0)'];
+  // 参与过渡的两层都要不透明，否则透出对面（只在过渡期间）；变暗不加遮罩元素，不挡指针。
+  leaving.classList.add('layer');
+  entering.classList.add('layer');
+  begin([
+    deep.animate({ transform: kind === 'push' ? away : [...away].reverse() }, options),
+    shallow.animate({ transform: shift, filter: dim }, options),
+  ], { ids: [from, to], leaving: from, after });
+}
+
+// 图标视图进出目录：内容到了才播，只给内容播，不给「正在读取」播。
+function takeFade(current) {
+  if (intent?.kind !== 'fade') return;
+  if (current !== 'grid' || model.cwd !== intent.to) { intent = null; return; } // 中途换了目录、或打开了文件：作废
+  const state = model.dirs.get(model.cwd);
+  if (!state || !(state.loaded || state.error)) return; // 还在读取：意图留着，内容到了的那次 render 播
+  intent = null;
+  if (reducedMotion()) return;
+  const anim = grid.fadeIn(FADE_IN_MS);
+  if (anim) { endRunning(); begin([anim]); }
+}
+
+// 属性页是逻辑上关了但画面还在（退场期间）：render 决定什么时候释放。
+let infoStopped = false;
+
 function render() {
   const current = mode();
   const refocus = backPressed && document.hasFocus(), handoff = openPressed && document.hasFocus();
   backPressed = openPressed = false;
-  for (const id of ['tree', 'grid', 'preview', 'notice', 'info']) {
-    $(id).classList.toggle('off', current !== id);
-    $(id).inert = current !== id;
-  }
+  const slideIn = takeSlide(current);
   if (current === 'notice') paintNotice();
   const browsing = current === 'tree' || current === 'grid';
   (model.view === View.ICONS ? grid : tree).render(); // 只画正在用的视图，另一个留着它的内容和滚动位置
@@ -145,11 +230,20 @@ function render() {
   restore.settle();
   // 待恢复的位置只属于它那个文件：opened 清了或换成别的文件，位置作废。
   if (pending.preview !== null && pending.path !== model.opened) pending.preview = null;
+  const released = []; // 这次停止的面板：画面的释放等退场结束（有过渡时），否则马上
   if (current === 'preview' && preview.path !== model.opened) {
     // 位置要等内容到了、真的设上才清：之前离开页面或换会话，saveNow 还存它。作废的读取不清，由接替它的读取用上。
     const scroll = pending.preview;
     preview.open(model.opened, scroll).then(used => { if (used && scroll !== null && pending.preview === scroll) pending.preview = null; });
-  } else if ((browsing || current === 'notice') && preview.path !== null) preview.close(); // 属性页和预览一样只切可见性，不动别的面板的内容
+  } else if ((browsing || current === 'notice') && preview.path !== null) { preview.stop(); released.push(() => preview.release()); } // 属性页和预览一样只切可见性，不动别的面板的内容
+  if (infoStopped && current !== 'info') { infoStopped = false; released.push(() => info.release()); }
+  // 上一个过渡：模式变了或又有新的过渡就立刻结束到终点（它的释放比对打开次数，又打开过就不释放）。
+  if (running && (slideIn || current !== lastMode)) endRunning();
+  if (slideIn) slide(slideIn, slideIn.kind === 'pop' ? released.splice(0) : []); // 返回：被停止的那层到退场结束才释放
+  for (const fn of released) fn();
+  applyPanes(current);
+  takeFade(current);
+  lastMode = current;
   // 返回按钮随预览一起 inert，焦点会掉到页面外：用户刚点了返回、页面又持有焦点时交给目录树或网格。
   // 后台刷新、切会话、root 变化造成的切换不动焦点，免得抢走客户端输入框的焦点。
   if (refocus && browsing) browser().focus();
@@ -158,6 +252,9 @@ function render() {
   syncToolbar();
   declareBack();
 }
+// 窗口尺寸变了（旋转）、系统的减弱动态效果改了：正在播的动画结束到终点。
+window.addEventListener('resize', endRunning);
+onMotionChange(endRunning);
 
 // ---- 工具栏：Mac 用 coda.toolbar，没有的（iOS、harness）退成页内一条 ----
 // Mac 只有一个原生按钮「更多」：原生菜单带向下的箭头，关不掉，所以按下后由页面弹菜单。返回键在预览头部，不在这里。
@@ -281,7 +378,7 @@ function saveNow() {
   // setState 超限会同步抛错：再收紧一次，仍失败就放弃这次，不影响界面。
   if (quiet(() => (coda.setState(persisted), true)) === undefined) quiet(() => coda.setState(trimState(persisted, session, STATE_LIMIT / 4)));
 }
-quiet(() => coda.on('visibility', visible => { if (!visible) saveNow(); }));
+quiet(() => coda.on('visibility', visible => { if (!visible) { press.reset(); saveNow(); } }));
 $('tree').addEventListener('scroll', queueSave, { passive: true });
 $('tree').addEventListener('scroll', () => restore.scrolled('tree'), { passive: true });
 grid.onScroll(queueSave);
@@ -293,6 +390,7 @@ preview.onScroll(menu.hide);
 // 行菜单顶上是路径，下面一行 大小 · 完整修改时间（文件夹只有修改时间，读不到就没有这一行）；指向外面的链接和不能打开的条目没有元数据，不显示这一行。
 // 不能打开的条目（指向外面或失效的链接、other）没有「添加到聊天」，和不能拖动一致；它们仍有复制路径和属性。
 function pathMenu(event, row) {
+  press.reset(); // 长按弹出菜单：按下反馈立即去掉
   const dead = row.kind === EntryKind.LINK || row.kind === EntryKind.OTHER;
   // Mac 的第一项和双击是同一个动作（右键不改选中）；文件夹在列表里写展开或收起，别的写打开。iPhone 轻点就是打开，菜单不变。
   const folder = row.kind === EntryKind.DIR, listed = model.view !== View.ICONS;
@@ -339,16 +437,18 @@ function enterDir(path) {
   trail.remember(model.cwd, grid.scroll());
   selectEntry(null); // 进入新的一层：选中清空
   model.enter(path);
+  note({ kind: 'fade', to: model.cwd });
   shownCwd = model.cwd;
   restore.drop('grid');
   grid.scrollTo(0);
   declareBack();
 }
-// 退 levels 层（到根为止）；已经在根目录返回 false。
-function leaveDir(levels = 1) {
+// 退 levels 层（到根为止）；已经在根目录返回 false。record 为假时不记过渡意图（goBack 里的内部调用：意图由它记）。
+function leaveDir(levels = 1, record = true) {
   if (model.cwd === '') return false;
   const from = model.cwd.split('/');
   model.leave(levels);
+  if (record) note({ kind: 'fade', to: model.cwd });
   land(trail.take(model.cwd) ?? 0);
   // 选中来时经过的那个文件夹（退到的那一层的直接子项）。目录被删、模型自己退回上层走 landed，不改选中。
   selectEntry(from.slice(0, model.cwd === '' ? 1 : model.cwd.split('/').length + 1).join('/'));
@@ -388,13 +488,16 @@ function declareBack(force = false) {
 }
 // 退 steps 层：先关预览，再关属性页，再退图标视图的目录；返回是不是真的退了。横屏的返回和原生返回共用。
 // 没就绪时页面是说明区，看不见预览和目录层：不消耗它们（保存的 opened、cwd 不变），横屏的返回直接关视图。
+// 一次返回只记一个意图，按它消耗了什么：关了预览或属性页记 pop（目标是退完之后的模式），只退了目录记 fade；内部调用的 closeInfo、leaveDir 不记。
 function goBack(steps) {
   if (!model.ready) return false;
-  let used = 0;
-  if (previewOpen() && steps > used) { model.closeFile(); used++; } // 走和 Mac 一样的 closeFile：opened 清，selected 留着
-  if (infoOpen && steps > used) { closeInfo(); used++; }
+  const from = mode();
+  let used = 0, layer = false;
+  if (previewOpen() && steps > used) { model.closeFile(); used++; layer = true; } // 走和 Mac 一样的 closeFile：opened 清，selected 留着
+  if (infoOpen && steps > used) { closeInfo(false); used++; layer = true; }
   const levels = Math.min(steps - used, model.view === View.ICONS && model.cwd !== '' ? model.cwd.split('/').length : 0);
-  if (levels > 0) { leaveDir(levels); used += levels; }
+  if (levels > 0) { leaveDir(levels, false); used += levels; }
+  if (used > 0) note(layer ? { kind: 'pop', from, to: mode() } : { kind: 'fade', to: model.cwd });
   return used > 0;
 }
 if (nativeBack) quiet(() => coda.on('back', event => {
@@ -403,15 +506,20 @@ if (nativeBack) quiet(() => coda.on('back', event => {
 
 // ---- 属性页：所有关闭的路径（原生返回、横屏的返回、换会话、根目录变化）都重新声明回上层 ----
 function openInfo(row) {
+  note({ kind: 'push', from: mode(), to: 'info' });
   infoOpen = true;
+  infoStopped = false;
   info.open(row.path, row);
   declareBack();
   schedule();
 }
-function closeInfo() {
+// 停止是立即的（取消统计、作废在途的读取）；画面留到退场结束，由 render 释放。换会话、换根目录要立即释放（immediate），也不记意图。
+function closeInfo(record = true, immediate = false) {
   if (!infoOpen) return;
   infoOpen = false;
-  info.close(); // 在统计的一并取消
+  if (immediate) info.close();
+  else { info.stop(); infoStopped = true; } // 在统计的一并取消
+  if (record) note({ kind: 'pop', from: 'info', to: mode() });
   declareBack();
   schedule();
 }
@@ -419,8 +527,11 @@ function closeInfo() {
 // ---- 模块的消息（代次和握手由 connection 处理）----
 function onSession(data) {
   saveNow(); // 先存旧会话
+  intent = null;
+  endRunning();
+  press.reset();
   preview.close();
-  closeInfo();
+  closeInfo(false, true);
   menu.hide();
   tree.reset();
   grid.reset();
@@ -440,11 +551,11 @@ function onSession(data) {
 
 function onRoot(data) {
   const before = model.root;
-  if (data.state !== before?.state || data.path !== before?.path) menu.hide(); // 开着的菜单里的路径是旧根目录下的
-  if (data.state !== RootState.READY || before?.path !== data.path) closeInfo(); // 属性页看的是旧根目录下的路径
+  if (data.state !== before?.state || data.path !== before?.path) { menu.hide(); intent = null; endRunning(); } // 开着的菜单里的路径是旧根目录下的；换根目录不播过渡
+  if (data.state !== RootState.READY || before?.path !== data.path) closeInfo(false, true); // 属性页看的是旧根目录下的路径
   const scope = model.scope;
   const done = model.receive(data);
-  if (model.scope !== scope) { invalidateScroll(); pending.preview = null; } // 换了根目录（同根重建不算）：旧根目录的位置和记录不能给新的用，待恢复的预览位置也是
+  if (model.scope !== scope) { invalidateScroll(); pending.preview = null; press.reset(); } // 换了根目录（同根重建不算）：旧根目录的位置和记录不能给新的用，待恢复的预览位置也是
   if (done && data.state === RootState.READY) {
     if (before?.path !== data.path) { if (model.opened !== null) preview.reload(); } else preview.refresh(); // 换了根目录，opened 已清空：旧预览随即关掉，不再读
   }

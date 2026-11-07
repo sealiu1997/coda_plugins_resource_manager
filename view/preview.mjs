@@ -73,6 +73,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     ...(copyInHead ? [action('复制路径', 'copy', copyPath)] : []), ...extra), body);
 
   let path = null, token = 0, shown = null, objectUrl = null; // shown：当前显示的 { size, mtimeMs }
+  let opens = 0, stoppedAt = -1; // 打开次数和上一次停止时的次数：释放只在停止之后没有再打开过时才做（返回的退场还没结束又打开了）
   let carry = null; // 待恢复的位置 { scroll, settle }：open 带进来，读取真正用上或作废后才清
   const settle = used => { const c = carry; carry = null; c?.settle(used); };
   let metaText = ' ', metaTitle = '', stale = null; // stale：后台刷新失败的原因，此时正文还是上次的
@@ -157,6 +158,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   return {
     open(next, scroll = null) {
       settle(false);
+      opens++;
       path = next;
       const base = next.split('/').pop();
       name.textContent = base;
@@ -170,8 +172,19 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     refresh() { return path === null ? undefined : load(true); },
     // 内容的来源变了（根目录换了位置）：旧正文不能留，也不能按元数据判断「没变」。
     reload() { return path === null ? undefined : load(false); },
-    close() { settle(false); token++; path = null; shown = null; setMeta(' '); revoke(); body.replaceChildren(); },
-    scroll: () => ({ top: body.scrollTop, left: body.scrollLeft }),
+    // 停止（逻辑关闭，立即）：不再读、不再刷新，待恢复的位置结算；画面（正文、图片的 URL）留着，由 release 在退场结束时清掉。
+    stop() { settle(false); token++; path = null; shown = null; stoppedAt = opens; },
+    // 释放（画面）：停止之后又打开过就什么都不做。
+    release() {
+      if (path !== null || stoppedAt !== opens) return;
+      setMeta(' ');
+      revoke();
+      body.replaceChildren();
+    },
+    // 停止并立即释放：换会话、换根目录、Mac，以及没有过渡的所有关闭。
+    close() { this.stop(); this.release(); },
+    // 已停止的预览没有位置：保存状态时按 0 算，同关闭后清空正文的结果。
+    scroll: () => (path === null ? { top: 0, left: 0 } : { top: body.scrollTop, left: body.scrollLeft }),
     onScroll: fn => body.addEventListener('scroll', fn, { passive: true }),
     get path() { return path; },
   };

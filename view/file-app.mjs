@@ -10,6 +10,7 @@ import { mountMenu } from './menu.mjs';
 import { noticeText } from './model.mjs';
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
+import { mountPress } from './press.mjs';
 import { RootState } from './protocol.mjs';
 
 const coda = window.coda;
@@ -36,6 +37,7 @@ let restore = parseScroll(quiet(() => coda.getState()));
 const conn = connect(coda, { handlers: { session: onSession, root: onRoot, changed: onChanged }, onStatus: () => schedule() });
 const hint = mountHint($('hint'));
 const menu = mountMenu($('menu'));
+mountPress({ consumed: menu.consumed }); // 按下反馈：刷新、复制、重试等按钮同资源页（第 17.3 节）
 const chat = createChat({ link: conn.link, copy: text => coda.copy(text), hint });
 const preview = mountPreview($('preview'), {
   read: (path, offset) => conn.link.call('read', { path, offset }), copy: text => coda.copy(text),

@@ -6,7 +6,7 @@ import { browseAction, previewAction } from '../view/keys.mjs';
 import { stepRows } from '../view/tree.mjs';
 import { visible } from './support/dom.mjs';
 import { flush } from './support/fake.mjs';
-import { cmd, drain, press, rowNamed, savedOf, selectedCells, selectedRows, startMac } from './support/finder.mjs';
+import { cmd, drain, press, rowNamed, savedOf, selectedCells, selectedRows, startMac, clickOn } from './support/finder.mjs';
 
 const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
 const reads = host => host.sent.filter(m => m.type === 'read');
@@ -108,7 +108,7 @@ test('列表：↓ ↑ 移动选中（没有选中时从两端开始），匹配
   assert.deepEqual(selectedRows(page), ['a.txt']);
   press(page.tree, 'ArrowUp');
   assert.deepEqual(selectedRows(page), ['dir']);
-  page.tree.dispatch('click'); // 取消选中
+  clickOn(page.tree); // 取消选中
   press(page.tree, 'ArrowUp');
   assert.deepEqual(selectedRows(page), ['dev'], '没有选中 ↑ 选最后一个');
   press(page.tree, 'ArrowDown');
