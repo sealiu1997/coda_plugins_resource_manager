@@ -128,3 +128,15 @@ test('页面重建：旧页面迟到的 searched 撞上新页面同号的 list�
   assert.deepEqual(outcome.entries, []);
   assert.equal(link.receive({ type: 'listed', generation: 1, requestId, entries: [] }), false, '结算过的不再结算');
 });
+
+test('经 activate：hello 之后旧页面的搜索不回答（没有新搜索顶替它时也一样）', async t => {
+  const root = await repo(t), { gate, hooks } = gateOn('lstat', 'needle.txt'), spy = countingFs({ hooks });
+  const { view } = await started(fakeCoda({ A: checkoutOf(root) }), 'A', { spy });
+  send(view, 'search', 'old-q1', { query: 'needle', hidden: false });
+  await waitFor(() => spy.counts.lstat >= 3, '读取已发出');
+  view.send({ type: 'hello' });
+  gate.resolve();
+  await flush();
+  await flush();
+  assert.equal(view.of('searched').length, 0);
+});

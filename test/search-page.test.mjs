@@ -418,3 +418,27 @@ test('过渡：结果 → 预览是外层 browse → preview（浏览区层滑�
   const added = ctx.page.motion.animations.slice(before);
   assert.deepEqual(added.map(anim => anim.el), [ctx.page.preview, ctx.page.browse]);
 });
+
+test('新结果里没有的选中清掉：之后结果里再出现它也不是选中的', async t => {
+  const ctx = await startSearch(t);
+  await search(ctx, 'x', [hit('dir/x.txt'), hit('dir/y.txt')]);
+  clickOn(hitNamed(ctx.page, 'dir/x.txt'));
+  await search(ctx, 'y', [hit('dir/y.txt')]);
+  await search(ctx, 'x', [hit('dir/x.txt'), hit('dir/y.txt')]);
+  assert.deepEqual(selectedHits(ctx.page), []);
+});
+
+test('清空搜索词后再搜：旧结果不会冒出来；根目录不可用再就绪后重搜期间也不显示旧结果', async t => {
+  const ctx = await startSearch(t);
+  await search(ctx, 'x', [hit('dir/x.txt')]);
+  type(ctx.page, '');
+  await flush();
+  await search(ctx, 'y'); // 不回答
+  assert.deepEqual(hitNames(ctx.page), [], '清空时结果已经丢了');
+  const second = await startSearch(t);
+  await search(second, 'x', [hit('dir/x.txt')]);
+  second.page.post({ type: 'root', generation: second.host.generation, state: 'gone', path: '/A' });
+  second.page.post({ type: 'root', generation: second.host.generation, state: 'ready', path: '/A' });
+  await flush();
+  assert.deepEqual(hitNames(second.page), [], '丢掉的结果不再显示，重搜的结果来之前是空的');
+});
