@@ -1875,7 +1875,7 @@ try {
     // -- Mac 说明区的重试
     await send('Page.enable');
     const hook = (await send('Page.addScriptToEvaluateOnNewDocument', { source: rejectHello })).result.identifier;
-    try { await open('mac', 'mac', theme, { ready: '#notice button' }); } catch (e) { console.log('DBG', await evalStrict(`JSON.stringify({ es: String(window.EventSource).slice(0, 40), pm: String(coda.postMessage).slice(0, 80), url: location.href })`)); throw e; }
+    await open('mac', 'mac', theme, { ready: '#notice button' });
     await macProbe('说明区「重试」', theme, `document.querySelector('#notice button')`, 'top');
     await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: hook });
 
