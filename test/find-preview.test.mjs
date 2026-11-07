@@ -264,6 +264,15 @@ test('refresh 保留查找：内容没变什么都不动；内容变了词和查
   assert.equal(input(page).value, 'foo');
   assert.equal(count(page), '2/3', '最近的是起点 8');
   assert.equal(pbody(page).scrollTop, 33, '不滚动');
+  // 当前这处不在可见区时，内容变了也不滚（只有用户导航才滚）
+  pbody(page).getBoundingClientRect = () => ({ top: 0, bottom: 100, left: 0, right: 300, height: 100, width: 300 });
+  env.rectOf = () => ({ top: 900, bottom: 920, left: 150, right: 160, height: 20, width: 10 });
+  host.files['a.txt'] = { text: 'foo\nbar foo foo foo\n', mtimeMs: 5 };
+  host.changed();
+  await flush();
+  assert.equal(pbody(page).scrollTop, 33, '刷新不滚动，即使当前这处在可见区外');
+  press(input(page), 'Enter');
+  assert.ok(pbody(page).scrollTop > 33, '用户导航才滚');
   host.files['a.txt'] = { text: 'foo xx foo\n', mtimeMs: 3 }; // 起点 0、7：旧起点 8 离 7 近
   host.changed();
   await flush();

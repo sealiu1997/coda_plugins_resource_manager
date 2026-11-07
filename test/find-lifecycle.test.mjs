@@ -17,9 +17,10 @@ async function mounted(t) {
     const data = Buffer.from(files[path]);
     return { data: data.toString('base64'), offset: 0, size: data.length, mtimeMs: 1, kind: 'text', eof: true };
   };
-  const el = new Element('div'), preview = mountPreview(el, { read, copy() {} });
+  const eaten = new WeakSet();
+  const el = new Element('div'), preview = mountPreview(el, { read, copy() {}, consumed: event => eaten.has(event) });
   const type = text => { const input = el.find(n => n.classList.contains('finput'))[0]; input.value = text; input.dispatch('input'); };
-  return { env, preview, el, files, type, tick: ms => t.mock.timers.tick(ms) };
+  return { env, preview, el, files, type, eaten, tick: ms => t.mock.timers.tick(ms) };
 }
 
 test('open 换了文件：查找关闭，标记删除；同一个文件 refresh 保留；stop、close、reload 关闭', async t => {
@@ -76,4 +77,24 @@ test('stop 之后迟到的防抖和批次不注册；release 只清画面，不�
   preview.release();
   assert.equal(env.registry.get('find'), marks, 'release 不碰查找');
   assert.equal(preview.findOpen, true);
+});
+
+test('同一个文件 open 不关查找（只有换了文件才关）', async t => {
+  const { preview } = await mounted(t);
+  await preview.open('a.txt');
+  preview.openFind();
+  await preview.open('a.txt');
+  assert.equal(preview.findOpen, true);
+});
+
+test('菜单消费掉的 Esc 不关查找条', async t => {
+  const { preview, el, eaten } = await mounted(t);
+  await preview.open('a.txt');
+  preview.openFind();
+  const event = { type: 'keydown', key: 'Escape', preventDefault() {} };
+  eaten.add(event);
+  el.emit(event);
+  assert.equal(preview.findOpen, true);
+  el.emit({ type: 'keydown', key: 'Escape', preventDefault() {} });
+  assert.equal(preview.findOpen, false);
 });

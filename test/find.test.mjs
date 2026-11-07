@@ -78,3 +78,9 @@ test('终点正好落在节点边界：Range 的终点在前一个节点的末�
   assert.equal(range.endOffset, 2);
   assert.equal(range.endNode, index.nodes[0].node);
 });
+
+test('上限就是 10000 这个数（不随常量变）：10001 个字符找 a，保留 10000 处且 more', () => {
+  const found = findMatches('a'.repeat(10_001), 'a');
+  assert.deepEqual([found.list.length, found.more], [10_000, true]);
+  assert.equal(findMatches('a'.repeat(10_000), 'a').more, false);
+});
