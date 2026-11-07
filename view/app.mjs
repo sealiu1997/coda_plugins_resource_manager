@@ -167,7 +167,8 @@ function begin(anims, { ids = [], leaving = null, after = [] } = {}) {
     for (const fn of mine.after) fn();
     applyPanes(mode());
   } };
-  for (const anim of anims) anim.onfinish = () => { if (--pending === 0) mine.end(); };
+  // 浏览器自己取消一条动画时只触发 cancel、不触发 finish：任一动画取消都结束整次过渡（end 幂等，它自己 cancel 引出的 oncancel 回来什么都不做）。
+  for (const anim of anims) { anim.onfinish = () => { if (--pending === 0) mine.end(); }; anim.oncancel = () => mine.end(); }
   return mine;
 }
 

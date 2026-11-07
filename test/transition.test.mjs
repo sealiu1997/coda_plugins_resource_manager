@@ -492,3 +492,76 @@ test('滑动期间收到 back 事件照常处理：上一个动画先结束到�
   assert.equal(moving(), false);
   assert.deepEqual(shown(ctx.page), ['tree']);
 });
+
+// ---- 动画被取消（浏览器自己取消只触发 cancel，不触发 finish）----
+test('取消一条动画、另一条正常完成：过渡结束，.moving 去掉，只剩一层可见，释放一次', async t => {
+  const ctx = await start(t);
+  const { page, host } = ctx;
+  await tap(ctx, 'a.txt');
+  finishAll(ctx);
+  host.back(1);
+  await flush();
+  const [first, second] = live(ctx);
+  first.cancel();
+  assert.equal(moving(), false);
+  assert.deepEqual(shown(page), ['tree']);
+  assert.equal(previewText(page), '', '释放');
+  assert.ok(second.canceled, '其余动画被结束');
+  second.finish(); // 迟到的 finish：什么都不做
+  assert.equal(moving(), false);
+  assert.deepEqual(shown(page), ['tree']);
+});
+
+test('两条都被取消：只结束一次，释放一次', async t => {
+  const ctx = await start(t);
+  const { page, host } = ctx;
+  await tap(ctx, 'a.txt');
+  finishAll(ctx);
+  host.back(1);
+  await flush();
+  let releases = 0;
+  const body = page.preview.find(node => node.classList.contains('pbody'))[0];
+  const real = body.replaceChildren.bind(body);
+  body.replaceChildren = (...nodes) => { releases++; return real(...nodes); };
+  for (const anim of live(ctx)) anim.cancel();
+  assert.equal(moving(), false);
+  assert.deepEqual(shown(page), ['tree']);
+  assert.equal(releases, 1, '释放只执行一次');
+});
+
+test('打开时被取消：.moving 去掉，浏览区 .off，预览是唯一一层', async t => {
+  const ctx = await start(t);
+  const { page } = ctx;
+  await tap(ctx, 'a.txt');
+  live(ctx)[1].cancel();
+  assert.equal(moving(), false);
+  assert.deepEqual(shown(page), ['preview']);
+  assert.equal(previewText(page), 'AAA', '没有释放新打开的');
+});
+
+test('返回被取消之后又打开过的不释放：取消发生在重新打开之后的那次过渡', async t => {
+  const ctx = await start(t, { hold: true });
+  const { page, host } = ctx;
+  await tap(ctx, 'a.txt');
+  finishAll(ctx);
+  host.back(1);
+  await flush();
+  const leaving = live(ctx);
+  await tap(ctx, 'a.txt');
+  host.release(host.heldReads.at(-1));
+  await flush();
+  assert.ok(leaving.every(anim => anim.canceled));
+  assert.equal(previewText(page), 'AAA', '新打开的没被旧过渡的释放清掉');
+});
+
+test('目录淡入被取消：过渡结束（不留着 running），下一次淡入照常播', async t => {
+  const ctx = await start(t, { state: stateOf(record(), 'icons') });
+  cell(ctx.page, 'dir').dispatch('click');
+  await flush();
+  fades(ctx)[0].cancel();
+  assert.equal(moving(), false);
+  ctx.host.back(1);
+  await flush();
+  assert.equal(fades(ctx).length, 2);
+  assert.ok(!fades(ctx)[1].canceled);
+});
