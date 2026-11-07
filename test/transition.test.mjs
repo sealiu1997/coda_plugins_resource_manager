@@ -159,6 +159,7 @@ test('场景：退场还没结束又打开（同一个文件）：上一个动�
   assert.deepEqual(operable(page), ['preview']);
   assert.deepEqual(shown(page), ['tree', 'preview']);
   assert.equal(host.heldReads.length, 2, '重新读');
+  assert.equal(page.preview.find(node => node.classList.contains('pmeta'))[0].textContent, '读取中…', '旧动画的释放没有擦掉新打开的状态（比对打开次数）');
   await (async () => { host.release(first); await flush(); })();
   assert.equal(previewText(page), '', '作废的第一次读取不显示');
   host.release(host.heldReads[1]);

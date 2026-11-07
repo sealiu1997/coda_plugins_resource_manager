@@ -176,7 +176,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     stop() { settle(false); token++; path = null; shown = null; stoppedAt = opens; },
     // 释放（画面）：停止之后又打开过就什么都不做。
     release() {
-      if (path !== null || stoppedAt !== opens) return;
+      if (stoppedAt !== opens) return; // 停止之后又打开过（打开次数变了）：这一屏是新的，不是退场的旧页
       setMeta(' ');
       revoke();
       body.replaceChildren();

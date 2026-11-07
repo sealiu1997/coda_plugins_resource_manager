@@ -115,7 +115,7 @@ export function mountInfo(el, { stat, size, rootPath, round, back = null }) {
       stoppedAt = opens;
     },
     release() {
-      if (path !== null || stoppedAt !== opens) return;
+      if (stoppedAt !== opens) return;
       head.replaceChildren();
       body.replaceChildren();
     },
