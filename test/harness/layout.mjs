@@ -2030,7 +2030,7 @@ try {
   check('iPhone 打开的中途：目标页（预览）能操作，离开的目录树 inert', mid.tree.inert && !mid.preview.inert && /leaving/.test(mid.tree.cls), JSON.stringify({ tree: mid.tree.inert, preview: mid.preview.inert }));
   await shotKeep('ios-open-mid');
   await release();
-  await until(`document.getAnimations().length === 0`, '打开：过渡结束');
+  await until(`document.getElementById('tree').classList.contains('off')`, '打开：过渡结束（finish 事件是异步的，等页面处理完它）');
   let done = await evaluate(probePanes);
   check('iPhone 打开结束后：只有预览一层可见，目录树 .off 且 inert，没有 layer、leaving 残留，没有动画', done.tree.off && done.tree.inert && !done.preview.off && !done.preview.inert && !/layer|leaving/.test(done.tree.cls + done.preview.cls) && done.anims === 0, JSON.stringify(done));
   await evaluateLive(`window.__hold = 0.3`);
@@ -2043,7 +2043,7 @@ try {
     && popCovered.tree && !popCovered.preview && popExposed !== null && popExposed.tree && !popExposed.preview && !mid.tree.inert && mid.preview.inert && /leaving/.test(mid.preview.cls), JSON.stringify({ mid, popCovered, popExposed }));
   await shotKeep('ios-back-mid');
   await release();
-  await until(`document.getAnimations().length === 0`, '返回：过渡结束');
+  await until(`document.getElementById('preview').classList.contains('off')`, '返回：过渡结束（finish 事件是异步的，等页面处理完它）');
   done = await evaluate(probePanes);
   check('iPhone 返回结束后：只有目录树可见，预览 .off 且 inert、内容在退场结束时释放，没有 layer、leaving 残留', !done.tree.off && !done.tree.inert && done.preview.off && done.preview.inert && done.preview.text === 0 && !/layer|leaving/.test(done.tree.cls + done.preview.cls) && done.anims === 0, JSON.stringify(done));
   await evaluateLive(`window.__hold = null`);
