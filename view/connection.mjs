@@ -1,6 +1,6 @@
 // 页面到模块的连接：请求与回答（Link）、hello 握手与超时、按代次分发协议消息。
 // 树页和文件页共用。只管连接：树的 Model、状态保存、提示文案和 DOM 都在各自的页面里。
-import { ErrorCode, Type, isReply, messageSize } from './protocol.mjs';
+import { ErrorCode, REQUEST_ID_MAX, ReplyOf, Type, isReply, messageSize } from './protocol.mjs';
 
 export const TIMEOUT_MS = 30_000;
 
@@ -10,16 +10,23 @@ export class Stale extends Error { constructor() { super('已过期'); this.stal
 export class Cancelled extends Stale { constructor() { super(); this.cancelled = true; } }
 export class RequestError extends Error { constructor(code, message) { super(message); this.code = code; } }
 
-// 请求与回答按 requestId 对应。回答要代次相同、请求号还在等待才算；换会话时 reset 作废所有等待并停掉超时。
+// 页面实例的请求号前缀：页面加载时生成一次。重建后的新页面请求号从 1 重新数，没有前缀就会和旧页面还在路上的回答撞上。
+export const newPrefix = () => Math.random().toString(36).slice(2, 10);
+
+// 请求与回答按 requestId 对应。回答要代次相同、请求号还在等待、类型是这个请求该收的那种才算；换会话时 reset 作废所有等待并停掉超时。
 // 一个请求只在 #finish 里结算：回答、发送失败、超时、代次失效、取消都走它，只结算一次，同时清掉定时器和取消监听。
 export class Link {
   generation = null;
   pending = new Map();
   #next = 1;
 
-  constructor({ post, timers = globalThis, timeoutMs = TIMEOUT_MS }) {
+  // prefix：请求号带它（<前缀>-q1），总长不超过 REQUEST_ID_MAX；不给就是 q1，测试和手动传输用。
+  constructor({ post, timers = globalThis, timeoutMs = TIMEOUT_MS, prefix = '' }) {
     Object.assign(this, { post, timers, timeoutMs });
+    this.prefix = prefix === '' ? '' : `${prefix.slice(0, REQUEST_ID_MAX - 12)}-`;
   }
+
+  #id(n) { return `${this.prefix}q${n}`; }
 
   // 结算 requestId 对应的等待：还在等才算，返回是否结算了。
   #finish(requestId, settle) {
@@ -39,7 +46,7 @@ export class Link {
 
   // 这条请求发出去的消息有多大（含信封）：用下一个请求号算，和 call 真正发出的一致。页面用它在发之前判断会不会超过消息上限。
   size(type, fields) {
-    return messageSize({ type, generation: this.generation, requestId: `q${this.#next}`, ...fields });
+    return messageSize({ type, generation: this.generation, requestId: this.#id(this.#next), ...fields });
   }
 
   // options.signal：中止后请求静默作废（Cancelled）。options.cancel：中止时还要告诉模块的消息类型，带 generation 和 requestId；
@@ -47,11 +54,11 @@ export class Link {
   call(type, fields, { signal, cancel } = {}) {
     if (this.generation === null) return Promise.reject(new Stale());
     if (signal?.aborted) return Promise.reject(new Cancelled());
-    const { generation } = this, requestId = `q${this.#next++}`;
+    const { generation } = this, requestId = this.#id(this.#next++);
     return new Promise((resolve, reject) => {
       const fire = error => this.#finish(requestId, entry => entry.reject(error));
       const timer = this.timers.setTimeout(() => fire(new RequestError('timeout', '30 秒没有回答')), this.timeoutMs);
-      const entry = { resolve, reject, timer, signal, posted: false };
+      const entry = { resolve, reject, timer, signal, posted: false, type };
       entry.onAbort = () => {
         const { posted } = entry;
         if (fire(new Cancelled()) && cancel && posted) this.#notify({ type: cancel, generation, requestId });
@@ -73,6 +80,9 @@ export class Link {
 
   receive(message) {
     if (message.generation !== this.generation) return false;
+    // 回答的类型不是这个请求该收的（别的页面实例的旧回答撞上了同一个请求号）：不结算，请求继续等它自己的回答。
+    const entry = this.pending.get(message.requestId);
+    if (entry && ReplyOf[entry.type] !== message.type) return false;
     return this.#finish(message.requestId, entry => {
       if (message.error) entry.reject(new RequestError(message.error.code, message.error.message));
       else entry.resolve(message);
@@ -86,7 +96,7 @@ export class Link {
 // 握手的结束条件是收到首个 root；之后不再提示超时。
 // onStatus：握手状态变了（开始、失败、重试）时调用，页面据此重画说明。
 export function connect(coda, { handlers, onStatus = () => {} }) {
-  const link = new Link({ post: message => coda.postMessage(message) });
+  const link = new Link({ post: message => coda.postMessage(message), prefix: newPrefix() });
   let answered = false, timer = null, failure = null;
 
   function fail(reason) {

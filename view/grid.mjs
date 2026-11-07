@@ -4,8 +4,8 @@ import { h } from './dom.mjs';
 import { infoText } from './format.mjs';
 import { mountGestures } from './gestures.mjs';
 import { icon, iconFor } from './icons.mjs';
-import { isHidden, joinPath } from './model.mjs';
-import { EntryKind } from './protocol.mjs';
+import { joinPath } from './model.mjs';
+import { EntryKind, isHidden } from './protocol.mjs';
 import { TITLES, rootName } from './tree.mjs';
 
 const OVERSCAN = 2; // 上下多画几行

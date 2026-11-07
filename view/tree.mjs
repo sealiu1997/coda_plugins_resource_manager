@@ -1,9 +1,9 @@
 // 目录树：visibleRows 把模型压成扁平行（纯逻辑）；mountTree 只画可见的那一段，上万条也不卡。
-import { EntryKind, SortKey } from './protocol.mjs';
+import { EntryKind, SortKey, isHidden } from './protocol.mjs';
 import { dateText, infoText, sizeText, subText } from './format.mjs';
 import { mountGestures } from './gestures.mjs';
 import { icon, iconFor } from './icons.mjs';
-import { isHidden, joinPath, parentOf } from './model.mjs';
+import { joinPath, parentOf } from './model.mjs';
 
 const OVERSCAN = 8;
 

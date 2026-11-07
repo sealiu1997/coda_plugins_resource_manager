@@ -8,8 +8,6 @@ export const MAX_LOADED = 100_000; // 读回保存的条数时认的上界（vie
 // 只管「按保存的条数恢复」，用户已经翻出来的条数不受限；也和 lib/tree.mjs 的目录上限无关。
 export const RESTORE_LIMIT = 20_000;
 const MAX_LOADED_DIRS = 500;
-const HIDDEN = new Set(['.git', '.DS_Store']);
-export const isHidden = name => HIDDEN.has(name);
 export const joinPath = (dir, name) => (dir ? `${dir}/${name}` : name);
 export const parentOf = path => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
 const inside = (path, dir) => path === dir || path.startsWith(`${dir}/`);
