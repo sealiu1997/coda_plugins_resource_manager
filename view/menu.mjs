@@ -204,7 +204,7 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
     const back = opener;
     opener?.setAttribute?.('aria-expanded', 'false');
     opener = null;
-    if (restore) back?.focus?.();
+    if (restore === true) back?.focus?.(); // 严格比较：hide 也被直接当事件回调用（滚动、resize、blur），Event 对象是真值
   }
 
   // 两个面板都算菜单里面。菜单开着时点菜单外：只关菜单，紧接着的那次点击不交给页面。
@@ -226,8 +226,8 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
     if (!el.hidden) eaten.add(event);
     hide(true);
   });
-  window.addEventListener('blur', hide);
-  window.addEventListener('resize', hide); // 旋转、拖窄侧栏：位置对不上了
+  window.addEventListener('blur', () => hide());
+  window.addEventListener('resize', () => hide()); // 旋转、拖窄侧栏：位置对不上了
   sub?.addEventListener('pointerenter', keep);
 
   return {

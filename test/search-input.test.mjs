@@ -325,3 +325,19 @@ test('iPhone 顶部标题：搜索时盖住了图标视图的目录，标题是�
   await flush();
   assert.equal(title(), 'dir');
 });
+
+test('搜索框 ↓：明确选中第一条，有旧选中时也一样（↓ 进结果 → 往下一条 → Esc 回搜索框 → 再按 ↓，选中的仍是第一条）', async t => {
+  const ctx = await startSearch(t);
+  await search(ctx, 'x', results);
+  const input = box(ctx.page), list = hitsEl(ctx.page);
+  input.focus();
+  press(input, 'ArrowDown');
+  assert.deepEqual(selectedHits(ctx.page), ['dir/x.txt']);
+  press(list, 'ArrowDown');
+  assert.deepEqual(selectedHits(ctx.page), ['dir/y.txt']);
+  press(list, 'Escape');
+  assert.equal(active(), input);
+  press(input, 'ArrowDown');
+  assert.deepEqual(selectedHits(ctx.page), ['dir/x.txt'], '不是相对移动：回到第一条');
+  assert.equal(active(), list);
+});

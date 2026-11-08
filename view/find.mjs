@@ -132,7 +132,8 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
   // 滚到这一处：只滚 body，竖向和横向都让它的起点进入可见区（横向扣掉行号列，键盘弹起时和 visualViewport 取交集），已经在可见区就不动。
   function scrollInto(range) {
     const r = range.getBoundingClientRect(), b = body.getBoundingClientRect(), view = globalThis.visualViewport;
-    const left = b.left + gutterWidth(), top = b.top, bottom = view ? Math.min(b.bottom, view.offsetTop + view.height) : b.bottom;
+    const left = b.left + gutterWidth(), top = view ? Math.max(b.top, view.offsetTop) : b.top, bottom = view ? Math.min(b.bottom, view.offsetTop + view.height) : b.bottom;
+    if (bottom - top <= 0) return; // 可见区和 visualViewport 的交集是空的：没有地方可看，不滚
     if (r.top < top || r.bottom > bottom) body.scrollTop += r.top - (top + Math.max(0, (bottom - top - r.height) / 2));
     if (r.left < left || r.left > b.right) body.scrollLeft += r.left - (left + 24);
   }

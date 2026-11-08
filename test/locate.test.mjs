@@ -292,3 +292,20 @@ test('图标视图进入上一层之后不触发 landed 的补滚动：居中的
   await flush();
   assert.equal(gridBody(ctx.page).scrollTop, top);
 });
+
+test('「再显示」在途时启动定位：等这一页回来，找到并居中（不是安静地作废）', async t => {
+  const ctx = await start(t, { listing: { '': ['dir/'] }, prepare: host => host.held.add('dir') });
+  ctx.page.tree.find(node => node.classList.contains('row') && node.textContent.includes('dir'))[0].find(n => n.classList.contains('chev'))[0].dispatch('click');
+  await flush();
+  ctx.host.answer(await nextHeld(ctx.host), page(['x.txt'], 'c1'));
+  await flush();
+  const more = ctx.page.tree.find(node => node.classList.contains('row') && node.classList.contains('more'))[0];
+  more.dispatch('click'); // 用户点了「再显示」：第二页在途
+  await flush();
+  assert.equal(ctx.host.heldLists.length, 1);
+  await ask(ctx, 'dir/y.txt');
+  assert.equal(ctx.host.heldLists.length, 1, '定位等这一页，不另发');
+  ctx.host.answer(ctx.host.heldLists.shift(), page(['y.txt']));
+  await flush();
+  assert.deepEqual(selectedRows(ctx.page), ['y.txt']);
+});

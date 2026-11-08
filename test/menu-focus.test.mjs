@@ -54,3 +54,14 @@ test('点菜单外关闭：不交还焦点；滚动、旋转关闭也不交；�
   assert.equal(document.activeElement, other, '右键菜单没有按钮');
   void page;
 });
+
+test('resize、blur、滚动关菜单：事件回调不是「交还焦点」（Event 对象是真值，只认 restore === true）', async t => {
+  const { menu, opener, other, items } = await setup(t);
+  for (const close of [() => window.emit({ type: 'resize' }), () => window.emit({ type: 'blur' }), () => menu.hide({ type: 'scroll' })]) {
+    other.focus();
+    menu.open(opener, items);
+    close();
+    assert.equal(menu.hidden, true);
+    assert.equal(document.activeElement, other, '焦点留在原处，没有被拉回按钮');
+  }
+});

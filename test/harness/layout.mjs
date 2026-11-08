@@ -2335,6 +2335,7 @@ try {
       const t0 = performance.now(); CSS.highlights.set('find', hl); await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); out.push([count, Math.round(performance.now() - t0)]); CSS.highlights.delete('find'); }
     return { nodes: nodes.length, out }; })()`);
   console.log(`数字（诊断：${grow.nodes} 个文本节点的上色文件里直接注册 N 个跨 token 的 Range，到画完两帧）：${grow.out.map(([n, ms]) => `${n} 个 ${ms} 毫秒`).join('，')}`);
+  const COUNT_BUDGET_MS = 1000, GAP_BUDGET_MS = 100; // 长行：输入到计数出来（实测 165）；输入到完成期间最大帧间隔（实测 17，一帧）：各留 6 倍左右余量
   const FRAME_BUDGET_MS = 200; // 长行不卡的门槛：实测画两帧 25～33 毫秒，留 6 倍以上余量（页面卡死时是十几秒以上）
   const SLOW_MS = 20000; // 一次超过这么久就不再重复，直接记下数字（页面卡在绘制上，重复只是白等）
   async function perfSample([label, file, term]) {
@@ -2391,23 +2392,44 @@ try {
   }
   const land = await findShot('landscape', 'ios', 'light', 'find-ios-landscape');
   check('查找 iPhone 横屏：输入框占剩下的宽度，计数「N/M」不换行，按钮至少 44 点，查找条在一行里，都在屏幕内', land.font >= 16 && land.minBtn >= 44 && land.countH < 30 && land.inside && land.fixed, JSON.stringify(land));
-  // 有长行的文件（540 KiB 单行）：不标高亮（只计数、导航、滚动），只验不卡：计数出来、CSS.highlights 里没有注册、期间页面持续出帧、Esc 能关查找条。
+  // 有长行的文件（540 KiB 单行）：不标高亮（只计数、导航、滚动），只验不卡：输入之前就开始记 rAF，统计从输入到完成这段时间里最大的帧间隔；
+  // 计数出来、CSS.highlights 里没有注册；完成后「画两帧」仍很快；Esc 能关查找条。
   await openFile('window', 'light', 'session=A&path=perf-long.txt', 'mac');
   await frames();
   await kb('f', 'KeyF', 70, 4);
-  await evaluate(`${fq}.focus(); window.__t0 = performance.now(); performance.clearMarks('find-done')`);
+  await evaluate(`${fq}.focus(); performance.clearMarks('find-done'); (() => { const g = window.__frames = { stamps: [], stop: false }; const tick = t => { g.stamps.push(t); if (!g.stop) requestAnimationFrame(tick); }; requestAnimationFrame(tick); })()`);
+  await wait(300); // 帧已经在出
+  await evaluateLive(`window.__t0 = performance.now()`);
   await send('Input.insertText', { text: 'ab cd' });
   await until(`document.querySelector('.fcount').textContent.length > 0 && performance.getEntriesByName('find-done').length > 0`, '长行：计数出来');
+  await wait(300); // 完成之后再记一会儿
+  const longState = await evaluateLive(`(() => { const g = window.__frames; g.stop = true; const t0 = window.__t0, done = performance.getEntriesByName('find-done')[0].startTime, st = g.stamps; let from = 0; while (from + 1 < st.length && st[from + 1] <= t0) from++;
+    const gaps = []; for (let i = from + 1; i < st.length && st[i - 1] <= done + 100; i++) gaps.push(st[i] - st[i - 1]);
+    return { count: document.querySelector('.fcount').textContent, find: CSS.highlights.has('find'), current: CSS.highlights.has('find-current'), counted: done - t0, maxGap: Math.max(...gaps), frames: gaps.length }; })()`);
   const frameMs = [];
   for (let i = 0; i < 5; i++) frameMs.push(await evaluateLive(`new Promise(r => { const t0 = performance.now(); requestAnimationFrame(() => requestAnimationFrame(() => r(performance.now() - t0))); })`));
-  const longState = await evaluateLive(`({ count: document.querySelector('.fcount').textContent, find: CSS.highlights.has('find'), current: CSS.highlights.has('find-current'), counted: performance.getEntriesByName('find-done')[0].startTime - window.__t0 })`);
   const worstFrames = Math.max(...frameMs);
-  console.log(`数字（长行样本 540 KiB 单行，搜 ab cd）：计数 ${longState.count}，输入到计数出来 ${longState.counted.toFixed(0)} 毫秒，之后 5 次「画两帧」耗时 ${frameMs.map(x => x.toFixed(0))} 毫秒`);
+  console.log(`数字（长行样本 540 KiB 单行，搜 ab cd）：计数 ${longState.count}，输入到计数出来 ${longState.counted.toFixed(0)} 毫秒；输入到完成期间 ${longState.frames} 帧、最大帧间隔 ${longState.maxGap.toFixed(0)} 毫秒；完成后 5 次「画两帧」耗时 ${frameMs.map(x => x.toFixed(0))} 毫秒`);
   check('查找 长行（540 KiB 单行）：计数出来，CSS.highlights 里没有 find 和 find-current（有长行不标高亮）', /^1\/\d+\+?$/.test(longState.count) && !longState.find && !longState.current, JSON.stringify(longState));
-  check(`查找 长行：计数出来之后页面持续出帧——5 次「画两帧」每次不超过 ${FRAME_BUDGET_MS} 毫秒（实测最长 ${worstFrames.toFixed(0)} 毫秒）`, worstFrames <= FRAME_BUDGET_MS, JSON.stringify(frameMs));
+  check(`查找 长行：输入到计数出来不超过 ${COUNT_BUDGET_MS} 毫秒（实测 ${longState.counted.toFixed(0)}）`, longState.counted <= COUNT_BUDGET_MS, JSON.stringify(longState));
+  check(`查找 长行：从输入到完成这段时间里页面一直在出帧——最大帧间隔不超过 ${GAP_BUDGET_MS} 毫秒（实测 ${longState.maxGap.toFixed(0)}，${longState.frames} 帧）`, longState.maxGap <= GAP_BUDGET_MS && longState.frames >= 5, JSON.stringify(longState));
+  check(`查找 长行：完成之后 5 次「画两帧」每次不超过 ${FRAME_BUDGET_MS} 毫秒（实测最长 ${worstFrames.toFixed(0)} 毫秒，补充）`, worstFrames <= FRAME_BUDGET_MS, JSON.stringify(frameMs));
   await kb('Escape', 'Escape', 27);
   await until(`document.querySelector('.fbar').hidden`, '长行：Esc 关查找条');
   check('查找 长行：Esc 能关查找条', true);
+  // 查找没完成时按 Esc：取消，标记删光，之后不再有批次注册（密集 token 文件，分批要几百毫秒）
+  await openFile('window', 'light', 'session=A&path=perf-dense.js', 'mac');
+  await frames();
+  await kb('f', 'KeyF', 70, 4);
+  await evaluate(`${fq}.focus(); performance.clearMarks('find-done')`);
+  await send('Input.insertText', { text: '1;y=' });
+  await untilLive(`(CSS.highlights.get('find')?.size ?? 0) > 0`, '分批：第一批已经注册');
+  const midway = await evaluateLive(`performance.getEntriesByName('find-done').length === 0`);
+  await kb('Escape', 'Escape', 27);
+  await until(`document.querySelector('.fbar').hidden && CSS.highlights.size === 0`, '查找中途 Esc：查找条关、标记删光');
+  await wait(1200); // 原来要标完的时间之后
+  const after = await evaluateLive(`({ size: CSS.highlights.size, done: performance.getEntriesByName('find-done').length, hidden: document.querySelector('.fbar').hidden })`);
+  check('查找：没完成时按 Esc 取消——查找条关了，标记删光，之后（原来要标完的时间过去后）没有批次再注册、也没有 find-done', midway && after.size === 0 && after.done === 0 && after.hidden, JSON.stringify({ midway, after }));
   }
 
   exitCode = failures.length ? 1 : 0;

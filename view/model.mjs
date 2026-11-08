@@ -287,6 +287,10 @@ export class Model {
     if (!dir.next) return 'end';
     // 游标是按另一种排序取的（换排序时这个目录没重建过）：不用它，从第一页重取，条数比现在多一条。
     if (dir.sort !== this.sort) return this.#grown(path, dir, generation);
+    return dir.pending = this.#page(dir, path, generation); // 本次读取登记在 dir.pending 上：whenLoaded 等的就是它（游标过期后的重取经 #reload，自己登记）
+  }
+
+  async #page(dir, path, generation) {
     const token = ++dir.token, nav = this.#nav;
     dir.loading = true;
     this.onChange();

@@ -530,3 +530,19 @@ test('当前这处的颜色规则写在样式表里：底色 50%、文字改成�
   assert.match(rule('find-current'), /[^-]color: var\(--coda-foreground/, '当前这处的文字是正文色（.pbody 从 :root 继承的 --coda-foreground）');
   assert.match(sheet, /:root \{[^}]*color: var\(--coda-foreground/s, '正文色就是 :root 上的 --coda-foreground');
 });
+
+test('键盘弹起时 visualViewport 的 offsetTop 不为 0：可见区的顶边也和它取交集，在它上面的匹配要滚；交集为空不滚', async t => {
+  const { page, env } = await finding(t);
+  const body = pbody(page);
+  body.getBoundingClientRect = () => ({ top: 0, bottom: 500, left: 0, right: 300, height: 500, width: 300 });
+  globalThis.visualViewport = { offsetTop: 150, height: 100 };
+  t.after(() => { delete globalThis.visualViewport; });
+  env.rectOf = () => ({ top: 100, bottom: 120, left: 150, right: 160, height: 20, width: 10 });
+  body.scrollTop = 200;
+  press(input(page), 'Enter');
+  assert.equal(body.scrollTop, 200 + 100 - (150 + (250 - 150 - 20) / 2), '在 visualViewport 上边之外：滚进 150～250 的可见区');
+  globalThis.visualViewport = { offsetTop: 600, height: 100 }; // 和正文没有交集
+  body.scrollTop = 7;
+  press(input(page), 'Enter');
+  assert.equal(body.scrollTop, 7, '交集为空：不滚');
+});

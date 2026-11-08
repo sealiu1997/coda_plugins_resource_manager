@@ -143,9 +143,10 @@ export function mountTree(el, model, handlers, {
     else label.textContent = row.name;
     main.append(label);
     const parts = row.chevron === false ? [glyph, main] : [chevron, glyph, main];
-    if (!dead) {
+    {
       // 能打开的条目带信息；link、other 没有。文件夹没有的部分整个不画：iPhone 名字垂直居中，Mac 右侧不留空位。
-      const subContent = row.place ?? subText(row, time), metaContent = row.place ?? (model.sort === SortKey.DATE ? dateText(row, time) : sizeText(row));
+      // 搜索结果的所在目录（row.place）不受 dead 影响：失效的链接和 other 也要看得出在哪。
+      const subContent = row.place ?? (dead ? '' : subText(row, time)), metaContent = row.place ?? (dead ? '' : model.sort === SortKey.DATE ? dateText(row, time) : sizeText(row));
       if (subContent) {
         const sub = document.createElement('span');
         sub.className = 'sub caption secondary truncate';
@@ -210,7 +211,7 @@ export function mountTree(el, model, handlers, {
     render() { rows = rowsOf(); spacer.style.height = `${rows.length * rowH}px`; paintTitle(); paint(); },
     remeasure() { measure(); this.render(); },
     scroll: () => el.scrollTop,
-    scrollTo(top) { el.scrollTop = top; },
+    scrollTo(top) { el.scrollTop = top; paint(); },
     select: mark,
     center,
     activate,

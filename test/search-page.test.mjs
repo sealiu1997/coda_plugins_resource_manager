@@ -442,3 +442,42 @@ test('清空搜索词后再搜：旧结果不会冒出来；根目录不可用�
   await flush();
   assert.deepEqual(hitNames(second.page), [], '丢掉的结果不再显示，重搜的结果来之前是空的');
 });
+
+test('失效的链接和 other 的结果也显示所在目录（Mac 在右侧，iPhone 在第二行）；大小、日期仍不显示', async t => {
+  for (const platform of ['mac', 'ios']) {
+    const ctx = platform === 'mac' ? await startSearch(t) : await startPhone(t);
+    await search(ctx, 'q', [hit('dir/gone', 'link'), hit('dir/sock', 'other'), hit('top', 'link')]);
+    const cls = platform === 'mac' ? 'meta' : 'sub';
+    const places = hitRows(ctx.page).map(node => node.find(n => n.classList.contains(cls))[0]?.textContent);
+    assert.deepEqual(places, ['dir', 'dir', '工作目录'], platform);
+    assert.ok(hitRows(ctx.page).every(node => node.classList.contains('dead')));
+  }
+});
+
+test('changed 时结果行的菜单留着：重搜替换结果后执行原菜单项，仍按打开菜单时那一行的路径；目录树的行菜单照旧关', async t => {
+  const ctx = await startSearch(t);
+  Object.assign(ctx.host, { autoRead: true, files: { 'dir/x.txt': 'XX', 'other.txt': 'OO' } });
+  await search(ctx, 'x', [hit('dir/x.txt')]);
+  hitNamed(ctx.page, 'dir/x.txt').dispatch('contextmenu', { clientX: 5, clientY: 5 });
+  assert.equal(visible(ctx.page.menu), true);
+  ctx.host.changed();
+  await flush();
+  assert.equal(visible(ctx.page.menu), true, '结果行的菜单没有被 changed 关掉');
+  ctx.tick(300);
+  const requests = await searches(ctx.host);
+  ctx.host.answer(requests.at(-1), found([hit('other.txt')])); // 重搜：结果换成别的
+  await flush();
+  assert.deepEqual(hitNames(ctx.page), ['other.txt']);
+  assert.equal(visible(ctx.page.menu), true);
+  ctx.page.menu.find(node => node.textContent === '打开')[0].dispatch('click');
+  await flush();
+  assert.equal(ctx.host.reads().at(-1).path, 'dir/x.txt', '仍按那时的路径');
+  // 目录树的行菜单：changed 照旧关
+  type(ctx.page, '');
+  await flush();
+  rowNamed(ctx.page, 'a.txt').dispatch('contextmenu', { clientX: 5, clientY: 5 });
+  assert.equal(visible(ctx.page.menu), true);
+  ctx.host.changed();
+  await flush();
+  assert.equal(visible(ctx.page.menu), false);
+});

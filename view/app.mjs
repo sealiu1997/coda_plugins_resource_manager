@@ -40,6 +40,7 @@ model.view = persisted.view;
 const hint = mountHint($('hint'));
 const menu = mountMenu($('menu'), $('submenu'), { flyout: !isIOS, animate: isIOS }); // Mac 的二级菜单在左边弹出，iPhone 在菜单里切到下一层，菜单出现时有动画
 // 按下反馈：页面里只有一份（press.mjs）；菜单开着时点外面的那一下已被菜单消费，不加反馈、不选中。
+let menuFrom = null; // 现在开着的菜单从哪里打开的：'browse'（目录树、图标视图的行）、'result'（搜索结果的行）、null（别的）；changed 时按它决定关不关
 const press = mountPress({ identity: () => `${model.session}\n${model.scope}`, consumed: menu.consumed });
 const chat = createChat({ link: conn.link, copy: text => coda.copy(text), hint });
 // 属性页和图标视图的上一层：iPhone 用原生返回（coda.back）；Mac 的客户端会替声明了返回的页面画一个带小箭头的导航，
@@ -134,7 +135,7 @@ const preview = mountPreview($('preview'), {
   actions: isIOS ? [{ label: '更多', icon: 'ellipsis', run: (_, button) => toggleMore(button) }] : [{ label: '窗口', icon: 'window', run: openInView }], copyInHead: !isIOS,
   back: isIOS ? null : closePreview,
   // 选中文字的右键菜单只有 Mac：iPhone 用系统的选区菜单。
-  selectionMenu: isIOS ? null : (event, selection) => menu.open(event, { items: chat.selectionItems(selection) }),
+  selectionMenu: isIOS ? null : (event, selection) => { menu.open(event, { items: chat.selectionItems(selection) }); menuFrom = null; },
   consumed: menu.consumed, // 菜单开着时的 Esc 归菜单：查找条不处理
 });
 // 属性页：页内一层。
@@ -434,7 +435,7 @@ function changeView(view) {
 // 键盘激活没有 pointerdown，菜单外点击那条规则不管用：同一个按钮再次激活就关闭。
 function toggleMore(button) {
   if (!menu.hidden && menu.opener === button) menu.hide();
-  else menu.open(button, moreMenu());
+  else { menu.open(button, moreMenu()); menuFrom = null; }
 }
 
 function act(id, button) {
@@ -497,6 +498,7 @@ function pathMenu(event, row) {
   // Mac 的第一项和双击是同一个动作（右键不改选中）；文件夹在列表里写展开或收起，别的写打开。iPhone 轻点就是打开，菜单不变。
   const folder = row.kind === EntryKind.DIR, listed = model.view !== View.ICONS;
   const open = isIOS || dead ? [] : [{ label: folder && listed ? (row.open ? '收起' : '展开') : '打开', run: taken(() => browser().activate(row)) }, { separator: true }];
+  menuFrom = 'browse';
   menu.open(event, { title: row.path, detail: dead ? undefined : infoText(row) || undefined, items: [
     ...open,
     ...(dead ? [] : [{ label: '添加到聊天', run: taken(() => chat.add(row.path)) }]),
@@ -513,6 +515,7 @@ function pathMenu(event, row) {
 function resultMenu(event, row) {
   press.reset();
   const dead = row.kind === EntryKind.LINK || row.kind === EntryKind.OTHER, { path } = row;
+  menuFrom = 'result';
   menu.open(event, { title: path, items: [
     ...(isIOS || dead ? [] : [{ label: '打开', run: taken(() => (row.kind === EntryKind.DIR ? revealResult(path, true) : openResult(path))) }, { separator: true }]),
     ...(dead ? [] : [{ label: '添加到聊天', run: taken(() => chat.add(path)) }]),
@@ -563,7 +566,9 @@ function searchBoxKey(event) {
   } else if (event.key === 'ArrowDown' && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && searching() && search.rows().length > 0) {
     event.preventDefault();
     hits.focus();
-    hits.key('down');
+    const first = search.rows()[0].path; // 明确选中第一条（不是相对移动：有旧选中时 ↓ 会选到下一条）
+    if (search.select(first)) hits.select();
+    hits.scrollTo(0);
   }
 }
 hits.onKey(event => {
@@ -738,7 +743,8 @@ function onRoot(data) {
 
 function onChanged(data) {
   if (!model.receive(data)) return;
-  menu.hide(); // 开着的菜单可能指着已经删除的路径
+  // 开着的菜单可能指着已经删除的路径：目录树、图标视图的行菜单照旧关。结果行的菜单留着（第 18.3、18.4 节：重搜替换结果时菜单留着，操作按打开菜单时的路径做）。
+  if (menuFrom !== 'result') menu.hide();
   dataRound++;
   preview.refresh();
   info.refresh();

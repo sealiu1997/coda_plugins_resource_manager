@@ -143,3 +143,30 @@ test('round：换会话和每次 refresh（含换排序、换视图）都加一�
   t.session(2, 'B');
   assert.equal(t.model.round, base + 3);
 });
+
+test('「再显示」在途时 whenLoaded 等的就是这一页：回答后给 ok；失败给 failed；游标过期的重取也等到', async () => {
+  const t = manual();
+  await paged(t);
+  const more = t.model.loadMore('dir');
+  const waiting = t.model.whenLoaded('dir');
+  const request = (await t.lists('dir')).at(-1);
+  t.reply(request, entries(['f3'], null));
+  await more;
+  assert.equal(await waiting, 'ok');
+  assert.deepEqual(dirOf(t, 'dir').entries.map(e => e.name), ['f1', 'f2', 'f3']);
+  const second = manual();
+  await paged(second);
+  const failing = second.model.loadMore('dir');
+  const failed = second.model.whenLoaded('dir');
+  second.fail((await second.lists('dir')).at(-1), 'io_error', 'x');
+  await failing;
+  assert.equal(await failed, 'failed');
+  const third = manual();
+  await paged(third);
+  const expired = third.model.loadMore('dir');
+  const regained = third.model.whenLoaded('dir');
+  third.fail((await third.lists('dir')).at(-1), 'cursor_expired');
+  third.reply((await third.lists('dir')).at(-1), entries(['f1', 'f2', 'f3'], null));
+  await expired;
+  assert.equal(await regained, 'ok', '游标过期后重取经 #reload，登记自己的 pending');
+});
