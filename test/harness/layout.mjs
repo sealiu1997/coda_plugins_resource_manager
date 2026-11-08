@@ -2227,7 +2227,7 @@ try {
     await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
   };
-  const pngAt = buf => { // 同 0.7.2 的取像素：只认 8 位 RGB、RGBA
+  const pngDecode = buf => { // 同 0.7.2 的取像素：只认 8 位 RGB、RGBA；返回 { width, height, at(x, y) }
     let pos = 8, width = 0, height = 0, depth = 0, kind = 0;
     const idat = [];
     while (pos < buf.length) { const length = buf.readUInt32BE(pos), type = buf.toString('ascii', pos + 4, pos + 8), data = buf.subarray(pos + 8, pos + 8 + length); pos += 12 + length;
@@ -2239,8 +2239,9 @@ try {
       for (let x = 0; x < stride; x++) { const a = x >= bpp ? out[y * stride + x - bpp] : 0, b = y > 0 ? out[(y - 1) * stride + x] : 0, c = x >= bpp && y > 0 ? out[(y - 1) * stride + x - bpp] : 0, v = raw[y * (stride + 1) + 1 + x];
         const q = a + b - c, pa = Math.abs(q - a), pb = Math.abs(q - b), pc = Math.abs(q - c);
         out[y * stride + x] = (v + (filter === 0 ? 0 : filter === 1 ? a : filter === 2 ? b : filter === 3 ? (a + b) >> 1 : (pa <= pb && pa <= pc ? a : pb <= pc ? b : c))) & 255; } }
-    return [out[0], out[1], out[2]];
+    return { width, height, at: (x, y) => [out[y * stride + x * bpp], out[y * stride + x * bpp + 1], out[y * stride + x * bpp + 2]] };
   };
+  const pngAt = buf => pngDecode(buf).at(0, 0);
   const pixel = async at => pngAt(Buffer.from((await send('Page.captureScreenshot', { format: 'png', clip: { x: Math.floor(at.x), y: Math.floor(at.y), width: 2, height: 2, scale: 1 } })).result.data, 'base64'));
   const lin = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
   const lum = ([r, g, b]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
@@ -2298,19 +2299,34 @@ try {
       probeEl.remove();
       return { now: { x: nr.left + nr.width / 2, y: nr.top + nr.height / 2 }, plain: pick ? { x: pick.left + pick.width / 2, y: pick.top + pick.height / 2 } : null, fg, colors, tokens }; })()`);
     const pNow = await pixel(probe.now), pPlain = await pixel(probe.plain);
-    const fg = rgbOf(probe.fg), worst = Object.entries(probe.colors).map(([name, css]) => [name, Math.min(ratioOf(rgbOf(css), pPlain), ratioOf(rgbOf(css), pNow))]).sort((a, b) => a[1] - b[1]);
+    const fg = rgbOf(probe.fg), worst = Object.entries(probe.colors).map(([name, css]) => [name, ratioOf(rgbOf(css), pPlain)]).sort((a, b) => a[1] - b[1]);
     const diff = diffMax(pPlain, pNow), fgRatios = [ratioOf(fg, pPlain), ratioOf(fg, pNow)];
-    console.log(`数字（查找颜色，${theme}，DPR 2，截图取像素）：普通底色 rgb(${pPlain}) 当前底色 rgb(${pNow})；正文色 rgb(${fg}) 对比 ${fgRatios.map(x => x.toFixed(2)).join(' / ')}；token 最低三项 ${worst.slice(0, 3).map(([n, r]) => `${n} ${r.toFixed(2)}`).join('，')}；两种底色像素差 ${diff}`);
+    console.log(`数字（查找颜色，${theme}，DPR 2，截图取像素）：普通底色 rgb(${pPlain}) 当前底色 rgb(${pNow})；正文色 rgb(${fg}) 对比 ${fgRatios.map(x => x.toFixed(2)).join(' / ')}；token（只对普通匹配的底色）最低三项 ${worst.slice(0, 3).map(([n, r]) => `${n} ${r.toFixed(2)}`).join('，')}；两种底色像素差 ${diff}`);
     check(`查找 颜色 ${theme}：正文色对普通、当前两种合成底色的对比度都不低于 4.5:1`, fgRatios.every(r => r >= 4.5), JSON.stringify(fgRatios));
-    check(`查找 颜色 ${theme}：各个上色 token 的颜色（共 ${worst.length} 个）对普通、当前两种合成底色都不低于 3:1`, worst[0][1] >= 3, JSON.stringify(worst.slice(0, 4)));
+    check(`查找 颜色 ${theme}：各个上色 token 的颜色（共 ${worst.length} 个）对普通匹配的合成底色不低于 3:1（当前这处不显示代码着色，只验正文色）`, worst[0][1] >= 3, JSON.stringify(worst.slice(0, 4)));
     check(`查找 颜色 ${theme}：普通和当前两种合成底色按按下底色同一种像素差算，不小于 20`, diff >= 20, `差 ${diff}`);
+    await kb('Escape', 'Escape', 27);
+    // 当前这处里的 token 字形：::highlight(find-current) 的文字色盖过 token span 的颜色，字形是正文色（量计算值，再取截图里字形核心的像素）
+    await openFile('window', theme, 'session=A&path=assets/sample.js', 'mac');
+    await frames();
+    await kb('f', 'KeyF', 70, 4);
+    await findFor('const');
+    await frames();
+    const g = await evalStrict(`(() => { const now = [...CSS.highlights.get('find-current')][0], el = now.startContainer.parentElement, r = now.getBoundingClientRect(), root = getComputedStyle(document.querySelector('.text'));
+      const probe = document.createElement('span'); probe.style.color = 'var(--hl-keyword)'; document.querySelector('.text').append(probe); const kw = getComputedStyle(probe).color; probe.remove();
+      return { cls: el.className, own: getComputedStyle(el).color, shown: getComputedStyle(el, '::highlight(find-current)').color, fg: root.color, kw, rect: { x: r.left, y: r.top, width: r.width, height: r.height } }; })()`);
+    const shot = pngDecode(Buffer.from((await send('Page.captureScreenshot', { format: 'png', clip: { ...g.rect, scale: 4 } })).result.data, 'base64'));
+    const corner = shot.at(0, 0); let core = corner, far = -1; // 字形核心：离底色最远的像素
+    for (let y = 0; y < shot.height; y++) for (let x = 0; x < shot.width; x++) { const px = shot.at(x, y), d = diffMax(px, corner); if (d > far) { far = d; core = px; } }
+    const toFg = diffMax(core, rgbOf(g.fg)), toKw = diffMax(core, rgbOf(g.kw));
+    console.log(`数字（当前这处里的 token 字形，${theme}）：token 类 ${g.cls || '（无）'}，span 自己的颜色 ${g.own}，::highlight 的计算颜色 ${g.shown}，正文色 ${g.fg}，关键字色 ${g.kw}；字形核心像素 rgb(${core})，离正文色 ${toFg}、离关键字色 ${toKw}`);
+    check(`查找 颜色 ${theme}：当前这处里的 token（${g.cls}）：span 自己是 token 色，::highlight 的文字色是正文色，截图里的字形核心离正文色比离 token 色近`, g.own !== g.fg && g.shown === g.fg && toFg < toKw, JSON.stringify({ ...g, core, toFg, toKw }));
     await kb('Escape', 'Escape', 27);
   }
 
-  // ---- 性能：三个样本，每个取 3 次的中位数；总时间 ≤ 1 秒，最长一批同步计算 ≤ 100 毫秒 ----
+  // ---- 性能：每个样本取 5 次的中位数；总时间 ≤ 1 秒，最长一批同步计算 ≤ 100 毫秒 ----
   const median = xs => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
   const samples = [['1 MiB 普通文本，满 10000 处匹配', 'perf-plain.txt', 'needle'], ['高亮上限内、token 最密的上色文件，匹配跨 token', 'perf-dense.js', '1;y=']];
-  const longSample = ['有很长一行的文件', 'perf-long.txt', 'ab cd']; // 放在最后跑：这个样本会把页面卡住，之后的检查要换新页面
   // 诊断（不是门槛）：密集 token 的文件里直接注册 N 个跨 token 的 Range，量两帧绘制的时间，看慢在哪、随 N 怎么长。
   await openFile('window', 'light', 'session=A&path=perf-dense.js', 'mac');
   await frames();
@@ -2319,6 +2335,7 @@ try {
       const t0 = performance.now(); CSS.highlights.set('find', hl); await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); out.push([count, Math.round(performance.now() - t0)]); CSS.highlights.delete('find'); }
     return { nodes: nodes.length, out }; })()`);
   console.log(`数字（诊断：${grow.nodes} 个文本节点的上色文件里直接注册 N 个跨 token 的 Range，到画完两帧）：${grow.out.map(([n, ms]) => `${n} 个 ${ms} 毫秒`).join('，')}`);
+  const FRAME_BUDGET_MS = 200; // 长行不卡的门槛：实测画两帧 25～33 毫秒，留 6 倍以上余量（页面卡死时是十几秒以上）
   const SLOW_MS = 20000; // 一次超过这么久就不再重复，直接记下数字（页面卡在绘制上，重复只是白等）
   async function perfSample([label, file, term]) {
     await openFile('window', 'light', `session=A&path=${file}`, 'mac');
@@ -2326,7 +2343,7 @@ try {
     await kb('f', 'KeyF', 70, 4);
     const totals = [], batches = [], dones = [], layouts = [], notes = [];
     let slow = false;
-    for (let i = 0; i < 3 && !slow; i++) {
+    for (let i = 0; i < 5 && !slow; i++) {
       await evaluate(`${fq}.focus(); ${fq}.select(); window.__t0 = performance.now(); performance.clearMarks('find-done'); performance.clearMeasures('find-batch'); performance.clearMeasures('find-run')`);
       await send('Input.insertText', { text: term });
       const began = Date.now();
@@ -2374,21 +2391,23 @@ try {
   }
   const land = await findShot('landscape', 'ios', 'light', 'find-ios-landscape');
   check('查找 iPhone 横屏：输入框占剩下的宽度，计数「N/M」不换行，按钮至少 44 点，查找条在一行里，都在屏幕内', land.font >= 16 && land.minBtn >= 44 && land.countH < 30 && land.inside && land.fixed, JSON.stringify(land));
-  await perfSample(longSample);
-  // 诊断（不是门槛）：单行文件随行长怎么慢下来（匹配都是 10000 处封顶，行越长每个匹配的位置越远）。
-  const lineTimes = [];
-  for (const kb_ of [20, 50, 100, 200]) {
-    await writeFile(join(fixture, `perf-long-${kb_}.txt`), 'ab cd '.repeat(Math.floor(kb_ * 1024 / 6)));
-    await openFile('window', 'light', `session=A&path=perf-long-${kb_}.txt`, 'mac');
-    await frames();
-    await kb('f', 'KeyF', 70, 4);
-    await evaluate(`${fq}.focus(); window.__t0 = performance.now(); performance.clearMarks('find-done')`);
-    await send('Input.insertText', { text: 'ab cd' });
-    const began = Date.now();
-    while (Date.now() - began < 20000 && !(await evaluateLive(`performance.getEntriesByName('find-done').length > 0`))) await wait(100);
-    lineTimes.push(`${kb_} KiB ${Date.now() - began >= 20000 ? '超过 20 秒' : `${Math.round(await evaluateLive(`performance.getEntriesByName('find-done')[0].startTime - window.__t0`))} 毫秒`}`);
-  }
-  console.log(`数字（诊断：单行文件，搜 ab cd，到标完）：${lineTimes.join('，')}`);
+  // 有长行的文件（540 KiB 单行）：不标高亮（只计数、导航、滚动），只验不卡：计数出来、CSS.highlights 里没有注册、期间页面持续出帧、Esc 能关查找条。
+  await openFile('window', 'light', 'session=A&path=perf-long.txt', 'mac');
+  await frames();
+  await kb('f', 'KeyF', 70, 4);
+  await evaluate(`${fq}.focus(); window.__t0 = performance.now(); performance.clearMarks('find-done')`);
+  await send('Input.insertText', { text: 'ab cd' });
+  await until(`document.querySelector('.fcount').textContent.length > 0 && performance.getEntriesByName('find-done').length > 0`, '长行：计数出来');
+  const frameMs = [];
+  for (let i = 0; i < 5; i++) frameMs.push(await evaluateLive(`new Promise(r => { const t0 = performance.now(); requestAnimationFrame(() => requestAnimationFrame(() => r(performance.now() - t0))); })`));
+  const longState = await evaluateLive(`({ count: document.querySelector('.fcount').textContent, find: CSS.highlights.has('find'), current: CSS.highlights.has('find-current'), counted: performance.getEntriesByName('find-done')[0].startTime - window.__t0 })`);
+  const worstFrames = Math.max(...frameMs);
+  console.log(`数字（长行样本 540 KiB 单行，搜 ab cd）：计数 ${longState.count}，输入到计数出来 ${longState.counted.toFixed(0)} 毫秒，之后 5 次「画两帧」耗时 ${frameMs.map(x => x.toFixed(0))} 毫秒`);
+  check('查找 长行（540 KiB 单行）：计数出来，CSS.highlights 里没有 find 和 find-current（有长行不标高亮）', /^1\/\d+\+?$/.test(longState.count) && !longState.find && !longState.current, JSON.stringify(longState));
+  check(`查找 长行：计数出来之后页面持续出帧——5 次「画两帧」每次不超过 ${FRAME_BUDGET_MS} 毫秒（实测最长 ${worstFrames.toFixed(0)} 毫秒）`, worstFrames <= FRAME_BUDGET_MS, JSON.stringify(frameMs));
+  await kb('Escape', 'Escape', 27);
+  await until(`document.querySelector('.fbar').hidden`, '长行：Esc 关查找条');
+  check('查找 长行：Esc 能关查找条', true);
   }
 
   exitCode = failures.length ? 1 : 0;
