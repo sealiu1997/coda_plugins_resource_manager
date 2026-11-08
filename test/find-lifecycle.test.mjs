@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mountPreview } from '../view/preview.mjs';
 import { Element } from './support/dom.mjs';
-import { flush } from './support/fake.mjs';
+import { deferred, flush } from './support/fake.mjs';
 import { open } from './support/filepage.mjs';
 import { installHighlights } from './support/highlights.mjs';
 
@@ -11,16 +11,18 @@ async function mounted(t) {
   const env = installHighlights(t);
   await open(t, { path: 'x.txt', files: {} }); // 只为装好假 DOM 的全局
   const files = { 'a.txt': 'foo foo', 'b.txt': 'foo bar' };
-  const reads = [];
+  const reads = [], mode = { fail: null, hold: null }; // fail：读取失败的原因；hold：扣住读取，测试自己放行
   const read = async path => {
     reads.push(path);
+    if (mode.hold) await mode.hold.promise;
+    if (mode.fail) throw Object.assign(new Error(mode.fail.message), { code: mode.fail.code });
     const data = Buffer.from(files[path]);
     return { data: data.toString('base64'), offset: 0, size: data.length, mtimeMs: 1, kind: 'text', eof: true };
   };
   const eaten = new WeakSet();
   const el = new Element('div'), preview = mountPreview(el, { read, copy() {}, consumed: event => eaten.has(event) });
   const type = text => { const input = el.find(n => n.classList.contains('finput'))[0]; input.value = text; input.dispatch('input'); };
-  return { env, preview, el, files, type, eaten, tick: ms => t.mock.timers.tick(ms) };
+  return { env, preview, el, files, type, eaten, mode, tick: ms => t.mock.timers.tick(ms) };
 }
 
 test('open 换了文件：查找关闭，标记删除；同一个文件 refresh 保留；stop、close、reload 关闭', async t => {
@@ -151,4 +153,43 @@ test('样式表：两条 ::highlight 规则都带 .pbody.finding 前缀，没有
   const rules = [...sheet.matchAll(/^([^\n{]*)::highlight\((find[\w-]*)\)/gm)];
   assert.equal(rules.length, 2);
   for (const [, selector] of rules) assert.match(selector, /^\.pbody\.finding $/);
+});
+
+// 整页重读（非静默）：同一个文件再 open 不关查找，接着 load(false)：开始读取就清标记、计数写「—」，失败后仍是「—」并显示说明和重试，
+// 重试成功后重建查找。页面里没有真实入口会对同一路径再 open（侧栏和窗口都只在路径变了才 open），所以这里直接拿预览调 open。
+test('整页重读：读取中清标记、计数「—」；失败后仍是「—」、查找条和搜索词留着、有重试；重试成功后重新找', async t => {
+  const { env, preview, el, type, tick, mode } = await mounted(t);
+  const count = () => el.find(n => n.classList.contains('fcount'))[0].textContent;
+  const input = () => el.find(n => n.classList.contains('finput'))[0];
+  const body = () => el.find(n => n.classList.contains('pbody'))[0];
+  await preview.open('a.txt');
+  preview.openFind();
+  type('foo');
+  tick(150);
+  assert.deepEqual([env.registry.get('find').size, env.registry.get('find-current').size, count()], [2, 1, '1/2']);
+  // 同一个文件再 open，读取被扣住
+  mode.hold = deferred();
+  const reopening = preview.open('a.txt');
+  assert.equal(preview.findOpen, true, '同一个文件 open 不关查找');
+  assert.equal(env.registry.size, 0, '读取中：标记已清');
+  assert.equal(count(), '—', '读取中：计数写「—」');
+  // 读取失败
+  mode.fail = { code: 'io_error', message: '读不了' };
+  mode.hold.resolve();
+  await reopening;
+  await flush();
+  assert.equal(env.registry.size, 0, '失败后：标记仍是清的');
+  assert.equal(count(), '—');
+  assert.equal(preview.findOpen, true, '查找条还开着');
+  assert.equal(input().value, 'foo', '搜索词还在');
+  assert.match(body().textContent, /读不到这个文件.*读不了/, '显示读取失败的说明');
+  const retry = body().find(n => n.tagName === 'BUTTON' && n.textContent === '重试')[0];
+  assert.ok(retry, '说明里有重试按钮');
+  // 恢复：重试成功后重建查找
+  mode.fail = null;
+  mode.hold = null;
+  retry.dispatch('click');
+  await flush();
+  assert.equal(count(), '1/2', '重试成功：计数恢复');
+  assert.deepEqual([env.registry.get('find').size, env.registry.get('find-current').size], [2, 1], 'find 和 find-current 重新注册');
 });

@@ -313,15 +313,6 @@ test('后台刷新失败、正文还是上次的：标记留着；文件没了�
   assert.equal(count(page), '1/3', '再读成功：重新找');
 });
 
-test('整页重读失败：标记清掉、计数写「—」；重试成功后重新找', async t => {
-  const { page, host, env } = await finding(t);
-  host.failRead = { code: 'io_error', message: '读不了' };
-  pick(page, 'pmeta');
-  host.changed();
-  await flush();
-  assert.deepEqual(sizes(env), [3, 1], '后台刷新失败留着');
-});
-
 test('图片、二进制没有查找：换成非文本时查找条关掉', async t => {
   const { page, host } = await finding(t);
   host.files['a.txt'] = { kind: 'binary', text: 'x', mtimeMs: 9 };
