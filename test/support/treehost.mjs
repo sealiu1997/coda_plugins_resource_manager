@@ -11,7 +11,7 @@ export async function openTree(t, { platform = 'ios', listing = { '': ['a.txt', 
   try { t.mock.timers.enable({ apis: ['setTimeout'] }); } catch { /* 同一个用例里的第二个页面（重建）：已经启用了 */ }
   const sent = [], calls = { open: [], copy: [], back: [] }, events = {};
   // missing：这些目录 list 回答 not_found；held：这些目录的 list 先扣住，测试自己用 host.answer 回答，扣住的请求在 host.heldLists 里。
-  const host = { sent, calls, events, listing, failing: new Set(), files: {}, autoRead: false, failRead: null, holdReads: false, heldReads: [], missing: new Set(), held: new Set(), heldLists: [], generation: 0, openResult: undefined, lists: () => sent.filter(m => m.type === 'list') };
+  const host = { sent, calls, events, listing, failing: new Set(), files: {}, autoRead: false, kinds: {}, failRead: null, holdReads: false, heldReads: [], missing: new Set(), held: new Set(), heldLists: [], generation: 0, openResult: undefined, lists: () => sent.filter(m => m.type === 'list') };
   let page;
   // read：默认不回答（测试自己用 host.answer）；host.autoRead 时自动回答，host.files 里有的路径给正文（默认 'x'），host.holdReads 时先扣住，用 host.release 回答。
   const answerRead = request => {
@@ -19,7 +19,7 @@ export async function openTree(t, { platform = 'ios', listing = { '': ['a.txt', 
     if (host.holdReads) return host.heldReads.push(request);
     if (host.failRead) return page.post({ type: 'chunk', generation: request.generation, requestId: request.requestId, error: host.failRead });
     const data = Buffer.from(host.files[request.path] ?? 'x');
-    page.post({ type: 'chunk', generation: request.generation, requestId: request.requestId, data: data.toString('base64'), offset: 0, size: data.length, mtimeMs: 1, kind: 'text', eof: true });
+    page.post({ type: 'chunk', generation: request.generation, requestId: request.requestId, data: data.toString('base64'), offset: 0, size: data.length, mtimeMs: 1, kind: host.kinds[request.path] ?? 'text', eof: true });
   };
   const answer = request => {
     if (request.generation !== host.generation) return;
