@@ -7,6 +7,7 @@
 //   每批开始时核对 runId 和正文版本，变了就停（关查找条、换词、换正文、清掉都会让它作废）。
 // - 正文版本 version：show() 换正文、clearContent 都加一，之前的批次和待执行的防抖据此作废。
 // - 高亮注册：find（全部匹配）和 find-current（当前这处，priority 更高）两个 Highlight，一次查找新建一份，关闭、换词、清掉时从 CSS.highlights 删掉。
+//   不支持 Highlight API、或正文有长行（hasLongLine，预览给的）时不注册，只计数、导航、滚动。
 // - 超时：没有；10000 处的上限和每批 2000 个让出就是它的界。
 import { h } from './dom.mjs';
 import { icon } from './icons.mjs';
@@ -137,7 +138,6 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
   }
 
   function showCurrent(scroll) {
-    if (!marks && !highlightsSupported()) { if (scroll) scrollInto(rangeAt(indexOf(), list[current], makeRange)); return; }
     const range = rangeAt(indexOf(), list[current], makeRange);
     marks?.now.clear();
     marks?.now.add(range);
@@ -156,7 +156,7 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
     }
     paint();
     if (list.length === 0) { mark('find-run', { start: began }); globalThis.performance?.mark?.('find-done'); return; }
-    if (highlightsSupported()) {
+    if (highlightsSupported() && content.highlight) {
       const all = new globalThis.Highlight(), now = new globalThis.Highlight();
       all.priority = 0;
       now.priority = 1; // 当前这处盖在全部匹配上面，不靠注册的先后
@@ -229,8 +229,9 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
       paint();
     },
     // 换了一版正文（show）：词和查找条留着，重新找；当前这处取离旧起点最近的，不滚动。
-    setContent(textEl, text) {
-      content = { el: textEl, text, index: null };
+    // highlight 为假（有长行的文件）时不标颜色，只计数、导航、滚动，同浏览器不支持 Highlight API。
+    setContent(textEl, text, { highlight = true } = {}) {
+      content = { el: textEl, text, index: null, highlight };
       version++;
       if (open) run({ scroll: false, near: current >= 0 ? list[current][0] : null });
     },

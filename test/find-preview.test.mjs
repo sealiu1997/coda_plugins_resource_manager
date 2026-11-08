@@ -12,6 +12,8 @@ import { box, found, hit, search, startSearch } from './support/searchhost.mjs';
 import { startPhone } from './support/searchhost.mjs';
 
 const TEXT = 'foo bar foo\nbaz foo\nqux\n';
+// 一行 10 个匹配、没有长行（长行文件不标高亮）。
+const rows = count => `${'a '.repeat(10)}\n`.repeat(count / 10);
 const pick = (page, cls) => page.preview.find(node => node.classList.contains(cls))[0];
 const bar = page => pick(page, 'fbar'), input = page => pick(page, 'finput'), count = page => pick(page, 'fcount').textContent;
 const pbody = page => pick(page, 'pbody'), textEl = page => pick(page, 'text');
@@ -202,8 +204,8 @@ test('键盘弹起时（visualViewport）可见区和它取交集：当前这处
 // ---- 分批 ----
 
 test('分批：每批 2000 个，批间让出到宏任务（一个宏任务一批）；中途有输入事件能被处理，换词后旧的批次不再注册', async t => {
-  const total = FIND_BATCH * 2 + 500;
-  const { page, env, tick, zero } = await finding(t, { files: { 'a.txt': { text: 'a '.repeat(total) } }, term: 'a', hold: true });
+  const total = FIND_BATCH * 2 + 500; // 4500，一行 10 个
+  const { page, env, tick, zero } = await finding(t, { files: { 'a.txt': { text: rows(total) } }, term: 'a', hold: true });
   assert.equal(env.registry.get('find').size, FIND_BATCH, '第一批同步标好');
   assert.equal(zero.pending, 1, '下一批排在宏任务里');
   zero.release();
@@ -225,7 +227,7 @@ test('分批：每批 2000 个，批间让出到宏任务（一个宏任务一�
 
 test('分批：正文版本变了（刷新）旧批次停，新版本重新标', async t => {
   const total = FIND_BATCH * 2;
-  const { host, env, zero } = await finding(t, { files: { 'a.txt': { text: 'a '.repeat(total) } }, term: 'a', hold: true });
+  const { host, env, zero } = await finding(t, { files: { 'a.txt': { text: rows(total) } }, term: 'a', hold: true });
   const old = env.registry.get('find');
   assert.equal(old.size, FIND_BATCH);
   host.files['a.txt'] = { text: 'a b '.repeat(10), mtimeMs: 2 };
@@ -466,4 +468,65 @@ test('说明区（根目录不可用）和预览读取中：⌘F 不拦', async 
   await flush();
   assert.equal(visible(ctx.page.notice), true);
   assert.equal(onDoc('f', cmd).prevented, false, '说明区：不拦');
+});
+
+// ---- 有长行的文件：不标高亮，只计数、导航、滚动（和不支持 Highlight API 同一条路径）----
+
+const LONG = `${'ab cd '.repeat(1000)}\nab cd tail\n`; // 第一行 6000 字，超过 5000
+
+test('有长行的文件（「窗口」同样适用）：不注册 find 和 find-current，计数、导航、滚动照常', async t => {
+  const { page, env } = await finding(t, { files: { 'a.txt': { text: LONG } }, term: 'ab cd' });
+  assert.equal(env.registry.size, 0, '没有注册任何高亮');
+  assert.equal(count(page), '1/1001');
+  press(input(page), 'Enter', { shiftKey: true });
+  assert.equal(count(page), '1001/1001', '导航照常（首尾循环）');
+  const body = pbody(page);
+  body.getBoundingClientRect = () => ({ top: 0, bottom: 100, left: 0, right: 300, height: 100, width: 300 });
+  env.rectOf = () => ({ top: 400, bottom: 420, left: 150, right: 160, height: 20, width: 10 });
+  body.scrollTop = 0;
+  press(input(page), 'Enter');
+  assert.ok(body.scrollTop > 0, '照常滚到当前这处');
+  press(input(page), 'Escape');
+  assert.equal(bar(page).hidden, true, 'Esc 能关查找条');
+});
+
+test('有长行的文件：判断用的是预览给的结果——长行刷新成短行后重新标高亮；没有长行的文件照常标', async t => {
+  const { page, host, env } = await finding(t, { files: { 'a.txt': { text: LONG } }, term: 'ab cd' });
+  assert.equal(env.registry.size, 0);
+  host.files['a.txt'] = { text: 'ab cd\nab cd\n', mtimeMs: 2 };
+  host.changed();
+  await flush();
+  assert.equal(env.registry.get('find').size, 2, '不再有长行：标高亮');
+  host.files['a.txt'] = { text: LONG, mtimeMs: 3 };
+  host.changed();
+  await flush();
+  assert.equal(env.registry.size, 0, '又有了长行：删掉标记');
+  assert.equal(count(page), '1/1001');
+});
+
+test('侧栏：有长行的文件同样不标高亮', async t => {
+  const env = installHighlights(t);
+  const ctx = await startSearch(t, { listing: { '': ['long.txt'] } });
+  Object.assign(ctx.host, { autoRead: true, files: { 'long.txt': LONG } });
+  const row = ctx.page.tree.find(n => n.classList.contains('row') && n.textContent.includes('long.txt'))[0];
+  row.dispatch('click');
+  row.dispatch('dblclick');
+  await flush();
+  document.activeElement = null;
+  onDoc('f', cmd);
+  typeFind(ctx.page, 'ab cd');
+  ctx.tick(150);
+  assert.equal(env.registry.size, 0);
+  assert.equal(count(ctx.page), '1/1001');
+});
+
+test('当前这处的颜色规则写在样式表里：底色 50%、文字改成正文色；全部匹配 25%、不改文字颜色', async () => {
+  const css = (await import('node:fs/promises')).readFile(new URL('../view/style.css', import.meta.url), 'utf8');
+  const sheet = await css;
+  const rule = name => sheet.match(new RegExp(`::highlight\\(${name}\\) \\{([^}]*)\\}`))[1];
+  assert.match(rule('find'), /accent[^)]*\) 25%/);
+  assert.doesNotMatch(rule('find'), /(^|[\s;{])color:/, '全部匹配不改文字颜色');
+  assert.match(rule('find-current'), /accent[^)]*\) 50%/);
+  assert.match(rule('find-current'), /[^-]color: var\(--coda-foreground/, '当前这处的文字是正文色（.pbody 从 :root 继承的 --coda-foreground）');
+  assert.match(sheet, /:root \{[^}]*color: var\(--coda-foreground/s, '正文色就是 :root 上的 --coda-foreground');
 });

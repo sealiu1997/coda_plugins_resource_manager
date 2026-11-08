@@ -90,7 +90,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if (event.shiftKey) find.prev(); else find.next();
     }
   });
-  let textShown = false, pendingFind = null; // 现在显示的是不是文本；show() 换好的正文，等滚动位置设好再交给查找
+  let textShown = false, pendingFind = null, longLine = false; // 现在显示的是不是文本；show() 换好的正文，等滚动位置设好再交给查找
 
   let path = null, token = 0, shown = null, objectUrl = null; // shown：当前显示的 { size, mtimeMs }
   let opens = 0, stoppedAt = -1; // 打开次数和上一次停止时的次数：释放只在停止之后没有再打开过时才做（返回的退场还没结束又打开了）
@@ -123,7 +123,9 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     const lines = result.kind === ContentKind.TEXT ? `${lineCount(result.text)} 行` : '';
     const language = result.kind === ContentKind.TEXT ? languageOf(path.split('/').pop()) : null;
     // 先判大小，超过只写「不高亮」；没超再判行长。
-    const skip = !language ? '' : result.bytes.length > HIGHLIGHT_LIMIT ? '不高亮' : hasLongLine(result.text) ? '行太长，不高亮' : '';
+    // 有长行：上色已经按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行，所以只计数、导航、滚动。
+    longLine = result.kind === ContentKind.TEXT && hasLongLine(result.text);
+    const skip = !language ? '' : result.bytes.length > HIGHLIGHT_LIMIT ? '不高亮' : longLine ? '行太长，不高亮' : '';
     const colored = language && !skip ? highlight(result.text, language) : null;
     const plain = !language ? '' : skip || (colored ? '' : '没能高亮');
     const note = [result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '', plain].filter(Boolean).join('，');
@@ -133,7 +135,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       const text = h('pre', { class: 'text selectable' }, ...(colored ? [] : [result.text]));
       if (colored) appendAll(text, colored);
       gutterEl = gutter;
-      pendingFind = { el: text, text: result.text };
+      pendingFind = { el: text, text: result.text, highlight: !longLine };
       if (selectionMenu) text.addEventListener('contextmenu', event => onSelect(event, text));
       body.replaceChildren(h('div', { class: 'code' }, gutter, text));
     } else if (result.kind === ContentKind.IMAGE && result.bytes.length > 0) {
@@ -177,7 +179,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       show(result);
       body.scrollTop = keep.top; body.scrollLeft = keep.left;
       // 顺序：换正文 → 设好滚动位置 → 重建查找（刷新和换正文时查找不滚动，不盖掉恢复）
-      if (pendingFind) find.setContent(pendingFind.el, pendingFind.text);
+      if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { highlight: pendingFind.highlight });
       settle(true);
     } catch (error) {
       if (mark()) failure(error, silent, () => load(false)); // 失败不算用上：待恢复的位置留着，重试或之后的刷新成功才用、才清
