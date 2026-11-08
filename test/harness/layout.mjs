@@ -2180,12 +2180,28 @@ try {
     const fixed = await evaluate(`(() => { const list = document.querySelector('#search .shits'), bar = document.getElementById('searchbar'), st = document.querySelector('#search .sstatus'), a = bar.getBoundingClientRect().top, b = st.getBoundingClientRect().top;
       list.scrollTop = list.scrollHeight; list.dispatchEvent(new Event('scroll')); return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r({ bar: bar.getBoundingClientRect().top === a, status: st.getBoundingClientRect().top === b })))); })()`);
     check(`搜索 ${side}：搜索框和状态行不随结果滚动`, fixed.bar && fixed.status, JSON.stringify(fixed));
-    check(`搜索 ${side}：搜索框字号不小于 16 点（iPhone 聚焦时页面不放大）`, await evaluate(`parseFloat(getComputedStyle(${q}).fontSize) >= 16`), await evaluate(`getComputedStyle(${q}).fontSize`));
+    const sizes = await evaluate(`({ input: parseFloat(getComputedStyle(${q}).fontSize), body: parseFloat(getComputedStyle(document.documentElement).fontSize) })`);
+    check(platform === 'ios' ? `搜索 ${side}：搜索框字号不小于 16 点（iPhone 聚焦时页面不放大）` : `搜索 ${side}：搜索框字号等于正文字号（跟 --coda-font-size）`, platform === 'ios' ? sizes.input >= 16 : sizes.input === sizes.body, JSON.stringify(sizes));
     check(`搜索 ${side}：搜索框在顶上、面板在它下面占满剩余高度`, await evaluate(`(() => { const bar = document.getElementById('searchbar').getBoundingClientRect(), pane = document.getElementById('search').getBoundingClientRect(), stage = document.getElementById('stage').getBoundingClientRect();
       return Math.abs(bar.top - stage.top) < 1 && Math.abs(pane.top - bar.bottom) < 1 && Math.abs(pane.bottom - stage.bottom) < 1; })()`));
     for (const theme of ['light', 'dark']) {
       if (theme === 'dark') { await send('Emulation.setEmulatedMedia', { features: [] }); await evaluate(`window.postMessage({ harness: 'theme', kind: 'dark' }, '*')`); await frames(); }
-      await shoot(`search-${platform}-${theme}`);
+      // 聚焦和不聚焦各一张；聚焦前后搜索框和下面面板的位置不变（边框是平时就留着的 1 点透明边，不跳动）
+      const layout = `(() => { const r = id => { const b = document.getElementById(id).getBoundingClientRect(); return [b.top, b.left, b.width, b.height].join(','); }; return [r('searchbar'), r('search')].join('|'); })()`;
+      const pill = await evaluate(`(() => { const f = document.querySelector('.sfield'), c = getComputedStyle(f), h = f.getBoundingClientRect().height, probe = document.createElement('span'); probe.style.color = 'var(--coda-tertiary)'; document.body.append(probe);
+        const tertiary = getComputedStyle(probe).color; probe.remove(); return { radius: parseFloat(c.borderTopLeftRadius), height: h, placeholder: getComputedStyle(${q}, '::placeholder').color, tertiary, icon: getComputedStyle(document.querySelector('.sico')).color, clear: getComputedStyle(document.querySelector('.sclear')).color, border: c.borderTopColor, width: c.borderTopWidth }; })()`);
+      await evaluate(`${q}.blur()`);
+      await frames();
+      await shoot(`search-${platform}-${theme}-idle`);
+      const idle = await evaluate(layout), idleBorder = await evaluate(`getComputedStyle(document.querySelector('.sfield')).borderTopColor`), idleBg = await evaluate(`getComputedStyle(document.querySelector('.sfield')).backgroundColor`);
+      await evaluate(`${q}.focus()`);
+      await frames();
+      const focused = await evaluate(layout), focusBorder = await evaluate(`getComputedStyle(document.querySelector('.sfield')).borderTopColor`), focusBg = await evaluate(`getComputedStyle(document.querySelector('.sfield')).backgroundColor`), glow = await evaluate(`getComputedStyle(document.querySelector('.sfield')).boxShadow`);
+      await shoot(`search-${platform}-${theme}-focus`);
+      check(`搜索 ${side} ${theme}：搜索框是胶囊形（border-radius ${pill.radius} 不小于高度 ${pill.height} 的一半），平时有 1 点边框（透明）`, pill.radius >= pill.height / 2 && pill.width === '1px', JSON.stringify(pill));
+      check(`搜索 ${side} ${theme}：placeholder、放大镜和清除按钮的颜色等于三级文字色 ${pill.tertiary}`, pill.placeholder === pill.tertiary && pill.icon === pill.tertiary && pill.clear === pill.tertiary, JSON.stringify(pill));
+      check(`搜索 ${side} ${theme}：聚焦前后搜索框和下面面板的位置、尺寸不变（不跳动）；聚焦时底色、边框色变了，有光晕，没有 outline`, idle === focused && idleBorder !== focusBorder && idleBg !== focusBg && glow !== 'none',
+        JSON.stringify({ idle, focused, idleBorder, focusBorder, idleBg, focusBg, glow }));
     }
     await evaluate(`window.postMessage({ harness: 'theme', kind: 'light' }, '*')`);
     // 清空：回到搜索之前的样子（展开、滚动、选中都一样）
@@ -2383,12 +2399,12 @@ try {
     await shoot(name);
     const geo = await evaluate(`(() => { const bar = document.querySelector('.fbar'), r = bar.getBoundingClientRect(), input = document.querySelector('.finput'), count = document.querySelector('.fcount'), btns = [...bar.querySelectorAll('button')].map(b => b.getBoundingClientRect()),
       body = document.querySelector('.pbody'), top = r.top; body.scrollTop = 300; body.dispatchEvent(new Event('scroll'));
-      return { font: parseFloat(getComputedStyle(input).fontSize), minBtn: Math.min(...btns.map(b => Math.min(b.width, b.height))), barH: r.height, rows: new Set([input, count, ...bar.querySelectorAll('button')].map(n => { const q = n.getBoundingClientRect(); return Math.round((q.top + q.bottom) / 2 / 6); })).size, countH: count.getBoundingClientRect().height, fixed: bar.getBoundingClientRect().top === top, inside: btns.every(b => b.right <= innerWidth + 0.5), count: count.textContent }; })()`);
+      return { rootFont: parseFloat(getComputedStyle(document.documentElement).fontSize), font: parseFloat(getComputedStyle(input).fontSize), minBtn: Math.min(...btns.map(b => Math.min(b.width, b.height))), barH: r.height, rows: new Set([input, count, ...bar.querySelectorAll('button')].map(n => { const q = n.getBoundingClientRect(); return Math.round((q.top + q.bottom) / 2 / 6); })).size, countH: count.getBoundingClientRect().height, fixed: bar.getBoundingClientRect().top === top, inside: btns.every(b => b.right <= innerWidth + 0.5), count: count.textContent }; })()`);
     return geo;
   };
   for (const theme of ['light', 'dark']) {
     const mac = await findShot('mac', 'mac', theme, `find-mac-${theme}`);
-    check(`查找 Mac ${theme}：输入框字号不小于 16 点，查找条不随正文滚动，按钮都在窗口内`, mac.font >= 16 && mac.fixed && mac.inside, JSON.stringify(mac));
+    check(`查找 Mac ${theme}：输入框字号等于正文字号，查找条不随正文滚动，按钮都在窗口内`, mac.font === mac.rootFont && mac.fixed && mac.inside, JSON.stringify(mac));
     const phone = await findShot('portrait', 'ios', theme, `find-ios-${theme}`);
     check(`查找 iPhone 竖屏 ${theme}：输入框字号不小于 16 点，按钮至少 44 点，一行放下，不随正文滚动`, phone.font >= 16 && phone.minBtn >= 44 && phone.rows <= 2 && phone.fixed && phone.inside, JSON.stringify(phone));
   }
