@@ -7,9 +7,19 @@ class Text {
 
 class Emitter {
   #listeners = new Map();
-  addEventListener(type, fn) { this.#listeners.set(type, [...(this.#listeners.get(type) ?? []), fn]); }
-  removeEventListener(type, fn) { this.#listeners.set(type, (this.#listeners.get(type) ?? []).filter(other => other !== fn)); }
-  emit(event) { for (const fn of this.#listeners.get(event.type) ?? []) fn(event); }
+  // 第三个参数同浏览器：true 或 { capture: true } 是捕获阶段的监听。
+  addEventListener(type, fn, options) {
+    const capture = options === true || options?.capture === true;
+    this.#listeners.set(type, [...(this.#listeners.get(type) ?? []), { fn, capture }]);
+  }
+  removeEventListener(type, fn, options) {
+    const capture = options === true || options?.capture === true;
+    this.#listeners.set(type, (this.#listeners.get(type) ?? []).filter(other => other.fn !== fn || other.capture !== capture));
+  }
+  // 直接发给这个节点上的监听（测试直接 document.emit 用）；phase 只发捕获或冒泡阶段的，缺省全发（按注册顺序）。
+  emit(event, phase = 'all') {
+    for (const { fn, capture } of [...(this.#listeners.get(event.type) ?? [])]) if (phase === 'all' || (phase === 'capture') === capture) fn(event);
+  }
 }
 
 export class Element extends Emitter {
@@ -86,13 +96,20 @@ export class Element extends Emitter {
     return null;
   }
   getBoundingClientRect() { return { left: 0, top: 0, right: 100, bottom: 24, height: 24, width: 100 }; }
+  // 事件传播顺序同真浏览器：document 捕获 → 沿路径从外到里的捕获 → 目标（先捕获后冒泡）→ 沿路径往外冒泡 → document 冒泡。stopPropagation 之后后面的节点收不到。
   dispatch(type, init = {}) {
     let stopped = false;
     const event = { type, target: this, preventDefault() {}, stopPropagation() { stopped = true; }, ...init };
-    // document 上的监听先于元素（页面里都是捕获阶段）；stopPropagation 后元素收不到。
-    globalThis.document?.emit?.(event);
-    if (stopped) return event;
-    for (let at = this; at instanceof Element; at = at.parent) at.emit(event);
+    const path = [];
+    for (let at = this; at instanceof Element; at = at.parent) path.push(at);
+    const doc = globalThis.document;
+    const run = (node, phase) => { if (!stopped) node?.emit?.(event, phase); };
+    run(doc, 'capture');
+    for (let i = path.length - 1; i > 0; i--) run(path[i], 'capture');
+    run(path[0], 'capture');
+    run(path[0], 'bubble');
+    for (let i = 1; i < path.length; i++) run(path[i], 'bubble');
+    run(doc, 'bubble');
     return event;
   }
   find(predicate) {

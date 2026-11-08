@@ -2295,6 +2295,21 @@ try {
   await until(`${marked} > 5`, '搜 o：多处匹配');
   const nav = await evaluate(`(() => { const before = document.querySelector('.fcount').textContent; document.querySelector('.fnext').click(); return { before, after: document.querySelector('.fcount').textContent }; })()`);
   check('查找 窗口：下一个把计数从 1/N 变成 2/N', /^1\//.test(nav.before) && /^2\//.test(nav.after), JSON.stringify(nav));
+  // 菜单开着时按 Esc（第 18.5 节）：真实 Chrome 的传播顺序（document 捕获 → 目标 → 冒泡经过预览 → document 冒泡）里，菜单先处理，关菜单并消费掉这个 Esc，查找条不关。
+  // 查找条开着、选中正文里的字、真实右键打开菜单，焦点分别在正文和查找输入框里各按一次 Esc。
+  for (const focusAt of ['正文', '查找输入框']) {
+    const spot = await evalStrict(`(() => { const text = document.querySelector('.text'), n = document.createTreeWalker(text, NodeFilter.SHOW_TEXT).nextNode(), range = document.createRange();
+      range.setStart(n, 0); range.setEnd(n, Math.min(5, n.data.length)); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); const r = range.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: spot.x, y: spot.y });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: spot.x, y: spot.y, button: 'right', buttons: 2, clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: spot.x, y: spot.y, button: 'right', buttons: 0, clickCount: 1 });
+    await until(`!document.getElementById('menu').hidden`, `${focusAt}：右键打开菜单`);
+    if (focusAt === '查找输入框') await evaluate(`${fq}.focus()`);
+    const focusedNow = await evaluate(`document.activeElement === ${fq} ? '查找输入框' : document.getElementById('preview').contains(document.activeElement) ? '正文' : '别处'`);
+    await kb('Escape', 'Escape', 27);
+    const state = await evaluate(`({ menu: document.getElementById('menu').hidden, bar: !document.querySelector('.fbar').hidden, value: ${fq}.value, marks: CSS.highlights.get('find')?.size ?? 0 })`);
+    check(`查找 菜单开着按 Esc（焦点在${focusAt}）：只关菜单，查找条、搜索词、标记都还在`, focusedNow === focusAt && state.menu && state.bar && state.value === 'o' && state.marks > 0, JSON.stringify({ focusedNow, state }));
+  }
   await kb('Escape', 'Escape', 27);
   await until(`CSS.highlights.size === 0 && document.querySelector('.fbar').hidden`, 'Esc 关查找条并清掉标记');
   check('查找 窗口：Esc 关查找条之后 .pbody 没有 finding 类（::highlight 规则只在查找开着时生效）；样式表里的 ::highlight(find…) 规则选择器都带 .pbody.finding', await evaluate(`!document.querySelector('.pbody').classList.contains('finding') && [...document.styleSheets].flatMap(sheet => [...sheet.cssRules]).filter(rule => /::highlight\\(find/.test(rule.cssText)).every(rule => /\\.pbody\\.finding/.test(rule.selectorText))`));

@@ -80,7 +80,8 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   // 查找条的键盘：Esc 关（从查找条里关，焦点回正文；焦点在正文里，焦点留在正文）；⌘G、⇧⌘G 下一个、上一个。输入法组字中的按键不管，菜单消费掉的 Esc 不再处理。
   el.addEventListener('keydown', event => {
     if (!find.isOpen || event.isComposing) return;
-    if (event.key === 'Escape' && !consumed(event)) {
+    if (event.key === 'Escape' && consumed(event)) { event.preventDefault(); return; } // 菜单关掉的 Esc：查找输入框是 type=search，默认动作会清空它，要拦下
+    if (event.key === 'Escape') {
       event.preventDefault();
       const fromBar = find.el.contains(document.activeElement);
       find.close();

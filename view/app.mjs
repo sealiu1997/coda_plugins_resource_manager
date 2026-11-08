@@ -562,6 +562,7 @@ grid.onKey(browseKey);
 // 搜索框和结果的键盘（第 18.5 节的分派表）：输入法组字中的按键一律不管；菜单开着时 Esc 归菜单（关菜单、消费掉这个 Esc），这里不处理。
 // ⌘F 在浏览区（含结果和页面本身）聚焦搜索框并选中里面的字；预览、属性页、说明区不拦；菜单开着时先关菜单。
 function searchBoxKey(event) {
+  if (event.key === 'Escape' && menu.consumed(event)) event.preventDefault(); // 菜单关掉的 Esc：搜索框是 type=search，默认动作会清空它，要拦下
   if (isIOS || event.isComposing || !menu.hidden || menu.consumed(event)) return;
   if (event.key === 'Escape') {
     event.preventDefault();

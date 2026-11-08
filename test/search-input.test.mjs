@@ -341,3 +341,17 @@ test('搜索框 ↓：明确选中第一条，有旧选中时也一样（↓ 进
   assert.deepEqual(selectedHits(ctx.page), ['dir/x.txt'], '不是相对移动：回到第一条');
   assert.equal(active(), list);
 });
+
+test('菜单关掉的 Esc 到了搜索框：拦下默认动作（type=search 的输入框按 Esc 会自己清空），搜索词和结果都还在', async t => {
+  const ctx = await startSearch(t);
+  await search(ctx, 'x', results);
+  const field = box(ctx.page);
+  field.focus();
+  hitNamed(ctx.page, 'dir/x.txt').dispatch('contextmenu', { clientX: 5, clientY: 5 });
+  let prevented = false;
+  field.dispatch('keydown', { key: 'Escape', preventDefault() { prevented = true; } });
+  assert.equal(visible(ctx.page.menu), false);
+  assert.equal(prevented, true);
+  assert.equal(field.value, 'x');
+  assert.equal(searchShown(ctx.page), true);
+});

@@ -19,10 +19,9 @@ async function mounted(t) {
     const data = Buffer.from(files[path]);
     return { data: data.toString('base64'), offset: 0, size: data.length, mtimeMs: 1, kind: 'text', eof: true };
   };
-  const eaten = new WeakSet();
-  const el = new Element('div'), preview = mountPreview(el, { read, copy() {}, consumed: event => eaten.has(event) });
+  const el = new Element('div'), preview = mountPreview(el, { read, copy() {} });
   const type = text => { const input = el.find(n => n.classList.contains('finput'))[0]; input.value = text; input.dispatch('input'); };
-  return { env, preview, el, files, type, eaten, mode, tick: ms => t.mock.timers.tick(ms) };
+  return { env, preview, el, files, type, mode, tick: ms => t.mock.timers.tick(ms) };
 }
 
 test('open 换了文件：查找关闭，标记删除；同一个文件 refresh 保留；stop、close、reload 关闭', async t => {
@@ -87,18 +86,6 @@ test('同一个文件 open 不关查找（只有换了文件才关）', async t 
   preview.openFind();
   await preview.open('a.txt');
   assert.equal(preview.findOpen, true);
-});
-
-test('菜单消费掉的 Esc 不关查找条', async t => {
-  const { preview, el, eaten } = await mounted(t);
-  await preview.open('a.txt');
-  preview.openFind();
-  const event = { type: 'keydown', key: 'Escape', preventDefault() {} };
-  eaten.add(event);
-  el.emit(event);
-  assert.equal(preview.findOpen, true);
-  el.emit({ type: 'keydown', key: 'Escape', preventDefault() {} });
-  assert.equal(preview.findOpen, false);
 });
 
 // ---- 样式只在查找开着时生效：.pbody 的 finding 类跟着查找条的开关走（::highlight 规则只要存在就拖慢每次打开上色文件）----

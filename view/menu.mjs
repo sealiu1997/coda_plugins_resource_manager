@@ -220,12 +220,14 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
   document.addEventListener('click', event => {
     if (dismissed) { dismissed = false; event.stopPropagation(); }
   }, true);
-  // Esc 关菜单时同样标成「已消费」：同一次按键上的搜索框、结果列表不再清搜索或移焦点（第 18.5 节），不靠事件到达的先后顺序。
+  // Esc 关菜单时同样标成「已消费」：同一次按键上的搜索框、结果列表、查找条不再清搜索、关查找条或移焦点（第 18.5 节）。
+  // 挂在 document 的捕获阶段：捕获先于目标和冒泡经过的所有元素，「已消费」的标记一定在它们的监听执行之前加上（冒泡阶段就晚了：预览元素的监听先执行）。
+  // 关菜单和交还焦点之后，同一个事件还会派发到原目标，原目标上的监听看到 consumed 为真，什么都不做。
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
     if (!el.hidden) eaten.add(event);
     hide(true);
-  });
+  }, true);
   window.addEventListener('blur', () => hide());
   window.addEventListener('resize', () => hide()); // 旋转、拖窄侧栏：位置对不上了
   sub?.addEventListener('pointerenter', keep);
