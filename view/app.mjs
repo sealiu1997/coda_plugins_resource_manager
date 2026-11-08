@@ -72,7 +72,12 @@ const search = createSearch({
   call: (fields, signal) => conn.link.call(Type.SEARCH, fields, { signal, cancel: Type.SEARCH_CANCEL }),
   hidden: () => model.showHidden,
   identity: () => `${model.session}\n${model.scope}`,
-  onChange: () => schedule(),
+  // 结果整体没了（搜索词清空、reset、根目录不可用 suspend 都走这里）：结果行的菜单一并作废——它的操作指着旧结果。
+  // 非空重搜时旧结果留着（shown 不为空或在搜索中），菜单照旧留着，操作按打开菜单时的路径做。
+  onChange: () => {
+    if (menuFrom === 'result' && (!search.active || (search.shown === null && search.status === 'idle'))) { menu.hide(); menuFrom = null; }
+    schedule();
+  },
 });
 const searchbar = mountSearchbar($('searchbar'), { onInput: searchInput, onClear: () => { clearSearch(); searchbar.focus(); }, onKey: searchBoxKey, onEnter: () => { if (isIOS) searchbar.blur(); } });
 const hitStatus = h('span', { class: 'sstatus-text' }), hitRetry = h('button', { class: 'link', onclick: () => search.research() }, '重试'), hitsEl = h('div', { class: 'shits', role: 'listbox' });

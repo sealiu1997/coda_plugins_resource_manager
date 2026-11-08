@@ -2336,6 +2336,7 @@ try {
       const t0 = performance.now(); CSS.highlights.set('find', hl); await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); out.push([count, Math.round(performance.now() - t0)]); CSS.highlights.delete('find'); }
     return { nodes: nodes.length, out }; })()`);
   console.log(`数字（诊断：${grow.nodes} 个文本节点的上色文件里直接注册 N 个跨 token 的 Range，到画完两帧）：${grow.out.map(([n, ms]) => `${n} 个 ${ms} 毫秒`).join('，')}`);
+  const FIND_BATCH_SIZE = 2000; // find.mjs 的 FIND_BATCH
   const COUNT_BUDGET_MS = 1000, GAP_BUDGET_MS = 100; // 长行：输入到计数出来（实测 165）；输入到完成期间最大帧间隔（实测 17，一帧）：各留 6 倍左右余量
   const FRAME_BUDGET_MS = 200; // 长行不卡的门槛：实测画两帧 25～33 毫秒，留 6 倍以上余量（页面卡死时是十几秒以上）
   const SLOW_MS = 20000; // 一次超过这么久就不再重复，直接记下数字（页面卡在绘制上，重复只是白等）
@@ -2418,19 +2419,31 @@ try {
   await kb('Escape', 'Escape', 27);
   await until(`document.querySelector('.fbar').hidden`, '长行：Esc 关查找条');
   check('查找 长行：Esc 能关查找条', true);
-  // 查找没完成时按 Esc：取消，标记删光，之后不再有批次注册（密集 token 文件，分批要几百毫秒）
+  // 查找没完成时按 Esc：取消。不碰机器速度：页面里把批间的 setTimeout(0) 攥在手里（只放行我们要的），第一批注册之后下一批排在手里时按 Esc（真实键盘入口），
+  // 再放行手里剩下的回调，用确定的信号判断：手里排着的批次被取消了（clearTimeout），放行后没有再注册、也没有 find-done。HARNESS_SLOW_MS 给每一步 CDP 调用之间加延迟，结果不变。
+  const slowMs = Number(process.env.HARNESS_SLOW_MS ?? 0);
+  const slow = () => (slowMs ? wait(slowMs) : undefined);
   await openFile('window', 'light', 'session=A&path=perf-dense.js', 'mac');
   await frames();
   await kb('f', 'KeyF', 70, 4);
-  await evaluate(`${fq}.focus(); performance.clearMarks('find-done')`);
+  await evaluate(`${fq}.focus(); performance.clearMarks('find-done');
+    window.__held = new Map(); let n = 0; const realSet = window.setTimeout, realClear = window.clearTimeout;
+    window.setTimeout = (fn, ms, ...args) => (ms === 0 ? (window.__held.set(--n, fn), n) : realSet(fn, ms, ...args));
+    window.clearTimeout = handle => { if (!window.__held.delete(handle)) realClear(handle); };`);
   await send('Input.insertText', { text: '1;y=' });
-  await untilLive(`(CSS.highlights.get('find')?.size ?? 0) > 0`, '分批：第一批已经注册');
-  const midway = await evaluateLive(`performance.getEntriesByName('find-done').length === 0`);
+  await slow();
+  await untilLive(`(CSS.highlights.get('find')?.size ?? 0) === ${FIND_BATCH_SIZE} && window.__held.size === 1`, '分批：第一批已注册，下一批排在手里');
+  await slow();
+  const gated = await evaluateLive(`({ registered: CSS.highlights.get('find').size, held: window.__held.size, done: performance.getEntriesByName('find-done').length })`);
   await kb('Escape', 'Escape', 27);
+  await slow();
   await until(`document.querySelector('.fbar').hidden && CSS.highlights.size === 0`, '查找中途 Esc：查找条关、标记删光');
-  await wait(1200); // 原来要标完的时间之后
-  const after = await evaluateLive(`({ size: CSS.highlights.size, done: performance.getEntriesByName('find-done').length, hidden: document.querySelector('.fbar').hidden })`);
-  check('查找：没完成时按 Esc 取消——查找条关了，标记删光，之后（原来要标完的时间过去后）没有批次再注册、也没有 find-done', midway && after.size === 0 && after.done === 0 && after.hidden, JSON.stringify({ midway, after }));
+  const cancelled = await evaluateLive(`window.__held.size`); // 排着的批次已经被 clearTimeout 取消
+  const released = await evaluateLive(`(() => { const queued = [...window.__held.values()]; window.__held.clear(); for (const fn of queued) { try { fn(); } catch { /* 取消的批次若被放行，也不许注册 */ } } return queued.length; })()`);
+  await frames();
+  const after = await evaluateLive(`({ size: CSS.highlights.size, done: performance.getEntriesByName('find-done').length, hidden: document.querySelector('.fbar').hidden, held: window.__held.size })`);
+  check(`查找：没完成时按 Esc 取消——Esc 前第一批（${FIND_BATCH_SIZE} 个）已注册、下一批排在手里、find-done 还没有；Esc 后查找条关、标记删光、手里排着的批次已被取消（${cancelled} 个剩下），即使放行（${released} 个）也不再注册、没有 find-done`,
+    gated.registered === FIND_BATCH_SIZE && gated.held === 1 && gated.done === 0 && cancelled === 0 && after.size === 0 && after.done === 0 && after.hidden, JSON.stringify({ gated, cancelled, released, after }));
   }
 
   exitCode = failures.length ? 1 : 0;

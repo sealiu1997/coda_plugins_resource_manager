@@ -481,3 +481,62 @@ test('changed 时结果行的菜单留着：重搜替换结果后执行原菜单
   await flush();
   assert.equal(visible(ctx.page.menu), false);
 });
+
+// ---- 评审第 2 轮：结果整体没了，结果行的菜单一并作废 ----
+
+const resultMenu = async (ctx, text = 'x') => {
+  await search(ctx, text, [hit('dir/x.txt')]);
+  hitNamed(ctx.page, 'dir/x.txt').dispatch('contextmenu', { clientX: 5, clientY: 5 });
+  assert.equal(visible(ctx.page.menu), true);
+  return ctx.page.menu.find(node => node.textContent === '复制相对路径')[0];
+};
+
+test('清空搜索词（输入框清空、全是空白、清除按钮、Esc）：结果行的菜单关掉，之后 changed 也不会留着它，旧菜单项点了不执行', async t => {
+  const clears = [
+    ctx => type(ctx.page, ''),
+    ctx => type(ctx.page, '   '),
+    ctx => ctx.page.searchbar.find(node => node.classList.contains('sclear'))[0].dispatch('click'),
+    ctx => press(box(ctx.page), 'Escape'),
+  ];
+  for (const clear of clears) {
+    const ctx = await startSearch(t), copy = await resultMenu(ctx);
+    clear(ctx);
+    await flush();
+    assert.equal(visible(ctx.page.menu), false, '菜单关了');
+    ctx.host.changed();
+    await flush();
+    ctx.tick(300);
+    assert.equal(visible(ctx.page.menu), false, 'changed 之后仍是关的');
+    copy.dispatch('click');
+    assert.deepEqual(ctx.host.calls.copy, [], '旧菜单项不再执行（复制不出旧结果的路径）');
+  }
+});
+
+test('结果整体没了的其他入口：换会话、根目录暂不可用（suspend）、换根目录，结果行的菜单都关掉', async t => {
+  const exits = [
+    ctx => ctx.host.session('s2', '/B'),
+    ctx => ctx.page.post({ type: 'root', generation: ctx.host.generation, state: 'gone', path: '/A' }),
+    ctx => ctx.page.post({ type: 'root', generation: ctx.host.generation, state: 'ready', path: '/B' }),
+  ];
+  for (const exit of exits) {
+    const ctx = await startSearch(t);
+    await resultMenu(ctx);
+    exit(ctx);
+    await flush();
+    assert.equal(visible(ctx.page.menu), false);
+    ctx.host.changed();
+    await flush();
+    assert.equal(visible(ctx.page.menu), false);
+  }
+});
+
+test('非空的重搜（输入新词、changed、刷新）：旧结果留着，结果行的菜单也留着', async t => {
+  const ctx = await startSearch(t);
+  await resultMenu(ctx);
+  type(ctx.page, 'xy'); // 换了一个非空的词：旧结果留到新结果来
+  await flush();
+  assert.equal(visible(ctx.page.menu), true);
+  ctx.host.changed();
+  await flush();
+  assert.equal(visible(ctx.page.menu), true);
+});
