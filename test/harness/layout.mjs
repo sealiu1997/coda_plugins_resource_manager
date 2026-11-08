@@ -2281,6 +2281,7 @@ try {
   check('查找 窗口：下一个把计数从 1/N 变成 2/N', /^1\//.test(nav.before) && /^2\//.test(nav.after), JSON.stringify(nav));
   await kb('Escape', 'Escape', 27);
   await until(`CSS.highlights.size === 0 && document.querySelector('.fbar').hidden`, 'Esc 关查找条并清掉标记');
+  check('查找 窗口：Esc 关查找条之后 .pbody 没有 finding 类（::highlight 规则只在查找开着时生效）；样式表里的 ::highlight(find…) 规则选择器都带 .pbody.finding', await evaluate(`!document.querySelector('.pbody').classList.contains('finding') && [...document.styleSheets].flatMap(sheet => [...sheet.cssRules]).filter(rule => /::highlight\\(find/.test(rule.cssText)).every(rule => /\\.pbody\\.finding/.test(rule.selectorText))`));
   check('查找 窗口：Esc 关查找条，标记全部删除，焦点回正文', await evaluate(`document.activeElement === document.querySelector('.pbody')`));
 
   // ---- 颜色门槛（固定主题、固定 DPR 2）：用一串空格作搜索词，在匹配的底色上取样，避开字形 ----

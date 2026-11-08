@@ -98,3 +98,57 @@ test('菜单消费掉的 Esc 不关查找条', async t => {
   el.emit({ type: 'keydown', key: 'Escape', preventDefault() {} });
   assert.equal(preview.findOpen, false);
 });
+
+// ---- 样式只在查找开着时生效：.pbody 的 finding 类跟着查找条的开关走（::highlight 规则只要存在就拖慢每次打开上色文件）----
+
+test('finding 类：打开查找加上，Esc、完成、open 换文件、reload、stop、close 都去掉', async t => {
+  const { preview, el, files } = await mounted(t);
+  const body = () => el.find(n => n.classList.contains('pbody'))[0], on = () => body().classList.contains('finding');
+  assert.equal(on(), false, '没开查找：没有');
+  await preview.open('a.txt');
+  assert.equal(on(), false, '打开文件不加');
+  preview.openFind();
+  assert.equal(on(), true);
+  preview.openFind(); // 已开再按 ⌘F
+  assert.equal(on(), true);
+  el.emit({ type: 'keydown', key: 'Escape', preventDefault() {} });
+  assert.equal(on(), false, 'Esc');
+  preview.openFind();
+  el.find(n => n.classList.contains('fdone'))[0].dispatch('click');
+  assert.equal(on(), false, '完成');
+  preview.openFind();
+  await preview.refresh();
+  assert.equal(on(), true, 'refresh 保留');
+  await preview.open('b.txt');
+  assert.equal(on(), false, 'open 换文件');
+  preview.openFind();
+  await preview.reload();
+  assert.equal(on(), false, 'reload');
+  await preview.open('a.txt');
+  preview.openFind();
+  preview.stop();
+  assert.equal(on(), false, 'stop');
+  await preview.open('a.txt');
+  preview.openFind();
+  preview.close();
+  assert.equal(on(), false, 'close');
+  files['x'] = 'x';
+});
+
+test('finding 类：长行不标高亮、不支持 Highlight API 时随查找条开关照旧（类只管样式规则生不生效）', async t => {
+  const { preview, el, files } = await mounted(t);
+  const body = () => el.find(n => n.classList.contains('pbody'))[0];
+  files['long.txt'] = `${'ab '.repeat(3000)}\n`;
+  await preview.open('long.txt');
+  preview.openFind();
+  assert.equal(body().classList.contains('finding'), true);
+  preview.closeFind();
+  assert.equal(body().classList.contains('finding'), false);
+});
+
+test('样式表：两条 ::highlight 规则都带 .pbody.finding 前缀，没有不带前缀的（查找关着时不生效）', async () => {
+  const sheet = await (await import('node:fs/promises')).readFile(new URL('../view/style.css', import.meta.url), 'utf8');
+  const rules = [...sheet.matchAll(/^([^\n{]*)::highlight\((find[\w-]*)\)/gm)];
+  assert.equal(rules.length, 2);
+  for (const [, selector] of rules) assert.match(selector, /^\.pbody\.finding $/);
+});

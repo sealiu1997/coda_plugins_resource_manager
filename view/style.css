@@ -293,6 +293,8 @@ button.icon svg { display: block; }
 .coda-ios .fbar button { min-height: 44px; min-width: 44px; }
 .coda-ios .finput { height: 36px; }
 .pbody:focus { outline: none; }
-::highlight(find) { background-color: color-mix(in srgb, var(--coda-accent, #0a84ff) 25%, transparent); }
+/* 只在查找开着时生效（.pbody.finding，find.mjs 随查找条的开关加去）：这两条规则只要存在，浏览器就要给页面里每个文本节点算高亮样式，
+   实测让打开 128 KiB 的密集上色文件慢了约 27 毫秒（119 → 147），不管规则里写的是背景还是文字色。 */
+.pbody.finding ::highlight(find) { background-color: color-mix(in srgb, var(--coda-accent, #0a84ff) 25%, transparent); }
 /* 当前这处：底色 50%，文字改成正文色（--coda-foreground，和 :root 一样），不显示代码着色，同系统浏览器的查找。全部匹配不改文字颜色。 */
-::highlight(find-current) { background-color: color-mix(in srgb, var(--coda-accent, #0a84ff) 50%, transparent); color: var(--coda-foreground, #1d1d1f); }
+.pbody.finding ::highlight(find-current) { background-color: color-mix(in srgb, var(--coda-accent, #0a84ff) 50%, transparent); color: var(--coda-foreground, #1d1d1f); }

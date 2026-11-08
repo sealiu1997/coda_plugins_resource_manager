@@ -215,6 +215,7 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
       const was = open;
       open = true;
       el.hidden = false;
+      body.classList.add('finding'); // 高亮的样式规则只在查找开着时生效（style.css）
       input.focus();
       if (was) input.select?.();
     },
@@ -223,6 +224,7 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
       cancelWork();
       clearMarks();
       open = false;
+      body.classList.remove('finding');
       term = '';
       input.value = '';
       list = []; more = false; current = -1;
