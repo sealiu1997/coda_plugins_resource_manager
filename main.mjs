@@ -4,6 +4,7 @@ import { createListing, listDirectory } from './lib/tree.mjs';
 import { readChunk } from './lib/content.mjs';
 import { addText } from './lib/draft.mjs';
 import { dirSize, statPath } from './lib/info.mjs';
+import { createSearcher } from './lib/search.mjs';
 import { NO_ROOT, queryRoot, sameRoot } from './lib/root.mjs';
 import {
   ErrorCode, MESSAGE_LIMIT, REQUEST_ID_MAX, ReplyOf, RootState, Type, fail, messageSize,
@@ -19,9 +20,9 @@ const sessionOfFile = context => {
   return typeof session === 'string' && session !== '' ? session : null;
 };
 
-// options 只给测试用，运行时不传：makeListing 换成带假文件系统的读取状态；sizeLimits 调文件夹大小的项数、用时上限。
-export function activate(coda, { makeListing = createListing, sizeLimits = {} } = {}) {
-  const options = { makeListing, sizeLimits };
+// options 只给测试用，运行时不传：makeListing 换成带假文件系统的读取状态；sizeLimits 调文件夹大小的项数、用时上限；searchLimits 调文件名搜索的条数、项数、用时、队列字节、回答字节上限。
+export function activate(coda, { makeListing = createListing, sizeLimits = {}, searchLimits = {} } = {}) {
+  const options = { makeListing, sizeLimits, searchLimits };
   coda.views.register('files', { open: view => serve(coda, view, sessionOfTree, options) });
   coda.views.register('file', { open: view => serve(coda, view, sessionOfFile, options) });
 }
@@ -29,7 +30,7 @@ export function activate(coda, { makeListing = createListing, sizeLimits = {} } 
 const validRequestId = id => (typeof id === 'string' && id.length <= REQUEST_ID_MAX) || Number.isSafeInteger(id);
 const errorOf = error => (error?.protocol ? { code: error.code, message: error.message } : { code: ErrorCode.IO, message: '读取失败' });
 
-function serve(coda, view, sessionOf, { makeListing, sizeLimits }) {
+function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits }) {
   // 代次：每换一次会话加 1，所有异步出口回来后都要核对。
   const s = {
     session: sessionOf(view.context), generation: 1, root: NO_ROOT, sent: null,
@@ -42,8 +43,10 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits }) {
   // 文件夹大小：每个视图同时只有一次统计。新的开始、换会话、根目录变化、视图关闭时旧的静默停止（不回答）。
   let sizing = null; // { generation, requestId, abort }
   const stopSizing = () => { sizing?.abort.abort(); sizing = null; };
-  // 换会话、根目录变化、视图关闭：读取状态丢弃，统计也停。
-  const resetReads = () => { s.listing.clear(); stopSizing(); };
+  // 文件名搜索：同样每个视图同时只有一次，槽、待启动位和排空屏障都在 lib/search.mjs 的 searcher 里。
+  const searcher = createSearcher(s.listing, searchLimits);
+  // 换会话、根目录变化、视图关闭：读取状态丢弃，统计和搜索也停。
+  const resetReads = () => { s.listing.clear(); stopSizing(); searcher.clear(); };
 
   function post(message) {
     if (s.closed) return;
@@ -115,6 +118,7 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits }) {
         return await dirSize(s.listing, root, message.path, { ...sizeLimits, valid, signal: mine.abort.signal });
       } finally { if (sizing === mine) sizing = null; }
     },
+    [Type.SEARCH]: (message, { root, valid, generation, requestId }) => searcher.search(message, { root, valid, generation, requestId }),
     async [Type.ADD_TEXT](message, { generation }) {
       if (!s.session) throw fail(ErrorCode.NO_ROOT, '没有会话');
       return await addText(coda, s.session, message, { valid: () => !stale(generation) }) ? {} : null;
@@ -122,6 +126,8 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits }) {
   };
   // 回答依赖根目录的：读完回来根目录换了，不能带旧根目录的内容。
   const rootBound = new Set([Type.LIST, Type.STAT]);
+  // 统计和搜索：作废（会话、根目录变了或视图关了）一律静默，不回答。
+  const silentWhenVoid = new Set([Type.DIR_SIZE, Type.SEARCH]);
 
   async function request(message) {
     const { type, generation, requestId } = message;
@@ -133,7 +139,7 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits }) {
       // 读的途中根目录换了（同一会话从 A 换到 B），回答不能带 A 的内容。
       const valid = () => !stale(generation) && s.root.state === RootState.READY && s.root.path === root;
       const body = await handlers[type](message, { root, valid, generation, requestId });
-      if (body === null || (type === Type.DIR_SIZE && !valid())) return; // 统计完成时根目录已变：不回答
+      if (body === null || (silentWhenVoid.has(type) && !valid())) return; // 统计、搜索完成时根目录已变：不回答
       if (rootBound.has(type) && !valid() && !stale(generation)) throw fail(ErrorCode.NO_ROOT, '工作目录已变化');
       if (!stale(generation)) post({ type: reply, generation, requestId, ...body });
     } catch (error) {
@@ -146,17 +152,21 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits }) {
     if (!stale(generation) && sizing?.generation === generation && sizing.requestId === requestId) stopSizing();
   }
 
+  const cancelSearch = ({ generation, requestId }) => { if (!stale(generation)) searcher.cancel({ generation, requestId }); };
+
   view.onMessage(async message => {
     if (!message || typeof message !== 'object') return;
     switch (message.type) {
       // 页面（重新）就绪：它什么都不知道，所以不管有没有变，下一次查询的结果都要推。
-      case Type.HELLO: s.hello = true; s.sent = null; postSession(); return refreshRoot();
+      // 旧页面发的统计和搜索不再有人要：中止并清空槽（走树的读取排空屏障照常留着）。
+      case Type.HELLO: s.hello = true; s.sent = null; stopSizing(); searcher.clear(); postSession(); return refreshRoot();
       case Type.REFRESH:
         if (stale(message.generation)) return undefined;
         s.listing.detach();
         return refreshRoot();
-      case Type.LIST: case Type.READ: case Type.STAT: case Type.DIR_SIZE: case Type.ADD_TEXT: return request(message);
+      case Type.LIST: case Type.READ: case Type.STAT: case Type.DIR_SIZE: case Type.ADD_TEXT: case Type.SEARCH: return request(message);
       case Type.DIR_SIZE_CANCEL: return cancelSizing(message);
+      case Type.SEARCH_CANCEL: return cancelSearch(message);
     }
   });
 

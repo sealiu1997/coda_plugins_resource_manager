@@ -13,18 +13,22 @@ export const SNIFF_BYTES = 8000;
 export const REQUEST_ID_MAX = 64;
 // 输入框草稿的文字上限（UTF-16 单元）；拼完超过就不写。
 export const DRAFT_LIMIT = 100_000;
+// 文件名搜索（设计见 docs/design/phase-3.md 第 18 节）：搜索词去掉首尾空白后的长度上限（UTF-16 单元）、结果条数上限。
+export const QUERY_MAX = 256;
+export const SEARCH_RESULTS = 500;
 
 export const Type = Object.freeze({
   HELLO: 'hello', REFRESH: 'refresh', LIST: 'list', READ: 'read', STAT: 'stat', DIR_SIZE: 'dir_size', ADD_TEXT: 'add_text',
-  DIR_SIZE_CANCEL: 'dir_size_cancel', // 没有回答
+  SEARCH: 'search',
+  DIR_SIZE_CANCEL: 'dir_size_cancel', SEARCH_CANCEL: 'search_cancel', // 没有回答
   SESSION: 'session', ROOT: 'root', CHANGED: 'changed',
-  LISTED: 'listed', CHUNK: 'chunk', STATTED: 'statted', SIZED: 'sized', ADDED: 'added',
+  LISTED: 'listed', CHUNK: 'chunk', STATTED: 'statted', SIZED: 'sized', ADDED: 'added', SEARCHED: 'searched',
 });
 
 // 请求 → 回答的类型。模块回答、页面分发都查这一张。
 export const ReplyOf = Object.freeze({
   [Type.LIST]: Type.LISTED, [Type.READ]: Type.CHUNK, [Type.STAT]: Type.STATTED,
-  [Type.DIR_SIZE]: Type.SIZED, [Type.ADD_TEXT]: Type.ADDED,
+  [Type.DIR_SIZE]: Type.SIZED, [Type.ADD_TEXT]: Type.ADDED, [Type.SEARCH]: Type.SEARCHED,
 });
 export const isReply = type => Object.values(ReplyOf).includes(type);
 
@@ -34,7 +38,7 @@ export const ErrorCode = Object.freeze({
   NO_ROOT: 'no_root', INVALID_PATH: 'invalid_path', OUTSIDE_ROOT: 'outside_root', NOT_FOUND: 'not_found',
   NOT_DIR: 'not_dir', NOT_FILE: 'not_file', DENIED: 'denied', CURSOR_EXPIRED: 'cursor_expired',
   INVALID_OFFSET: 'invalid_offset', INVALID_SORT: 'invalid_sort', TOO_LARGE: 'too_large', IO: 'io_error',
-  DRAFT_FAILED: 'draft_failed', DRAFT_TOO_LONG: 'draft_too_long',
+  DRAFT_FAILED: 'draft_failed', DRAFT_TOO_LONG: 'draft_too_long', INVALID_QUERY: 'invalid_query',
 });
 
 // 目录排序：值是下面四种之一，缺省（请求不带 sort）是名称。方向由排序键决定，只在 lib/tree.mjs 里定义一处。
@@ -72,6 +76,34 @@ export function splitRelative(path) {
   const segments = path.split('/').filter(part => part !== '' && part !== '.');
   if (segments.includes('..')) return { problem: '路径不能含 ..' };
   return { segments };
+}
+
+// 隐藏名单：按全名比。目录树、图标视图的「显示隐藏文件」和文件名搜索（模块和页面）共用这一处。
+const HIDDEN = new Set(['.git', '.DS_Store']);
+export const isHidden = name => HIDDEN.has(name);
+
+// 文件名搜索的比较：名字和搜索词都先 NFC 规范化再 toLowerCase，包含就算。模块判断匹配、页面加粗用同一个函数。
+export const foldName = text => text.normalize('NFC').toLowerCase();
+
+// 页面加粗：搜索词（已 foldName）在名字里第一次出现的位置，返回原名字里的 [起点, 终点)（UTF-16 下标），没有或映射不出来返回 null。
+// 比较是在规范化后的串上做的：把原名字切成「一个基字符加它的组合符号」，每段各自规范化、变小写，拼起来要等于整串的结果，
+// 这样才能建「规范化后的位置 → 原名字的位置」的对照；拼不起来（如谚文字母的组合）、命中段的两端落在一段中间（一个字符变小写后变成两个）都不加粗。
+const CLUSTER = /\P{M}\p{M}*|\p{M}+/gu;
+export function matchSpan(name, folded) {
+  const whole = foldName(name), at = whole.indexOf(folded);
+  if (at < 0 || folded === '') return null;
+  const starts = new Map(), ends = new Map(); // 规范化后的位置 → 原名字的位置
+  let from = 0, to = 0, out = '';
+  for (const [piece] of name.matchAll(CLUSTER)) {
+    const folding = foldName(piece);
+    starts.set(from, to);
+    from += folding.length;
+    to += piece.length;
+    ends.set(from, to);
+    out += folding;
+  }
+  if (out !== whole || !starts.has(at) || !ends.has(at + folded.length)) return null;
+  return [starts.get(at), ends.get(at + folded.length)];
 }
 
 export const messageSize = message => JSON.stringify({ message }).length;

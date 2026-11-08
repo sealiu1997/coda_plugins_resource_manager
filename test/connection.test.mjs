@@ -256,7 +256,7 @@ test('Link.size：按完整信封算，和真正发出的消息一样大，页�
     await flush();
     const message = page.sent.at(-1);
     assert.equal(messageSize(message), expected, text.slice(0, 8));
-    assert.equal(message.requestId, `q${page.sent.length}`, '用的就是下一个请求号');
+    assert.match(message.requestId, new RegExp(`^[a-z0-9]+-q${page.sent.length}$`), '用的就是下一个请求号（带页面前缀）');
   }
   const base = page.link.size('add_text', { text: '', block: false });
   const edge = 'e'.repeat(MESSAGE_LIMIT - base);

@@ -8,8 +8,6 @@ export const MAX_LOADED = 100_000; // 读回保存的条数时认的上界（vie
 // 只管「按保存的条数恢复」，用户已经翻出来的条数不受限；也和 lib/tree.mjs 的目录上限无关。
 export const RESTORE_LIMIT = 20_000;
 const MAX_LOADED_DIRS = 500;
-const HIDDEN = new Set(['.git', '.DS_Store']);
-export const isHidden = name => HIDDEN.has(name);
 export const joinPath = (dir, name) => (dir ? `${dir}/${name}` : name);
 export const parentOf = path => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
 const inside = (path, dir) => path === dir || path.startsWith(`${dir}/`);
@@ -61,6 +59,8 @@ export class Model {
   constructor({ link, onChange = () => {}, onLost = () => {} }) { Object.assign(this, { link, onChange, onLost }); }
 
   get ready() { return this.root?.state === RootState.READY; }
+  // 刷新的轮次：换会话和每次 refresh（含换排序、换视图、changed）都加一。定位操作拿它判断「期间有没有刷新过」。
+  get round() { return this.#round; }
 
   // 模块来的消息统一从这里进。session 带上这个会话保存的状态；返回值同各个处理方法。
   receive(message, saved = null) {
@@ -173,15 +173,22 @@ export class Model {
 
   // 取够已加载的条数，一次替换；同目录有更新的请求就作废这一个。一次加载固定一种排序。
   // more、expired：「再显示」遇到游标过期转过来时，条数要比现在多一条，而且已经算重取过一次，不再重取。
-  async #reload(path, generation, { cap = Infinity, more = false, expired = false } = {}) {
-    if (this.link.generation !== generation) return; // 排队时会话已换，旧任务不碰新会话
+  // 返回结局（定位操作等着它）：ok（取够并提交了）、failed（失败，失败行照常显示）、void（被作废：会话换了、有更新的加载、目录没了）。
+  // 正在进行的这一次记在 dir.pending 上，whenLoaded 等它。
+  #reload(path, generation, { cap = Infinity, more = false, expired = false } = {}) {
+    if (this.link.generation !== generation) return Promise.resolve('void'); // 排队时会话已换，旧任务不碰新会话
     let dir = this.dirs.get(path);
-    if (!dir) this.dirs.set(path, dir = { entries: [], next: null, loaded: false, loading: false, error: null, token: 0, pages: 0, sortFallback: false });
+    if (!dir) this.dirs.set(path, dir = { entries: [], next: null, loaded: false, loading: false, error: null, token: 0, pages: 0, sortFallback: false, pending: null });
+    return dir.pending = this.#load(dir, path, generation, { cap, more, expired });
+  }
+
+  async #load(dir, path, generation, { cap, more, expired }) {
     const token = ++dir.token, { sort } = this, nav = this.#nav;
     const want = more ? dir.entries.length + 1 : Math.min(Math.max(dir.entries.length, this.wanted.get(path) ?? 0), cap);
     dir.loading = true;
     this.onChange();
     const current = () => this.link.generation === generation && this.dirs.get(path) === dir && dir.token === token;
+    let outcome = 'void';
     try {
       let entries = [], next = null, pages = 0, sortFallback = false;
       do {
@@ -195,27 +202,39 @@ export class Model {
           entries = []; next = null; pages = 0; sortFallback = false;
           continue;
         }
-        if (!current()) return; // 回答到了、继续前会话换了或有更新的加载，不再取下一页
+        if (!current()) return 'void'; // 回答到了、继续前会话换了或有更新的加载，不再取下一页
         if (pages === 0) sortFallback = reply.sortFallback === true;
         entries.push(...reply.entries);
         next = reply.nextCursor ?? null;
         pages++;
       } while (pages === 0 || (next && entries.length < want));
-      if (!current()) return;
+      if (!current()) return 'void';
       Object.assign(dir, { entries, next, loaded: true, error: null, pages, sortFallback, sort });
       this.wanted.delete(path); // 成功后才删：取页失败后重试还要取够保存的条数
       if (path === this.cwd) this.#quiet = false;
+      outcome = 'ok';
     } catch (error) {
-      if (error.stale || !current()) return;
+      if (error.stale || !current()) return 'void';
       if (error.code === ErrorCode.NOT_FOUND && path !== '') this.#lost(path, nav);
       else if (error.code !== ErrorCode.NO_ROOT) {
         dir.error = { code: error.code, message: error.message };
         if (path === this.cwd) this.#quiet = false;
+        outcome = 'failed';
       }
     } finally {
       if (current()) dir.loading = false;
       this.onChange();
     }
+    return outcome;
+  }
+
+  // 等这个目录正在进行的加载（或「再显示」）结束，给出同样的四种结局：ok、end（没有下一页了，只对 fetchNext）、failed、void。
+  // 没在加载：已加载的是 ok，只有失败行的是 failed，没有这个目录的是 void。
+  async whenLoaded(path) {
+    const dir = this.dirs.get(path);
+    if (!dir) return 'void';
+    if (dir.loading && dir.pending) return dir.pending;
+    return dir.loaded ? 'ok' : dir.error ? 'failed' : 'void';
   }
 
   // 目录没了（not_found）：所有列目录入口都走这里。先清掉失效的子树；cwd 在里面、而且发出请求以来没有导航过，就退到上一层。
@@ -256,30 +275,51 @@ export class Model {
   retry(path) { return this.ready ? this.#reload(path, this.link.generation) : Promise.resolve(); }
 
   // 「再显示」：取下一页接在后面。
-  async loadMore(path) {
+  async loadMore(path) { await this.#more(path); }
+
+  // 取下一页接在后面，告诉调用方结局（定位操作用）：ok（接上了新条目）、end（没有下一页了）、failed（失败，失败行照常显示）、void（这次读取被作废了）。
+  // 不碰 wanted，也不按 wanted 取够；目录正在加载时由调用方先 whenLoaded。
+  async fetchNext(path) { return this.#more(path); }
+
+  async #more(path) {
     const dir = this.dirs.get(path), { generation } = this.link;
-    if (!dir?.next || dir.loading || !this.ready) return;
+    if (!dir || !this.ready || dir.loading) return 'void';
+    if (!dir.next) return 'end';
     // 游标是按另一种排序取的（换排序时这个目录没重建过）：不用它，从第一页重取，条数比现在多一条。
-    if (dir.sort !== this.sort) return this.#reload(path, generation, { more: true, expired: true });
+    if (dir.sort !== this.sort) return this.#grown(path, dir, generation);
+    return dir.pending = this.#page(dir, path, generation); // 本次读取登记在 dir.pending 上：whenLoaded 等的就是它（游标过期后的重取经 #reload，自己登记）
+  }
+
+  async #page(dir, path, generation) {
     const token = ++dir.token, nav = this.#nav;
     dir.loading = true;
     this.onChange();
     const current = () => this.link.generation === generation && this.dirs.get(path) === dir && dir.token === token;
+    let outcome = 'void';
     try {
       const reply = await this.link.call('list', { path, cursor: dir.next, sort: this.sort });
-      if (!current()) return;
+      if (!current()) return 'void';
       dir.entries = dir.entries.concat(reply.entries);
       Object.assign(dir, { next: reply.nextCursor ?? null, error: null, pages: dir.pages + 1 });
+      outcome = 'ok';
     } catch (error) {
-      if (error.stale || !current()) return;
+      if (error.stale || !current()) return 'void';
       // 游标过期：从第一页重取，条数比现在多一条，所以还会接着往下取。重取自己管 loading。
-      if (error.code === ErrorCode.CURSOR_EXPIRED) return this.#reload(path, generation, { more: true, expired: true });
-      if (error.code === ErrorCode.NOT_FOUND && path !== '') return this.#lost(path, nav);
-      dir.error = { code: error.code, message: error.message };
+      if (error.code === ErrorCode.CURSOR_EXPIRED) return this.#grown(path, dir, generation);
+      if (error.code === ErrorCode.NOT_FOUND && path !== '') this.#lost(path, nav);
+      else { dir.error = { code: error.code, message: error.message }; outcome = 'failed'; }
     } finally {
       if (current()) dir.loading = false;
       this.onChange();
     }
+    return outcome;
+  }
+
+  // 从第一页重取、条数比现在多一条（已经算重取过一次）：结局按条数有没有增加给。
+  async #grown(path, dir, generation) {
+    const before = dir.entries.length;
+    const outcome = await this.#reload(path, generation, { more: true, expired: true });
+    return outcome === 'ok' ? (this.dirs.get(path)?.entries.length > before ? 'ok' : 'end') : outcome;
   }
 
   // 选中只影响高亮，不发 onChange：重画会换掉全部行节点，双击的第二下点击之后 dblclick 就丢了。页面的 selectEntry 负责切高亮和保存。返回是不是变了。
@@ -288,8 +328,14 @@ export class Model {
     this.selected = path;
     return true;
   }
-  // Mac 打开文件：选中它并切到预览。返回（closeFile）只清 opened，选中留着。
-  openFile(path) { this.selected = this.opened = path; this.onChange(); }
+  // 打开文件分两步：设预览（opened）、设选中（selected），在同一次同步操作里做完，只触发一次重画。
+  // 目录树里打开两步都做；从搜索结果里打开只设预览（结果有自己的选中，不改被遮住的目录树的选中）。
+  // 返回（closeFile）只清 opened，选中留着。
+  openFile(path, { select = true } = {}) {
+    this.opened = path;
+    if (select) this.selected = path;
+    this.onChange();
+  }
   closeFile() { this.opened = null; this.onChange(); }
   setShowHidden(on) { this.showHidden = on; this.onChange(); }
   // loaded：取过不止一页的目录已加载的条数，只存条数不存内容；第一页每次都会重新取，不用存。

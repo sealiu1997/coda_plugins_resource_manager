@@ -4,8 +4,8 @@ import { h } from './dom.mjs';
 import { infoText } from './format.mjs';
 import { mountGestures } from './gestures.mjs';
 import { icon, iconFor } from './icons.mjs';
-import { isHidden, joinPath } from './model.mjs';
-import { EntryKind } from './protocol.mjs';
+import { joinPath } from './model.mjs';
+import { EntryKind, isHidden } from './protocol.mjs';
 import { TITLES, rootName } from './tree.mjs';
 
 const OVERSCAN = 2; // 上下多画几行
@@ -234,6 +234,15 @@ export function mountGrid(el, model, handlers, { draggable = true, longPress = f
     else if (top + cellH > body.scrollTop + body.clientHeight) body.scrollTop = top + cellH - body.clientHeight;
     paint();
   };
+  // 滚到这个条目在可见区中间（定位操作的最后一步）；找不到返回 false。调用前先 render()。
+  const center = path => {
+    const index = cells.findIndex(cell => cell.type === 'entry' && cell.path === path);
+    if (index < 0) return false;
+    const top = (spacer.offsetTop || 0) + rowTop(layout, rowOfCell(layout, index), cellH, noteH);
+    body.scrollTop = Math.max(0, top - (body.clientHeight - cellH) / 2);
+    paint();
+    return true;
+  };
   body.addEventListener('scroll', paint, { passive: true });
   new ResizeObserver(relayout).observe(body);
 
@@ -254,6 +263,7 @@ export function mountGrid(el, model, handlers, { draggable = true, longPress = f
     onScroll(fn) { body.addEventListener('scroll', fn, { passive: true }); },
     get layout() { return layout; },
     select: mark,
+    center,
     activate,
     focus() { body.focus(); },
     onKey(fn) { body.addEventListener('keydown', fn); },

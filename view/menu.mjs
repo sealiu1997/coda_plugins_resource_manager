@@ -81,7 +81,7 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
         if (checked !== undefined) button.setAttribute('aria-checked', String(checked));
         button.addEventListener('click', () => {
           if (!alive()) return; // 菜单已经关了（换成了别的、退回了上一层）：留在手里的按钮不再响应
-          hide();
+          hide(true);
           run();
         });
       }
@@ -193,14 +193,18 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
   // 安全区的左边：body 的左内边距就是它（style.css），算出来的是像素。读不到按 0。
   const safeLeft = () => { const px = parseFloat(globalThis.getComputedStyle?.(document.body)?.paddingLeft); return Number.isFinite(px) ? px : 0; };
 
-  function hide() {
+  // restore：关菜单后把焦点交回打开它的按钮（Esc 关、选了一项之后）。点菜单外、滚动、旋转关的不交：点到哪里焦点就在哪里。
+  // 选项的操作在交回焦点之后才执行，操作自己要移焦点（如「查找」聚焦查找条）时以操作为准。没有按钮的菜单（右键、原生按钮的假锚点）焦点不动。
+  function hide(restore = false) {
     settle();
     current = null;
     layer++;
     collapse();
     el.hidden = true;
+    const back = opener;
     opener?.setAttribute?.('aria-expanded', 'false');
     opener = null;
+    if (restore === true) back?.focus?.(); // 严格比较：hide 也被直接当事件回调用（滚动、resize、blur），Event 对象是真值
   }
 
   // 两个面板都算菜单里面。菜单开着时点菜单外：只关菜单，紧接着的那次点击不交给页面。
@@ -216,9 +220,16 @@ export function mountMenu(el, sub = null, { flyout = false, animate = false } = 
   document.addEventListener('click', event => {
     if (dismissed) { dismissed = false; event.stopPropagation(); }
   }, true);
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') hide(); });
-  window.addEventListener('blur', hide);
-  window.addEventListener('resize', hide); // 旋转、拖窄侧栏：位置对不上了
+  // Esc 关菜单时同样标成「已消费」：同一次按键上的搜索框、结果列表、查找条不再清搜索、关查找条或移焦点（第 18.5 节）。
+  // 挂在 document 的捕获阶段：捕获先于目标和冒泡经过的所有元素，「已消费」的标记一定在它们的监听执行之前加上（冒泡阶段就晚了：预览元素的监听先执行）。
+  // 关菜单和交还焦点之后，同一个事件还会派发到原目标，原目标上的监听看到 consumed 为真，什么都不做。
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if (!el.hidden) eaten.add(event);
+    hide(true);
+  }, true);
+  window.addEventListener('blur', () => hide());
+  window.addEventListener('resize', () => hide()); // 旋转、拖窄侧栏：位置对不上了
   sub?.addEventListener('pointerenter', keep);
 
   return {

@@ -42,6 +42,7 @@ const chat = createChat({ link: conn.link, copy: text => coda.copy(text), hint }
 const preview = mountPreview($('preview'), {
   read: (path, offset) => conn.link.call('read', { path, offset }), copy: text => coda.copy(text),
   selectionMenu: isIOS ? null : (event, selection) => menu.open(event, { items: chat.selectionItems(selection) }),
+  consumed: menu.consumed,
 });
 
 // 模块跟随的会话和启动参数里的不是同一个时（换会话的两条消息没有先后保证），不能读，等对上。
@@ -154,6 +155,13 @@ function saveNow() {
 quiet(() => coda.on('visibility', visible => { if (!visible) { press.reset(); saveNow(); } }));
 preview.onScroll(queueSave);
 preview.onScroll(menu.hide);
+
+// ⌘F：能查找的文本打开查找条（「窗口」同一个预览，同一个查找）；其他不拦。菜单开着时先关菜单。
+document.addEventListener('keydown', event => {
+  if (isIOS || event.isComposing || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.key?.toLowerCase() !== 'f') return;
+  if (!menu.hidden) menu.hide();
+  if (preview.canFind) { event.preventDefault(); preview.openFind(); }
+});
 
 render();
 conn.hello();

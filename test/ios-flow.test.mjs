@@ -63,7 +63,7 @@ test('树 → 预览 → 返回：同一个页面里展开、已加载的条数�
 
   // 返回：同一个页面，目录树原样。
   one.events.back({ steps: 1 });
-  await waitFor(() => !one.page.tree.classList.contains('off'), '回到树');
+  await waitFor(() => !one.page.browse.classList.contains('off'), '回到树');
   assert.equal(one.page.tree.scrollTop, before, '滚动位置不变');
   assert.equal(parseInt(total(), 10) / rowH, COUNT + 2, '加载过的条数不变');
   scrollTo(one.page, 0);

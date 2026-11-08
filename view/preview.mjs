@@ -1,5 +1,6 @@
 // 文件预览：只接收路径和读块的能力，不依赖树的状态。readFile 是纯逻辑；mountPreview 才碰 DOM。
 import { h } from './dom.mjs';
+import { createFind } from './find.mjs';
 import { formatSize } from './format.mjs';
 import { HIGHLIGHT_LIMIT, appendAll, hasLongLine, highlight } from './highlight.mjs';
 import { icon, iconFor } from './icons.mjs';
@@ -58,19 +59,39 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // back：给了就在头部最左边放「返回」（Mac 侧栏预览：原生工具栏项目只能在右侧）；文件页和 iPhone 不传。
 // open(path, scroll) 带了要恢复的位置时，返回的 Promise 在「位置用上了」时变 true（正文到了、已设好位置；读取失败不算，位置留着等重试），
 // 在「位置作废」时变 false（预览关了、改看别的文件）。读取被刷新、重载或 changed 作废时位置不丢：接替它的那次读取接着带上，用上才算完。
+// 文件内查找（第 18.6 节）是预览自己的一部分，接在预览已有的生命周期上：open 换了文件、reload、stop、close 关查找；refresh 保留；release 不碰。
+// 页面只负责入口：canFind（有显示着的文本才有）、openFind()（⌘F、iPhone 的「查找」菜单项）。consumed(event)：这个按键已经被菜单消费了（菜单开着时的 Esc）。
 // selectionMenu(event, { path, text, startLine, endLine })：给了就接管正文里选中文字的右键（只有 Mac 传）；预览不知道菜单里是什么。
 // 选区为空、或裁到正文里之后为空时不接管，走系统默认。内容和行号在这里取好，交出去之后和选区无关。
-export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null }) {
+export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false }) {
   const name = h('div', { class: 'pname truncate' }), meta = h('div', { class: 'pmeta caption secondary truncate' }, ' ');
   const fileIcon = h('span', { class: 'pico', 'aria-hidden': 'true' });
   // 图标按钮：可访问名称和 Mac 的悬停提示都是 label；没有图标的退回文字。
   const action = (label, glyph, run) => h('button', { class: glyph ? 'icon' : 'link', 'aria-label': label, title: label, onclick: run }, glyph ? icon(glyph, 18) : label);
   const copyPath = () => path !== null && copy(path);
   const retryButton = h('button', { class: 'link', onclick: () => load(true), hidden: true }, '重试');
-  const body = h('div', { class: 'pbody' });
+  const body = h('div', { class: 'pbody', tabindex: '-1' }); // 可聚焦：关查找条后焦点回正文
+  let gutterEl = null;
+  const find = createFind({ body, gutterWidth: () => gutterEl?.offsetWidth ?? 0 });
   const extra = actions.map(({ label, icon: glyph, run }) => { const button = action(label, glyph, () => path !== null && run(path, button)); return button; });
   el.replaceChildren(h('div', { class: 'phead' }, ...(back ? [action('返回', 'back', back)] : []), fileIcon, h('div', { class: 'grow' }, name, meta), retryButton,
-    ...(copyInHead ? [action('复制路径', 'copy', copyPath)] : []), ...extra), body);
+    ...(copyInHead ? [action('复制路径', 'copy', copyPath)] : []), ...extra), find.el, body);
+  find.done.addEventListener('click', () => { find.close(); body.focus(); });
+  // 查找条的键盘：Esc 关（从查找条里关，焦点回正文；焦点在正文里，焦点留在正文）；⌘G、⇧⌘G 下一个、上一个。输入法组字中的按键不管，菜单消费掉的 Esc 不再处理。
+  el.addEventListener('keydown', event => {
+    if (!find.isOpen || event.isComposing) return;
+    if (event.key === 'Escape' && consumed(event)) { event.preventDefault(); return; } // 菜单关掉的 Esc：查找输入框是 type=search，默认动作会清空它，要拦下
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      const fromBar = find.el.contains(document.activeElement);
+      find.close();
+      if (fromBar) body.focus();
+    } else if (event.key?.toLowerCase() === 'g' && event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault();
+      if (event.shiftKey) find.prev(); else find.next();
+    }
+  });
+  let textShown = false, pendingFind = null, longLine = false; // 现在显示的是不是文本；show() 换好的正文，等滚动位置设好再交给查找
 
   let path = null, token = 0, shown = null, objectUrl = null; // shown：当前显示的 { size, mtimeMs }
   let opens = 0, stoppedAt = -1; // 打开次数和上一次停止时的次数：释放只在停止之后没有再打开过时才做（返回的退场还没结束又打开了）
@@ -93,6 +114,9 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
 
   function show(result) {
     revoke();
+    textShown = result.kind === ContentKind.TEXT;
+    pendingFind = null;
+    if (!textShown) find.close(); // 图片、二进制没有查找
     shown = { size: result.size, mtimeMs: result.mtimeMs };
     // 元信息：目录 · 行数 · 大小；根目录下的文件没有目录，非文本没有行数。修改时间放进 title。
     // 高亮：认得出语言才试；超过上限不试，库或解析出错就退回纯文本，都在元信息里注明。认不出语言的不加说明。
@@ -100,7 +124,9 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     const lines = result.kind === ContentKind.TEXT ? `${lineCount(result.text)} 行` : '';
     const language = result.kind === ContentKind.TEXT ? languageOf(path.split('/').pop()) : null;
     // 先判大小，超过只写「不高亮」；没超再判行长。
-    const skip = !language ? '' : result.bytes.length > HIGHLIGHT_LIMIT ? '不高亮' : hasLongLine(result.text) ? '行太长，不高亮' : '';
+    // 有长行：上色已经按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行，所以只计数、导航、滚动。
+    longLine = result.kind === ContentKind.TEXT && hasLongLine(result.text);
+    const skip = !language ? '' : result.bytes.length > HIGHLIGHT_LIMIT ? '不高亮' : longLine ? '行太长，不高亮' : '';
     const colored = language && !skip ? highlight(result.text, language) : null;
     const plain = !language ? '' : skip || (colored ? '' : '没能高亮');
     const note = [result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '', plain].filter(Boolean).join('，');
@@ -109,6 +135,8 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       const gutter = h('pre', { class: 'gutter', 'aria-hidden': 'true' }, Array.from({ length: lineCount(result.text) }, (_, i) => i + 1).join('\n'));
       const text = h('pre', { class: 'text selectable' }, ...(colored ? [] : [result.text]));
       if (colored) appendAll(text, colored);
+      gutterEl = gutter;
+      pendingFind = { el: text, text: result.text, highlight: !longLine };
       if (selectionMenu) text.addEventListener('contextmenu', event => onSelect(event, text));
       body.replaceChildren(h('div', { class: 'code' }, gutter, text));
     } else if (result.kind === ContentKind.IMAGE && result.bytes.length > 0) {
@@ -129,15 +157,17 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
 
   function failure(error, silent, retry) {
     if (error.stale) return;
-    if (error.code === ErrorCode.NOT_FOUND) { shown = null; setMeta(' '); return notice('文件已不存在', path); }
+    if (error.code === ErrorCode.NOT_FOUND) { shown = null; textShown = false; find.clearContent(); setMeta(' '); return notice('文件已不存在', path); }
     if (silent && shown) return setStale(error.message); // 后台刷新失败：保留正文，提示原因
+    textShown = false;
+    find.clearContent(); // 整页重读失败：标记清掉，计数写「—」，之后再读成功就重新找
     notice('读不到这个文件', error.message, { label: '重试', run: retry });
   }
 
   // silent：刷新。没变化不重画；变了就换内容，并尽量留在原来的滚动位置；有待恢复的位置时用它。
   async function load(silent) {
     const mine = ++token, mark = () => mine === token;
-    if (!silent) { shown = null; setMeta('读取中…'); revoke(); body.replaceChildren(); }
+    if (!silent) { shown = null; textShown = false; find.clearContent(); setMeta('读取中…'); revoke(); body.replaceChildren(); }
     try {
       const result = await readFile(offset => read(path, offset), {
         prev: silent ? shown : null, cancelled: () => !mark(),
@@ -149,6 +179,8 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });
       show(result);
       body.scrollTop = keep.top; body.scrollLeft = keep.left;
+      // 顺序：换正文 → 设好滚动位置 → 重建查找（刷新和换正文时查找不滚动，不盖掉恢复）
+      if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { highlight: pendingFind.highlight });
       settle(true);
     } catch (error) {
       if (mark()) failure(error, silent, () => load(false)); // 失败不算用上：待恢复的位置留着，重试或之后的刷新成功才用、才清
@@ -158,6 +190,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   return {
     open(next, scroll = null) {
       settle(false);
+      if (next !== path) find.close(); // 换了文件就关查找，不靠调用方先 stop()
       opens++;
       path = next;
       const base = next.split('/').pop();
@@ -171,9 +204,9 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     copyPath,
     refresh() { return path === null ? undefined : load(true); },
     // 内容的来源变了（根目录换了位置）：旧正文不能留，也不能按元数据判断「没变」。
-    reload() { return path === null ? undefined : load(false); },
+    reload() { find.close(); return path === null ? undefined : load(false); }, // 来源变了：查找也关
     // 停止（逻辑关闭，立即）：不再读、不再刷新，待恢复的位置结算；画面（正文、图片的 URL）留着，由 release 在退场结束时清掉。
-    stop() { settle(false); token++; path = null; shown = null; stoppedAt = opens; },
+    stop() { settle(false); token++; path = null; shown = null; textShown = false; find.close(); stoppedAt = opens; },
     // 释放（画面）：停止之后又打开过就什么都不做。
     release() {
       if (stoppedAt !== opens) return; // 停止之后又打开过（打开次数变了）：这一屏是新的，不是退场的旧页
@@ -187,5 +220,11 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     scroll: () => (path === null ? { top: 0, left: 0 } : { top: body.scrollTop, left: body.scrollLeft }),
     onScroll: fn => body.addEventListener('scroll', fn, { passive: true }),
     get path() { return path; },
+    // 文件内查找的入口：有显示着的文本（或查找条已经开着）才有。
+    get canFind() { return path !== null && (textShown || find.isOpen); },
+    get findOpen() { return find.isOpen; },
+    openFind() { if (this.canFind) find.open(); return this.canFind; },
+    closeFind() { find.close(); },
+    find,
   };
 }

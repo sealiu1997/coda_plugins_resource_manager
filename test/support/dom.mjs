@@ -7,9 +7,19 @@ class Text {
 
 class Emitter {
   #listeners = new Map();
-  addEventListener(type, fn) { this.#listeners.set(type, [...(this.#listeners.get(type) ?? []), fn]); }
-  removeEventListener(type, fn) { this.#listeners.set(type, (this.#listeners.get(type) ?? []).filter(other => other !== fn)); }
-  emit(event) { for (const fn of this.#listeners.get(event.type) ?? []) fn(event); }
+  // 第三个参数同浏览器：true 或 { capture: true } 是捕获阶段的监听。
+  addEventListener(type, fn, options) {
+    const capture = options === true || options?.capture === true;
+    this.#listeners.set(type, [...(this.#listeners.get(type) ?? []), { fn, capture }]);
+  }
+  removeEventListener(type, fn, options) {
+    const capture = options === true || options?.capture === true;
+    this.#listeners.set(type, (this.#listeners.get(type) ?? []).filter(other => other.fn !== fn || other.capture !== capture));
+  }
+  // 直接发给这个节点上的监听（测试直接 document.emit 用）；phase 只发捕获或冒泡阶段的，缺省全发（按注册顺序）。
+  emit(event, phase = 'all') {
+    for (const { fn, capture } of [...(this.#listeners.get(event.type) ?? [])]) if (phase === 'all' || (phase === 'capture') === capture) fn(event);
+  }
 }
 
 export class Element extends Emitter {
@@ -56,7 +66,9 @@ export class Element extends Emitter {
   getAttribute(name) { return this.attributes.get(name) ?? null; }
 
   // 焦点：和浏览器一样，聚焦的元素被摘掉后 activeElement 回到没有。
-  focus() { globalThis.document.activeElement = this; }
+  focus() { if (!this.inert) globalThis.document.activeElement = this; }
+  blur() { if (globalThis.document.activeElement === this) globalThis.document.activeElement = null; }
+  select() { this.selected = true; }
   replaceChildren(...nodes) {
     for (const child of this.children) { if (child.contains?.(globalThis.document?.activeElement)) globalThis.document.activeElement = null; child.parent = null; }
     this.children = [];
@@ -84,13 +96,20 @@ export class Element extends Emitter {
     return null;
   }
   getBoundingClientRect() { return { left: 0, top: 0, right: 100, bottom: 24, height: 24, width: 100 }; }
+  // 事件传播顺序同真浏览器：document 捕获 → 沿路径从外到里的捕获 → 目标（先捕获后冒泡）→ 沿路径往外冒泡 → document 冒泡。stopPropagation 之后后面的节点收不到。
   dispatch(type, init = {}) {
     let stopped = false;
     const event = { type, target: this, preventDefault() {}, stopPropagation() { stopped = true; }, ...init };
-    // document 上的监听先于元素（页面里都是捕获阶段）；stopPropagation 后元素收不到。
-    globalThis.document?.emit?.(event);
-    if (stopped) return event;
-    for (let at = this; at instanceof Element; at = at.parent) at.emit(event);
+    const path = [];
+    for (let at = this; at instanceof Element; at = at.parent) path.push(at);
+    const doc = globalThis.document;
+    const run = (node, phase) => { if (!stopped) node?.emit?.(event, phase); };
+    run(doc, 'capture');
+    for (let i = path.length - 1; i > 0; i--) run(path[i], 'capture');
+    run(path[0], 'capture');
+    run(path[0], 'bubble');
+    for (let i = 1; i < path.length; i++) run(path[i], 'bubble');
+    run(doc, 'bubble');
     return event;
   }
   find(predicate) {
@@ -112,14 +131,16 @@ let instance = 0;
 // motion：给了就装上 matchMedia（prefers-reduced-motion，motion.reduce 为真时「减弱」）和 Element.prototype.animate 的桩，页面才会播动画；
 // 不给时没有 matchMedia，页面按「减弱动态效果」处理（旧测试都不受动画影响）。返回的 page.motion：{ reduce, animations, set(reduce) }，
 // animations 是所有 animate 调用（{ el, frames, options, finished, canceled, finish() }），set 改设置并触发 change。
-export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'tree', 'grid', 'preview', 'notice', 'menu', 'submenu', 'hint', 'info'], motion = null } = {}) {
+export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'browse', 'searchbar', 'tree', 'grid', 'search', 'preview', 'notice', 'menu', 'submenu', 'hint', 'info'], motion = null } = {}) {
   const elements = Object.fromEntries(ids.map(id => [id, new Element('div')]));
+  // 和 index.html 一样：#browse 里是搜索框和三个面板（树页以外的页面没有这些 id）。
+  if (elements.browse) elements.browse.append(...['searchbar', 'tree', 'grid', 'search'].map(id => elements[id]));
   elements.bar.hidden = true;
   for (const id of ['menu', 'submenu', 'hint']) if (elements[id]) elements[id].hidden = true;
   const windowEmitter = new Emitter(), documentEmitter = new Emitter(), resizers = [];
   const dom = {
     window: Object.assign(windowEmitter, { coda, innerWidth: 320, innerHeight: 600 }),
-    document: Object.assign(documentEmitter, { documentElement: new Element('html'), getElementById: id => elements[id], createElement: tag => new Element(tag), createElementNS: (_ns, tag) => new Element(tag),
+    document: Object.assign(documentEmitter, { documentElement: new Element('html'), getElementById: id => elements[id], createElement: tag => new Element(tag), createRange: () => globalThis.fakeRange?.(), createElementNS: (_ns, tag) => new Element(tag),
       // 页面是否持有焦点：测试里把 document.windowBlurred 设成 true 模拟窗口失焦。
       hasFocus: () => !globalThis.document.windowBlurred }),
     innerWidth: 320,
