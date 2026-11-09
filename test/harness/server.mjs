@@ -1,5 +1,6 @@
 // 开发用：假 window.coda 把真实页面接到真实模块和真实目录。
-// 用法：node test/harness/server.mjs <会话A的目录> [会话B的目录] [端口]，浏览器打开打印出的地址。
+// 用法：node test/harness/server.mjs <会话A的目录> [会话B的目录] [端口] [会话W的目录]，浏览器打开打印出的地址。
+// 会话 W（给了第四个参数才有）：根目录是一个真实的 git worktree，模块自己反查项目名，用来看 0.8.1 的根目录标题（页面收到的 root 消息里带 project）。
 // 平台与安全区：?platform=ios 时 <html> 带 coda-ios、字号 17px；?safe=上,右,下,左 模拟 env(safe-area-inset-*)（点数，如 0,59,21,59）。
 // 单独打开页面地址（/view/index.html?platform=ios）时，coda.open 跳到文件页、coda.close 返回，可直接用手机尺寸截图。
 // 文件视图：地址后加 ?view=file&session=A&path=相对路径，页面启动值同 coda.open({ view: 'file', args })。
@@ -15,13 +16,13 @@ import { activate } from '../../main.mjs';
 import { draftSession } from '../../lib/draft.mjs';
 
 const viewDir = fileURLToPath(new URL('../../view/', import.meta.url));
-const [dirA, dirB = dirA, port = '0'] = process.argv.slice(2);
+const [dirA, dirB = dirA, port = '0', dirW = null] = process.argv.slice(2);
 if (!dirA) { console.error('用法：node test/harness/server.mjs <目录A> [目录B] [端口]'); process.exit(1); }
 
 // ---- 假的 coda 宿主（形状同 test/support/fake.mjs）----
-const threads = { A: { checkout: { kind: 'worktree', state: 'ready', path: dirA } }, B: { checkout: { kind: 'worktree', state: 'ready', path: dirB } } };
+const threads = { A: { checkout: { kind: 'worktree', state: 'ready', path: dirA } }, B: { checkout: { kind: 'worktree', state: 'ready', path: dirB } }, ...(dirW ? { W: { checkout: { kind: 'worktree', state: 'ready', path: dirW } } } : {}) };
 const watchers = new Set(), views = new Set(), providers = new Map();
-const drafts = { A: { text: '', attachments: [], revision: 1 }, B: { text: '', attachments: [], revision: 1 } };
+const drafts = { A: { text: '', attachments: [], revision: 1 }, B: { text: '', attachments: [], revision: 1 }, W: { text: '', attachments: [], revision: 1 } };
 activate({
   views: { register: (id, provider) => providers.set(id, provider) },
   api: async (path, body) => {

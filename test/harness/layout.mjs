@@ -1,8 +1,9 @@
 // 开发用：无头 Chrome（不是 WKWebView）经 CDP 断言假 DOM 查不出的真实布局，并给 Mac 侧栏和预览、iPhone 竖屏和横屏的深浅色截图。不是产品代码。
 // 自己起 harness 服务和临时目录（用完删掉），截图放在系统临时目录里，不进仓库。
 // 用法：node test/harness/layout.mjs [Chrome 的路径]；失败时退出码非 0。
-import { spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +41,8 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 
 // 先建临时目录，之后所有资源都在 try/finally 里创建，失败时一并清理。
 const base = await mkdtemp(join(tmpdir(), 'rm-ui-'));
+const WT_UUID = randomUUID(), WT_PROJECT = 'coda_plugins_resource_manager'; // 0.8.1：worktree 目录名是 UUID，主仓库文件夹名取长的，三档宽度才分得开
+const wtBase = join(base, 'wt'), wtMain = join(wtBase, WT_PROJECT), wtDir = join(wtBase, WT_UUID);
 const fixture = join(base, 'demo-project'), bulkRoot = join(base, 'bulk-project'), profile = join(base, 'profile'), shots = join(base, 'shots');
 const BULK = 20000; // 图标视图的量：一个目录里这么多文件，在会话 B 里（根目录是 bulk-project）
 const children = [];
@@ -70,9 +73,12 @@ const cleanup = async () => {
   ws?.close();
   await Promise.all(children.map(stop));
   await chmod(join(fixture, 'locked'), 0o755).catch(() => {});
+  try { gitIn(wtMain, 'worktree', 'remove', '--force', wtDir); gitIn(wtMain, 'worktree', 'prune'); } catch { /* 没建成，或目录已经不在 */ }
   // 跑完了截图才留下，中途失败时整个临时目录都删掉。
-  for (const dir of keepShots ? [fixture, bulkRoot, profile] : [base]) await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  for (const dir of keepShots ? [fixture, bulkRoot, wtBase, profile] : [base]) await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 };
+
+const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=harness', '-c', 'user.email=harness@example.invalid', '-c', 'init.defaultBranch=main', ...args], { cwd, stdio: 'pipe' });
 
 let id = 0; const waiting = new Map();
 const send = (method, params = {}) => new Promise((resolve, reject) => { waiting.set(++id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params })); });
@@ -131,7 +137,15 @@ async function start() {
   await symlink('/nonexistent-target', join(fixture, 'dangling'));
   await chmod(join(fixture, 'locked'), 0);
 
-  const server = launch('harness 服务', process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url)), fixture, bulkRoot, '0'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  // 真实的 git worktree（会话 W）：主仓库一次空提交加一个文件，worktree 建在 UUID 目录里，同 Coda 给会话建的那种。
+  await mkdir(wtMain, { recursive: true });
+  gitIn(wtMain, 'init', '-q');
+  await writeFile(join(wtMain, 'README.md'), 'x\n');
+  gitIn(wtMain, 'add', '.');
+  gitIn(wtMain, 'commit', '-q', '-m', 'init');
+  gitIn(wtMain, 'worktree', 'add', '-q', wtDir, '-b', `agent/${WT_UUID}`);
+
+  const server = launch('harness 服务', process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url)), fixture, bulkRoot, '0', wtDir], { stdio: ['ignore', 'pipe', 'inherit'] });
   serverUrl = await within(Promise.race([server.early, new Promise(resolve => server.stdout.on('data', data => { const m = /http:\/\/\S+/.exec(String(data)); if (m) resolve(m[0]); }))]), STARTUP_MS, 'harness 服务启动');
 
   // 端口上已经有调试服务时，连上的会是别人的 Chrome，不是我们起的这个。
@@ -2475,6 +2489,71 @@ try {
   const after = await evaluateLive(`({ size: CSS.highlights.size, done: performance.getEntriesByName('find-done').length, hidden: document.querySelector('.fbar').hidden, held: window.__held.size })`);
   check(`查找：没完成时按 Esc 取消——Esc 前第一批（${FIND_BATCH_SIZE} 个）已注册、下一批排在手里、find-done 还没有；Esc 后查找条关、标记删光、手里排着的批次已被取消（${cancelled} 个剩下），即使放行（${released} 个）也不再注册、没有 find-done`,
     gated.registered === FIND_BATCH_SIZE && gated.held === 1 && gated.done === 0 && cancelled === 0 && after.size === 0 && after.done === 0 && after.hidden, JSON.stringify({ gated, cancelled, released, after }));
+  }
+
+  // ---- 0.8.1 worktree 的根目录名（会话 W：真实的 git worktree，目录名 UUID，主仓库文件夹名 coda_plugins_resource_manager）----
+  // 模块自己反查项目名，页面收到的 root 消息带 project；标题按元素现在的宽度分三步省略。三档宽度不凭感觉定：
+  // 先在宽的视口里用页面里的隐藏元素（同标题的字体）量出完整写法和「项目名只剩 2 个字」的宽度，再按量到的算视口，
+  // 窄档窄到项目名只剩 2 个字也放不下。判断落在第几步看标题的文字，不看宽度。
+  {
+    await fetch(`${serverUrl}ctl?action=session:W`);
+    const tag = WT_UUID.slice(0, 4), full = `${WT_PROJECT}-wt-${tag}`, minimal = `${WT_PROJECT[0]}…${WT_PROJECT.at(-1)}-wt-${tag}`, realWt = await realpath(wtDir);
+    const stepFn = `(text => text === ${JSON.stringify(full)} ? 1 : text.endsWith('…') ? 3 : text.endsWith(${JSON.stringify(`-wt-${tag}`)}) && text.includes('…') && text.startsWith(${JSON.stringify(WT_PROJECT[0])}) ? 2 : 0)`;
+    const stepOf = text => (text === full ? 1 : text.endsWith('…') ? 3 : text.endsWith(`-wt-${tag}`) && text.includes('…') && text.startsWith(WT_PROJECT[0]) ? 2 : 0);
+    // 页面里量文字的宽度：隐藏的 span 带上标题的字体（布局引擎的量法，不是实现里用的 canvas）。
+    const textWidth = (selector, text) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}), style = getComputedStyle(el), span = document.createElement('span');
+      Object.assign(span.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'nowrap', font: style.font }); span.textContent = ${JSON.stringify(text)}; document.body.append(span); const w = span.getBoundingClientRect().width; span.remove(); return w; })()`);
+    const pad = selector => evaluate(`(() => { const style = getComputedStyle(document.querySelector(${JSON.stringify(selector)})); return parseFloat(style.paddingLeft) + parseFloat(style.paddingRight); })()`);
+    const shown = selector => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? { text: el.textContent, title: el.title, overflow: el.scrollWidth - el.clientWidth, page: document.documentElement.scrollWidth - innerWidth, client: el.clientWidth } : null; })()`);
+    const waitStep = (selector, step, what) => until(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el !== null && ${stepFn}(el.textContent) === ${step}; })()`, what);
+    // 视口宽：现在是 baseW 宽时标题的 clientWidth 是 client，要让它变成 target。
+    const widthFor = async (selector, baseW, target) => Math.round(baseW - ((await shown(selector)).client - target));
+
+    for (const [platform, selector, baseSize, label] of [['mac', '#tree .section', 'window', 'Mac 侧栏'], ['ios', '.bar-title', 'portrait', 'iPhone 工具条']]) {
+      await open(baseSize, platform, 'light');
+      const wFull = await textWidth(selector, full), wMin = await textWidth(selector, minimal), padding = await pad(selector); // 内容宽 = clientWidth - 左右 padding（Mac 的 .section 是 16+16，iPhone 的 .bar-title 是 8+8）
+      const baseW = SIZES[baseSize][0];
+      const widths = { wide: await widthFor(selector, baseW, wFull + padding + 6), medium: await widthFor(selector, baseW, (wFull + wMin) / 2 + padding), narrow: await widthFor(selector, baseW, wMin + padding - 30) };
+      for (const [name, w] of Object.entries(widths)) SIZES[`wt-${platform}-${name}`] = [w, SIZES[baseSize][1], SIZES[baseSize][2]];
+      console.log(`${label}：完整 ${wFull.toFixed(1)} 点，项目名只剩 2 个字 ${wMin.toFixed(1)} 点；视口宽 宽 ${widths.wide} / 中 ${widths.medium} / 窄 ${widths.narrow}`);
+      check(`${label}：三档视口宽依次变窄，窄档不小于 60`, widths.wide > widths.medium && widths.medium > widths.narrow && widths.narrow >= 60, JSON.stringify(widths));
+
+      // 同一个页面不重载：宽 → 中 → 窄 → 宽，每次变视口都重新算（拖窄侧栏、转屏）。
+      await open(`wt-${platform}-wide`, platform, 'light');
+      let now = await shown(selector);
+      check(`${label} 宽：完整写法「${full}」（第 1 步），标题不横向溢出，页面不出横向滚动条`, stepOf(now.text) === 1 && now.overflow <= 0 && now.page <= 0, JSON.stringify(now));
+      if (platform === 'mac') check(`${label}：标题悬停是完整路径`, now.title === realWt, JSON.stringify(now));
+      if (platform === 'mac') await shoot('rm-0.8.1-mac-light-wide');
+      for (const [name, step] of [['medium', 2], ['narrow', 3], ['wide', 1]]) {
+        await setViewport(`wt-${platform}-${name}`, platform);
+        await waitStep(selector, step, `${label}：同一个页面里视口变成「${name}」后标题落到第 ${step} 步`);
+        now = await shown(selector);
+        check(`${label} ${name}：落在第 ${step} 步（${now.text}），标题不横向溢出，页面不出横向滚动条${step === 2 ? '，-wt-编号完整，项目名留了首尾' : step === 3 ? '，整段尾部省略' : ''}`, stepOf(now.text) === step && now.overflow <= 0 && now.page <= 0, JSON.stringify(now));
+        if (platform === 'mac' && step === 3) await shoot('rm-0.8.1-mac-light-narrow');
+      }
+    }
+    // iPhone 深色截图：中档（省略的写法）。
+    await open('wt-ios-medium', 'ios', 'dark');
+    await waitStep('.bar-title', 2, 'iPhone 深色 中档');
+    await shoot('rm-0.8.1-ios-dark');
+
+    // Mac 图标视图头部：窄档落在第 3 步，宽档完整；头部标题不溢出、悬停是完整路径。
+    // 头部有文件夹图标和左右内边距，标题的宽度和目录树标题不同：视口宽按头部标题自己的宽度重算。
+    const headSel = '#grid .gname-head';
+    await openGrid('window', 'mac', 'light');
+    const headBase = SIZES.window[0], headFull = await textWidth(headSel, full), headMin = await textWidth(headSel, minimal);
+    SIZES['wt-grid-wide'] = [await widthFor(headSel, headBase, headFull + 6), SIZES.window[1], SIZES.window[2]];
+    SIZES['wt-grid-narrow'] = [await widthFor(headSel, headBase, headMin - 30), SIZES.window[1], SIZES.window[2]];
+    for (const [name, step] of [['wide', 1], ['narrow', 3]]) {
+      await openGrid(`wt-grid-${name}`, 'mac', 'light');
+      await waitStep('#grid .gname-head', step, `图标视图头部 ${name}`);
+      const head = await shown('#grid .gname-head');
+      check(`Mac 图标视图头部 ${name}：落在第 ${step} 步（${head.text}），不溢出，悬停是完整路径`, head.overflow <= 0 && head.title === realWt, JSON.stringify(head));
+    }
+    // iPhone 图标视图：工具条标题是同一套写法；系统返回的完整写法由 test/root-title.test.mjs 断言（harness 里 coda.back 只记录标题数组）。
+    await openGrid('wt-ios-wide', 'ios', 'light');
+    check('iPhone 图标视图根目录：工具条标题完整写法', (await evaluate(`document.querySelector('.bar-title')?.textContent`)) === full);
+    await fetch(`${serverUrl}ctl?action=session:A`);
   }
 
   exitCode = failures.length ? 1 : 0;
