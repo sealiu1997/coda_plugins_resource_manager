@@ -42,7 +42,7 @@ export async function openTree(t, { platform = 'ios', listing = { '': ['a.txt', 
     close: () => { calls.close = (calls.close ?? 0) + 1; },
     ...coda,
   }, { motion });
-  host.session = (id = 's1', path = '/A') => { host.generation++; page.post({ type: 'session', generation: host.generation, session: id }); page.post({ type: 'root', generation: host.generation, state: 'ready', path }); };
+  host.session = (id = 's1', path = '/A', project = null) => { host.generation++; page.post({ type: 'session', generation: host.generation, session: id }); page.post({ type: 'root', generation: host.generation, state: 'ready', path, project }); };
   host.requests = async type => { await flush(); return sent.filter(m => m.type === type); };
   host.answer = (request, body) => page.post({ type: ReplyOf[request.type], generation: request.generation, requestId: request.requestId, ...body });
   host.changed = () => page.post({ type: 'changed', generation: host.generation });

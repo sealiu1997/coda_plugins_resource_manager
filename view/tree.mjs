@@ -4,6 +4,7 @@ import { dateText, infoText, sizeText, subText } from './format.mjs';
 import { mountGestures } from './gestures.mjs';
 import { icon, iconFor } from './icons.mjs';
 import { joinPath, parentOf } from './model.mjs';
+import { paintRootName } from './rootname.mjs';
 
 const OVERSCAN = 8;
 
@@ -56,9 +57,6 @@ export function stepRows(rows, selected, action) {
   return up < 0 ? null : { select: up };
 }
 
-// 根目录的名字：路径的最后一段，分区标题和 iPhone 的页内工具条共用。
-export const rootName = path => path.split('/').filter(Boolean).pop() ?? path;
-
 export const TITLES = { [EntryKind.LINK]: '指向工作目录外的链接，不能打开', [EntryKind.OTHER]: '不能打开的文件' };
 
 // handlers: { open(path), toggle(path), more(path), retry(path), menu(event, row), select(path | null) }；select 是 Mac 单击选中，不给就是 iPhone 的轻点打开
@@ -92,11 +90,14 @@ export function mountTree(el, model, handlers, {
     probe.remove();
   };
 
-  // 分区标题：根目录的名字（root.path 的最后一段），不是 ready 时不显示。iPhone 上由 CSS 隐藏。
+  // 分区标题：根目录的名字（第 19 节：worktree 写成「项目名-wt-编号」，放不下时按宽度省略；普通目录是路径的最后一段，交给 CSS），不是 ready 时不显示。iPhone 上由 CSS 隐藏。
+  // worktree 的标题悬停显示完整路径。先写完整写法、取消隐藏，再按有了排版的宽度省略。
   const paintTitle = () => {
-    const text = showTitle && model.ready ? rootName(model.root.path) : '';
-    if (title.textContent !== text) title.textContent = text;
-    title.hidden = text === '';
+    const shown = showTitle && model.ready;
+    if (!shown) { title.textContent = ''; title.hidden = true; title.title = ''; return; }
+    title.hidden = false;
+    paintRootName(title, model.root);
+    title.title = model.root.project ? model.root.path : '';
   };
 
   // 标题在滚动容器里，把 spacer 推下去 offsetTop：行的位置按 spacer 内部算，滚动值（保存和恢复的）仍是容器的。
@@ -205,7 +206,7 @@ export function mountTree(el, model, handlers, {
     return true;
   };
   el.addEventListener('scroll', paint, { passive: true });
-  new ResizeObserver(paint).observe(el);
+  new ResizeObserver(() => { paintTitle(); paint(); }).observe(el); // 侧栏宽度变了，标题的省略重算
 
   return {
     render() { rows = rowsOf(); spacer.style.height = `${rows.length * rowH}px`; paintTitle(); paint(); },

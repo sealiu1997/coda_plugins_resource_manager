@@ -24,7 +24,7 @@ test('hello → session、root → 展开 → 一轮结束后文件变化 → �
   activate(fake.coda);
   const page = connected(fake, 'A');
   await waitFor(() => page.model.dirs.get('')?.loaded, '根目录');
-  assert.deepEqual([page.model.session, page.model.root, rootNames(page.model)], ['A', { state: 'ready', path: root }, ['src', 'README.md']]);
+  assert.deepEqual([page.model.session, page.model.root, rootNames(page.model)], ['A', { state: 'ready', path: root, project: null }, ['src', 'README.md']]);
 
   page.model.toggle('src');
   await waitFor(() => srcNames(page.model)?.length === 2, '展开 src');

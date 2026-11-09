@@ -6,7 +6,8 @@ import { mountGestures } from './gestures.mjs';
 import { icon, iconFor } from './icons.mjs';
 import { joinPath } from './model.mjs';
 import { EntryKind, isHidden } from './protocol.mjs';
-import { TITLES, rootName } from './tree.mjs';
+import { paintRootName, rootLabel } from './rootname.mjs';
+import { TITLES } from './tree.mjs';
 
 const OVERSCAN = 2; // 上下多画几行
 
@@ -131,7 +132,7 @@ export function mountGrid(el, model, handlers, { draggable = true, longPress = f
   spacer.append(win);
   body.append(spacer);
   el.replaceChildren(head, body);
-  let cells = [], layout = layoutOf([], 1), cellW = 72, cellH = 76, noteH = 32, measuredWidth = -1, headKey = null;
+  let cells = [], layout = layoutOf([], 1), cellW = 72, cellH = 76, noteH = 32, measuredWidth = -1, headKey = null, headName = null;
 
   // 探针放在 win 里：量到的是单元格和说明行在真实结构里的尺寸，两种行高不同。
   const measure = () => {
@@ -147,16 +148,20 @@ export function mountGrid(el, model, handlers, { draggable = true, longPress = f
   };
   const columns = () => Math.max(1, Math.floor(body.clientWidth / cellW));
 
-  // 头部：返回、当前目录名。在根目录时没有返回键，标题是根目录名。
+  // 头部：返回、当前目录名。在根目录时没有返回键，标题是根目录名（第 19 节：worktree 写成「项目名-wt-编号」，放不下时按宽度省略，悬停是完整路径）。
   function paintHead() {
-    const name = model.cwd === '' ? (model.ready ? rootName(model.root.path) : '') : model.cwd.slice(model.cwd.lastIndexOf('/') + 1);
-    const key = `${model.cwd}\n${name}`;
+    const atRoot = model.cwd === '', name = atRoot ? (model.ready ? rootLabel(model.root) : '') : model.cwd.slice(model.cwd.lastIndexOf('/') + 1);
+    const project = atRoot && model.ready ? model.root.project : null;
+    const key = `${model.cwd}\n${name}\n${project ? model.root.path : ''}`;
     head.hidden = !handlers.back || name === '';
-    if (key === headKey) return;
-    headKey = key;
-    head.replaceChildren(...(handlers.back && model.cwd !== '' ? [h('button', { class: 'icon', 'aria-label': '返回', title: '返回', onclick: handlers.back }, icon('back', 18))] : []),
-      h('span', { class: 'ghico', 'aria-hidden': 'true' }, icon('folder', 22)),
-      h('div', { class: 'grow' }, h('div', { class: 'gname-head truncate', title: model.cwd || name }, name)));
+    if (key !== headKey) {
+      headKey = key;
+      headName = h('div', { class: 'gname-head truncate', title: project ? model.root.path : model.cwd || name }, name);
+      head.replaceChildren(...(handlers.back && model.cwd !== '' ? [h('button', { class: 'icon', 'aria-label': '返回', title: '返回', onclick: handlers.back }, icon('back', 18))] : []),
+        h('span', { class: 'ghico', 'aria-hidden': 'true' }, icon('folder', 22)),
+        h('div', { class: 'grow' }, headName));
+    }
+    if (project && !head.hidden) paintRootName(headName, model.root); // 头部显示出来、有了宽度才能省略；宽度变了（relayout）重算
   }
 
   function paint() {
@@ -203,6 +208,7 @@ export function mountGrid(el, model, handlers, { draggable = true, longPress = f
   }
   function relayout() {
     if (columns() !== layout.cols) rebuild();
+    paintHead();
     paint();
   }
 

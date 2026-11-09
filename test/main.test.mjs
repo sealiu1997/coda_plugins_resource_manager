@@ -34,7 +34,7 @@ test('完整链路：hello → session、root；list 分页；read 分块；越�
   const fake = fakeCoda({ A: checkoutOf(root) });
   const view = await started(fake, 'A');
   assert.deepEqual(view.of('session'), [{ type: 'session', generation: 1, session: 'A' }]);
-  assert.deepEqual(view.of('root'), [{ type: 'root', generation: 1, state: 'ready', path: root }]);
+  assert.deepEqual(view.of('root'), [{ type: 'root', generation: 1, state: 'ready', path: root, project: null }]);
 
   view.send({ type: 'list', generation: 1, requestId: 'l1', path: '', cursor: null });
   const listed = await view.answer('l1');
@@ -175,7 +175,7 @@ test('根目录状态：preparing → ready 靠每 2 秒的轮询，ready 之后
   fake.threads.A = checkoutOf(root);
   t.mock.timers.tick(POLL_MS);
   await waitFor(() => view.of('root').length === 2, 'ready');
-  assert.deepEqual(view.lastRoot(), { type: 'root', generation: 1, state: 'ready', path: root });
+  assert.deepEqual(view.lastRoot(), { type: 'root', generation: 1, state: 'ready', path: root, project: null });
   const queried = fake.queried('A');
   t.mock.timers.tick(POLL_MS * 10);
   await flush();
@@ -350,7 +350,7 @@ test('换会话：session 先于新的 root；换到没有会话的状态是 non
   assert.equal(view.of('session').length, 1);
   view.switchTo(null);
   await waitFor(() => view.of('root').length === 2, '无会话的 root');
-  assert.deepEqual(view.lastRoot(), { type: 'root', generation: 2, state: 'none', path: null });
+  assert.deepEqual(view.lastRoot(), { type: 'root', generation: 2, state: 'none', path: null, project: null });
   assert.deepEqual(view.of('session').at(-1), { type: 'session', generation: 2, session: null });
   const order = view.posted.map(m => m.type);
   assert.ok(order.lastIndexOf('session') < order.lastIndexOf('root'));
@@ -383,7 +383,7 @@ test('file 视图：从 args.session 取会话，并按它的根目录读文件'
   const fake = fakeCoda({ A: checkoutOf(root), B: checkoutOf('/nowhere') });
   const view = await startedFile(fake, { session: 'A', path: 'src/a.txt' }, 'B'); // context.session 不起作用
   assert.deepEqual(view.of('session'), [{ type: 'session', generation: 1, session: 'A' }]);
-  assert.deepEqual(view.lastRoot(), { type: 'root', generation: 1, state: 'ready', path: root });
+  assert.deepEqual(view.lastRoot(), { type: 'root', generation: 1, state: 'ready', path: root, project: null });
   assert.equal(fake.queried('B'), 0);
   view.send({ type: 'read', generation: 1, requestId: 'r1', path: 'src/a.txt', offset: 0 });
   assert.equal(Buffer.from((await view.answer('r1')).data, 'base64').toString(), 'hello');
@@ -395,7 +395,7 @@ test('file 视图：args 缺失或 session 不是非空字符串时没有会话�
     const fake = fakeCoda({ A: checkoutOf(root) });
     const view = await startedFile(fake, args, 'A');
     assert.deepEqual(view.of('session'), [{ type: 'session', generation: 1, session: null }], JSON.stringify(args));
-    assert.deepEqual(view.lastRoot(), { type: 'root', generation: 1, state: 'none', path: null }, JSON.stringify(args));
+    assert.deepEqual(view.lastRoot(), { type: 'root', generation: 1, state: 'none', path: null, project: null }, JSON.stringify(args));
     assert.equal(fake.api.length, 0);
   }
 });
