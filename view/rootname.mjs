@@ -4,7 +4,7 @@
 export const WT = '-wt-';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ELLIPSIS = '…';
-const MIN_PROJECT = 2; // 项目名从中间省略时至少留的字数
+const MIN_PROJECT = 2; // 项目名从中间省略时至少留的字数（字素簇）
 
 export const baseName = path => path.split('/').filter(Boolean).pop() ?? path;
 export const tagOf = name => (UUID.test(name) ? name.slice(0, 4) : name);
@@ -12,22 +12,26 @@ export const tagOf = name => (UUID.test(name) ? name.slice(0, 4) : name);
 // 完整写法：系统返回的文字由客户端排版，直接用它，不省略。
 export const rootLabel = root => (root.project ? `${root.project}${WT}${tagOf(baseName(root.path))}` : baseName(root.path));
 
+// 按字素簇切（Intl.Segmenter），不能按 UTF-16 切：emoji、非 BMP 的汉字、组合字符会被切坏；没有 Segmenter 时退回按码点。
+const segmenter = typeof Intl?.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+export const glyphs = text => (segmenter ? Array.from(segmenter.segment(text), part => part.segment) : Array.from(text));
+
 // 项目名从中间省略（同 Finder，保留首尾），留 keep 个字；多出来的一个字给前面。
-const middle = (name, keep) => `${name.slice(0, Math.ceil(keep / 2))}${ELLIPSIS}${name.slice(name.length - Math.floor(keep / 2))}`;
+const middle = (chars, keep) => `${chars.slice(0, Math.ceil(keep / 2)).join('')}${ELLIPSIS}${chars.slice(chars.length - Math.floor(keep / 2)).join('')}`;
 
 // 放不下时按顺序省略，前一步放得下就停（measure(text) 是文字的宽度，width 是可用宽度，单位自定，两者一致即可）：
-// 1 完整；2 项目名从中间省略，至少留 2 个字，`-wt-<编号>` 不动；3 整段从尾部省略（在第 2 步的最短形式上）。
+// 1 完整；2 项目名从中间省略，至少留 2 个字，`-wt-<编号>` 不动；3 整段从尾部省略（在第 2 步的最短形式上）。字都按字素簇数。
 // 返回 { text, step }；step 0 是没有项目名的普通目录：不在这里省略，交给 CSS 的 text-overflow（和从前一样）。
 export function fitRootLabel(root, width, measure) {
   if (!root.project) return { text: rootLabel(root), step: 0 };
-  const { project } = root, tail = `${WT}${tagOf(baseName(root.path))}`, full = `${project}${tail}`;
+  const { project } = root, tail = `${WT}${tagOf(baseName(root.path))}`, full = `${project}${tail}`, chars = glyphs(project);
   if (measure(full) <= width) return { text: full, step: 1 };
-  for (let keep = project.length - 1; keep >= MIN_PROJECT; keep--) {
-    const text = `${middle(project, keep)}${tail}`;
+  for (let keep = chars.length - 1; keep >= MIN_PROJECT; keep--) {
+    const text = `${middle(chars, keep)}${tail}`;
     if (measure(text) <= width) return { text, step: 2 };
   }
-  const shortest = `${project.length > MIN_PROJECT ? middle(project, MIN_PROJECT) : project}${tail}`;
-  const cut = length => { const head = shortest.slice(0, Math.max(1, length)); return head.endsWith(ELLIPSIS) ? head : `${head}${ELLIPSIS}`; }; // 截在项目名中间的省略号上时不再叠一个
+  const shortest = glyphs(`${chars.length > MIN_PROJECT ? middle(chars, MIN_PROJECT) : project}${tail}`);
+  const cut = length => { const head = shortest.slice(0, Math.max(1, length)); return head.at(-1) === ELLIPSIS ? head.join('') : `${head.join('')}${ELLIPSIS}`; }; // 截在项目名中间的省略号上时不再叠一个
   let lo = 0, hi = shortest.length - 1; // 最长的放得下的前缀（至少留一个字）；宽度对前缀长度单调
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);

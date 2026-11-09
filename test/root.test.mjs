@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile as readFileText, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { NO_ROOT, projectOf, queryRoot, sameRoot } from '../lib/root.mjs';
@@ -112,4 +112,126 @@ test('sameRoot：状态、路径、项目名任一不同就不同；缺省的 pr
   assert.equal(sameRoot(root, { ...root, state: 'gone' }), false);
   assert.equal(sameRoot({ state: 'ready', path: '/a' }, { state: 'ready', path: '/a', project: null }), true);
   assert.equal(sameRoot(null, NO_ROOT), false);
+});
+
+// ---- 元数据文件不可信：项目名只能是真实存在的目录的名字（评审意见：越界读取、类型和大小上限）----
+
+// 一个正常的 worktree 在 <base>/<main>/.git/worktrees/<UUID>，工作目录 <base>/<UUID>；返回各路径，调用方再把其中一个文件换掉。
+async function layout(base, main = 'ActaView') {
+  const work = await handmade(base, { main });
+  return { work, dotgit: join(work, '.git'), admin: join(base, main, '.git', 'worktrees', UUID), common: join(base, main, '.git', 'worktrees', UUID, 'commondir') };
+}
+const SECRET = 'TOKEN=example-secret';
+const within = (promise, ms = 3000) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('读取卡住了')), ms))]);
+
+test('projectOf：commondir 是符号链接（指向工作目录外的文本文件）不读，标题不会出现文件里的文字', async t => {
+  const base = await tempDir(t), { work, common } = await layout(join(base, 'a'));
+  await writeFile(join(base, 'outside.txt'), `${SECRET}\n`);
+  await rm(common);
+  await symlink(join(base, 'outside.txt'), common);
+  assert.equal(await projectOf(work), null);
+  // 链接指向的文件内容恰好是合法的 ../..：也不读（只接受普通文件）。
+  await writeFile(join(base, 'dots.txt'), '../..\n');
+  await rm(common);
+  await symlink(join(base, 'dots.txt'), common);
+  assert.equal(await projectOf(work), null, '只接受普通文件，不管内容');
+});
+
+test('projectOf：commondir 是普通文件但内容不是路径（别的文件里的文字）、或指向别的目录，都是 null', async t => {
+  const base = await tempDir(t), { work, common } = await layout(join(base, 'a'));
+  await writeFile(common, `${SECRET}\n`);
+  assert.equal(await projectOf(work), null, '内容指向的目录不存在');
+  await mkdir(join(base, 'a', 'ActaView', '.git', 'Elsewhere'));
+  await writeFile(common, '../../Elsewhere\n');
+  assert.equal(await projectOf(work), null, '指到别的真实目录：必须正好是 gitdir 再上两级');
+  await writeFile(common, '../..\n../..\n');
+  assert.equal(await projectOf(work), null, '不是单行');
+  await writeFile(common, '../..\n');
+  assert.equal(await projectOf(work), 'ActaView', '改回正常');
+});
+
+test('projectOf：.git 是符号链接（指向别处的文件）不读，即使内容是合法的指针', async t => {
+  const base = await tempDir(t), { work, dotgit, admin } = await layout(join(base, 'a'));
+  await writeFile(join(base, 'pointer.txt'), `gitdir: ${admin}\n`);
+  await rm(dotgit);
+  await symlink(join(base, 'pointer.txt'), dotgit);
+  assert.equal(await projectOf(work), null);
+  await rm(dotgit);
+  await writeFile(dotgit, `gitdir: ${admin}\n`);
+  assert.equal(await projectOf(work), 'ActaView', '改回普通文件');
+  await writeFile(dotgit, `gitdir: ${admin}\ngitdir: ${admin}\n`);
+  assert.equal(await projectOf(work), null, '不是单行');
+});
+
+test('projectOf：gitdir 不在 worktrees/ 下、或主仓库的 git 目录不存在，是 null', async t => {
+  const base = await tempDir(t), { work, dotgit, admin } = await layout(join(base, 'a'));
+  const stray = join(base, 'a', 'ActaView', '.git', 'not-worktrees', UUID);
+  await mkdir(stray, { recursive: true });
+  await writeFile(join(stray, 'commondir'), '../..\n');
+  await writeFile(dotgit, `gitdir: ${stray}\n`);
+  assert.equal(await projectOf(work), null, '上一级不叫 worktrees');
+  await writeFile(dotgit, `gitdir: ${join(base, 'a', 'ActaView', '.git')}\n`);
+  assert.equal(await projectOf(work), null, 'gitdir 指到 .git 本身');
+  await writeFile(dotgit, `gitdir: ${admin}\n`);
+  assert.equal(await projectOf(work), 'ActaView');
+  await rm(join(base, 'a', 'ActaView'), { recursive: true });
+  assert.equal(await projectOf(work), null, '主仓库的 git 目录不存在');
+});
+
+test('projectOf：gitdir 指到的是文件、不是目录，是 null', async t => {
+  const base = await tempDir(t), { work, dotgit } = await layout(join(base, 'a'));
+  const file = join(base, 'a', 'ActaView', '.git', 'worktrees', 'plain-file');
+  await writeFile(file, 'x');
+  await writeFile(dotgit, `gitdir: ${file}\n`);
+  assert.equal(await projectOf(work), null);
+});
+
+test('projectOf：项目名里有控制字符（不能进标题）是 null；符号链接的主仓库用真实目录名', async t => {
+  const base = await tempDir(t), bell = await layout(join(base, 'a'), 'Acta\u0007View');
+  assert.equal(await projectOf(bell.work), null);
+  const linked = await layout(join(base, 'b'), 'Real');
+  await symlink(join(base, 'b', 'Real'), join(base, 'b', 'Alias'));
+  await writeFile(linked.dotgit, `gitdir: ${join(base, 'b', 'Alias', '.git', 'worktrees', UUID)}\n`);
+  assert.equal(await projectOf(linked.work), 'Real', '经符号链接找到主仓库：取真实目录的名字');
+});
+
+test('projectOf：超过字节上限的 .git、commondir 不读（几 KB 就够），退回 null；上限以内照常', async t => {
+  const base = await tempDir(t), { work, dotgit, admin, common } = await layout(join(base, 'a'));
+  await writeFile(dotgit, `gitdir: ${admin}${' '.repeat(2 * 1024 * 1024)}\n`);
+  assert.equal(await projectOf(work), null, '.git 2 MiB');
+  await writeFile(dotgit, `gitdir: ${admin}\n`);
+  await writeFile(common, `../..${' '.repeat(5000)}\n`);
+  assert.equal(await projectOf(work), null, 'commondir 5000 字节以上');
+  await writeFile(common, `../..${' '.repeat(100)}\n`);
+  assert.equal(await projectOf(work), 'ActaView', '100 字节：照常');
+});
+
+test('projectOf：.git、commondir 是 FIFO 时不卡住（不阻塞打开、不读），退回 null', async t => {
+  const base = await tempDir(t), { work, dotgit, common } = await layout(join(base, 'a'));
+  const fifo = path => { execFileSync('mkfifo', [path]); };
+  try { fifo(join(base, 'probe')); } catch { t.skip('没有 mkfifo'); return; }
+  await rm(common);
+  fifo(common);
+  assert.equal(await within(projectOf(work)), null, 'commondir 是 FIFO');
+  await rm(common);
+  await writeFile(common, '../..\n');
+  const saved = await readFileText(dotgit);
+  await rm(dotgit);
+  fifo(dotgit);
+  assert.equal(await within(projectOf(work)), null, '.git 是 FIFO');
+  await rm(dotgit);
+  await writeFile(dotgit, saved);
+  assert.equal(await projectOf(work), 'ActaView', '改回正常');
+});
+
+test('projectOf：正常的 Coda worktree（真实 git）和真实的裸仓库 worktree 仍得到项目名', async t => {
+  const base = await tempDir(t), main = join(base, 'ActaView'), bare = join(base, 'tools.git');
+  await mkdir(main);
+  git(main, 'init', '-q');
+  git(main, 'commit', '-q', '--allow-empty', '-m', 'init');
+  git(main, 'worktree', 'add', '-q', join(base, UUID), '-b', 'agent/x');
+  assert.equal(await projectOf(join(base, UUID)), 'ActaView');
+  execFileSync('git', ['clone', '-q', '--bare', main, bare], { stdio: 'pipe' });
+  execFileSync('git', ['-C', bare, 'worktree', 'add', '-q', join(base, 'from-bare'), 'HEAD', '--detach'], { stdio: 'pipe' });
+  assert.equal(await projectOf(join(base, 'from-bare')), 'tools', '裸仓库：去掉 .git 后缀');
 });

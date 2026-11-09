@@ -1,7 +1,7 @@
 // 根目录名的写法和三步省略（设计第 19 节）：纯函数，量宽度的函数由测试注入（一个字算 1）。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fitRootLabel, rootLabel, tagOf } from '../view/rootname.mjs';
+import { fitRootLabel, glyphs, rootLabel, tagOf } from '../view/rootname.mjs';
 
 const UUID = 'c0377d40-2fa7-42a0-94ab-49a31b2215c3';
 const root = (project = 'ActaView', path = `/work/${UUID}`) => ({ state: 'ready', path, project });
@@ -69,4 +69,56 @@ test('量宽度的函数按注入的算：中日文字宽 2 时同一段话更�
   assert.equal(fitRootLabel(r, 30, wide).step, 1);
   assert.equal(fitRootLabel(r, 20, wide).step, 2);
   assert.equal(fitRootLabel(r, 9, wide).step, 3);
+});
+
+// ---- 按字素簇切（评审意见：按 UTF-16 截取会切出孤立代理项）----
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const FAMILY = '👨\u200D👩\u200D👧';
+const PROJECTS = ['🚀工具🚀', '𠮷野家𠮷', 'e\u0301cole', `${FAMILY}家族`, '🇨🇳旗🇯🇵'];
+
+test('各种字符的项目名：从宽到窄每一档的结果都没有孤立代理项（emoji、非 BMP 的汉字、组合字符、ZWJ 序列、旗帜）', () => {
+  for (const project of PROJECTS) {
+    for (let width = 40; width >= 0; width--) {
+      const { text } = fit(root(project), width);
+      assert.ok(!LONE_SURROGATE.test(text), `${project} 宽 ${width}：孤立代理项 ${JSON.stringify(text)}`);
+      assert.ok(!/^[\u0300-\u036F\u200D]/.test(text), `${project} 宽 ${width}：以组合字符或 ZWJ 开头 ${JSON.stringify(text)}`);
+    }
+  }
+});
+
+test('emoji：🚀工具🚀 完整 12 个字；中间省略留 2 个字素是「🚀…🚀」；再窄进入第 3 步，也不切坏', () => {
+  assert.deepEqual(fit(root('🚀工具🚀'), 12), { text: '🚀工具🚀-wt-c037', step: 1 });
+  assert.deepEqual(fit(root('🚀工具🚀'), 11), { text: '🚀…🚀-wt-c037', step: 2 });
+  assert.deepEqual(fit(root('🚀工具🚀'), 10), { text: '🚀…🚀-wt-c0…', step: 3 });
+});
+
+test('非 BMP 的汉字：𠮷野家𠮷 留 2 个字素是「𠮷…𠮷」，不是半个字', () => {
+  assert.deepEqual(fit(root('𠮷野家𠮷'), 11), { text: '𠮷…𠮷-wt-c037', step: 2 });
+});
+
+test('组合字符：基字和它的组合记号一起留下或一起省略（e + U+0301 算一个字）', () => {
+  const { text, step } = fit(root('e\u0301cole'), 12);
+  assert.equal(step, 2);
+  assert.equal(text, 'e\u0301…e-wt-c037');
+});
+
+test('ZWJ 序列和旗帜是一个字：整个留下（宽度按字素簇数）', () => {
+  const clusters = text => glyphs(text).length;
+  assert.equal(fitRootLabel(root(`${FAMILY}家族们`), 11, clusters).text, `${FAMILY}…们-wt-c037`, '家庭 emoji 整个留着');
+  assert.equal(fitRootLabel(root('🇨🇳旗帜🇯🇵'), 11, clusters).text, '🇨🇳…🇯🇵-wt-c037', '旗帜（两个区域指示符）是一个字');
+});
+
+test('没有 Intl.Segmenter 时退回按码点：emoji 和非 BMP 汉字仍不切坏', async () => {
+  const original = Intl.Segmenter;
+  let module;
+  try {
+    Intl.Segmenter = undefined;
+    module = await import(`../view/rootname.mjs?no-segmenter=${Date.now()}`);
+  } finally {
+    Intl.Segmenter = original;
+  }
+  assert.deepEqual(module.glyphs('a🚀𠮷'), ['a', '🚀', '𠮷']);
+  assert.deepEqual(module.fitRootLabel(root('🚀工具🚀'), 11, chars), { text: '🚀…🚀-wt-c037', step: 2 });
+  for (let width = 20; width >= 0; width--) assert.ok(!LONE_SURROGATE.test(module.fitRootLabel(root('𠮷野家𠮷'), width, chars).text));
 });
