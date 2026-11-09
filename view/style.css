@@ -108,7 +108,12 @@ html.moving, html.moving body, html.moving #stage { pointer-events: none; }
 /* 树：只画可见的一段，行高固定（tree.mjs 量 .row 的高度）。
    Mac 是侧栏列表：左右缩进 8 点，行有圆角，选中用 --coda-selection。 */
 /* 标题行：根目录名，随内容滚走。它在滚动容器里占着自己的高度，tree.mjs 把 spacer 的 offsetTop 扣掉。 */
-.section { padding: 10px 16px 4px; font-size: .85em; font-weight: 600; color: var(--coda-secondary, #6e6e73); cursor: default; }
+/* 字号比 0.8.0 之前（.85em，约 11 点）大一号（.92em，约 12 点）：worktree 的项目名是主，后缀 .rn-tag 用回原来的字号（第 19.6 节）；普通文件夹名同样大一号，标题不因会话不同忽大忽小。 */
+.section { padding: 10px 16px 4px; font-size: .92em; font-weight: 600; color: var(--coda-secondary, #6e6e73); cursor: default; }
+/* worktree 根目录名的后缀（`worktree-c037`、`wt-c037`，前面的空格也在里面）：常规字重、三级灰、比项目名小一号；em 跟着标题走（跟 --coda-font-size，不写死点数）。
+   后缀的颜色在浅色下对比度约 2.6:1（作者选的，第 19.6 节第 4 条），它是次要信息。 */
+.rn-tag { font-weight: 400; font-size: .88em; color: var(--coda-tertiary, #a1a1a6); }
+.section .rn-tag { font-size: .924em; } /* .92em 的标题里 .924em 是约 11 点，即原来标题的字号 */
 /* 行宽按 #tree 的宽度查询：窄于约 220 点时 Mac 的 meta 不显示。 */
 #tree { container: tree / inline-size; }
 .spacer { position: relative; margin: 0 8px; }
