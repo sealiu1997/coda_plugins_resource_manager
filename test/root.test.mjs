@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile as readFileText, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile as readFileText, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
-import { NO_ROOT, projectOf, queryRoot, sameRoot } from '../lib/root.mjs';
+import { NO_ROOT, projectOf, queryRoot, readMeta, sameRoot } from '../lib/root.mjs';
 import { checkoutOf, fakeCoda, tempDir } from './support/fake.mjs';
 
 test('根目录状态映射：ready 给规范路径，preparing/failed/无 checkout/无会话各是对应状态', async t => {
@@ -234,4 +234,50 @@ test('projectOf：正常的 Coda worktree（真实 git）和真实的裸仓库 w
   execFileSync('git', ['clone', '-q', '--bare', main, bare], { stdio: 'pipe' });
   execFileSync('git', ['-C', bare, 'worktree', 'add', '-q', join(base, 'from-bare'), 'HEAD', '--detach'], { stdio: 'pipe' });
   assert.equal(await projectOf(join(base, 'from-bare')), 'tools', '裸仓库：去掉 .git 后缀');
+});
+
+// ---- 短读：read 返回的字节少于要的、但还没到文件尾（慢的网络盘），不能把有效元数据截断 ----
+
+// 真实文件的句柄，但每次 read 最多给 sizes 里的下一个数（用完了重复最后一个）字节；记下每次实际请求和返回。
+function shortReads(sizes, log = []) {
+  let call = 0;
+  return async (path, flags) => {
+    const real = await open(path, flags);
+    return {
+      stat: () => real.stat(),
+      close: () => real.close(),
+      read: async (buffer, offset, length, position) => {
+        const cap = sizes[Math.min(call++, sizes.length - 1)], result = await real.read(buffer, offset, Math.min(length, cap), position);
+        log.push({ asked: length, got: result.bytesRead });
+        return result;
+      },
+    };
+  };
+}
+
+test('短读：每次只读回 1～5 字节，仍读全并得到项目名；读到 0 字节才算结束', async t => {
+  const base = await tempDir(t), { work } = await layout(join(base, 'a'));
+  for (const sizes of [[1], [2], [3, 1, 5, 2], [5]]) {
+    const log = [];
+    assert.equal(await projectOf(work, shortReads(sizes, log)), 'ActaView', `每次 ${sizes}`);
+    assert.ok(log.length > 10 && log.every(({ got }, i) => got <= sizes[Math.min(i, sizes.length - 1)]), `确实是短读：${log.length} 次`);
+    assert.equal(log.filter(({ got }) => got === 0).length, 2, '两个文件各读到一次 EOF（0 字节）才结束');
+  }
+});
+
+test('短读：多字节字符（项目路径含中文）跨读取边界仍正确，整段读完再按 UTF-8 解码', async t => {
+  const base = await tempDir(t), { work } = await layout(join(base, 'a'), '工具箱项目');
+  for (const sizes of [[1], [2], [4]]) assert.equal(await projectOf(work, shortReads(sizes)), '工具箱项目', `每次 ${sizes} 字节（汉字 3 字节，必然被切在中间）`);
+  assert.equal(await projectOf(work), '工具箱项目', '不短读也一样');
+});
+
+test('短读：累计超过上限仍退回 null（不靠 stat 报的大小）；上限以内的短读不受影响', async t => {
+  const base = await tempDir(t), file = join(base, 'big.txt');
+  await writeFile(file, 'x'.repeat(5000));
+  assert.equal(await readMeta(file, shortReads([100])), null, '5000 字节，每次 100：累计过了 4096');
+  // stat 说文件很小、实际读出来很多（文件在读的时候变大）：靠累计字节拦住。
+  const lying = async (path, flags) => { const real = await open(path, flags); return { stat: async () => ({ isFile: () => true, size: 10 }), close: () => real.close(), read: (...args) => real.read(...args) }; };
+  assert.equal(await readMeta(file, lying), null);
+  await writeFile(file, 'y'.repeat(4096));
+  assert.equal((await readMeta(file, shortReads([100]))).length, 4096, '正好 4096 字节：读得下');
 });
