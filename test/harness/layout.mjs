@@ -2529,7 +2529,7 @@ try {
         await waitStep(selector, step, `${label}：同一个页面里视口变成「${name}」后标题落到第 ${step} 步`);
         now = await shown(selector);
         check(`${label} ${name}：落在第 ${step} 步（${now.text}），标题不横向溢出，页面不出横向滚动条${step === 2 ? '，-wt-编号完整，项目名留了首尾' : step === 3 ? '，整段尾部省略' : ''}`, stepOf(now.text) === step && now.overflow <= 0 && now.page <= 0, JSON.stringify(now));
-        if (platform === 'mac' && step === 3) await shoot('rm-0.8.1-mac-light-narrow');
+        if (platform === 'mac' && step === 2) await shoot('rm-0.8.1-mac-light-narrow'); // 真实侧栏会有的窄（185 点）：第 2 步；第 3 步的 74 点不是实际会有的宽度
       }
     }
     // iPhone 深色截图：中档（省略的写法）。

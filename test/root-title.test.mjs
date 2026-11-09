@@ -146,6 +146,21 @@ test('系统返回的路径：反查失败时仍是目录名（同现在）', as
   assert.deepEqual(host.calls.back.at(-1), [UUID, 'dir']);
 });
 
+test('根目录没就绪（gone）：iPhone 工具条标题空、系统返回的路径空，Mac 图标视图头部不显示', async t => {
+  const phone = await treePage(t, { platform: 'ios', state: ICONS, back: true });
+  phone.page.grid.find(node => node.classList.contains('cell') && node.textContent === 'dir')[0].dispatch('click');
+  await flush();
+  assert.deepEqual(phone.host.calls.back.at(-1), [FULL], '进了 dir：上层是根目录名');
+  phone.page.post({ type: 'root', generation: phone.host.generation, state: 'gone', path: WT, project: null });
+  await flush();
+  assert.equal(text(barTitle(phone.page)), '');
+  assert.deepEqual(phone.host.calls.back.at(-1), [], '没就绪：页面是说明区，路径为空');
+  const mac = await treePage(t, { state: ICONS });
+  mac.page.post({ type: 'root', generation: mac.host.generation, state: 'gone', path: WT, project: null });
+  await flush();
+  assert.equal(byClass(mac.page, mac.page.grid, 'ghead').hidden, true);
+});
+
 // ---- 真实入口：真实模块 + 真实 git worktree + 真实页面 ----
 
 test('真实入口：真实 git worktree（UUID 目录、长项目名）经 queryRoot 反查，root 消息送到页面，标题按宽度省略', async t => {
