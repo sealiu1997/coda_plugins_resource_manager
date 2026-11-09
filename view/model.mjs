@@ -94,10 +94,11 @@ export class Model {
   }
 
   // 只换根目录状态，不动会话状态；ready 时重新取全部。
-  onRoot({ generation, state, path }) {
+  // project：worktree 的原仓库文件夹名（根目录标题用），不是根目录的身份。
+  onRoot({ generation, state, path, project = null }) {
     if (generation !== this.link.generation) return null;
     if (state === RootState.READY) this.#identify(path);
-    this.root = { state, path };
+    this.root = { state, path, project: typeof project === 'string' && project ? project : null };
     this.onChange();
     return state === RootState.READY ? this.refresh() : Promise.resolve();
   }

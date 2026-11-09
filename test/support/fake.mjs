@@ -33,7 +33,7 @@ export async function flush() {
   for (let i = 0; i < 30; i++) await tick();
 }
 
-export const checkoutOf = (path, state = 'ready') => ({ checkout: { kind: 'worktree', state, path } });
+export const checkoutOf = (path, state = 'ready', kind = 'worktree') => ({ checkout: { kind, state, path } });
 
 // threads[id] 可以是对象、返回对象或 Promise 的函数、或 Error。
 export function fakeCoda(threads = {}) {

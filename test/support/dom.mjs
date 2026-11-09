@@ -146,7 +146,7 @@ export async function loadApp(t, coda, { entry = 'app.mjs', ids = ['bar', 'brows
     innerWidth: 320,
     innerHeight: 600,
     // 观察到的尺寸变化：测试改了 clientWidth 之后调用返回的 resize()。
-    ResizeObserver: class { constructor(fn) { resizers.push(fn); } observe() {} },
+    ResizeObserver: class { constructor(fn) { resizers.push(fn); } observe() {} disconnect() {} },
   };
   let motionApi = null;
   if (motion) {

@@ -3,7 +3,7 @@
   "name": "@coda-console/resource-manager",
   "displayName": "资源管理器",
   "description": "会话旁的只读文件浏览器：浏览会话工作目录，预览文本和图片，把路径交给对话。",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "categories": ["工作流程"],
   "license": "MIT",
   "repository": {

@@ -1,6 +1,6 @@
 // 资源管理器的页面入口：消息收发、状态保留、工具栏和「更多」菜单、图标视图的进入和返回、搜索。状态在 model.mjs，渲染在 tree.mjs、grid.mjs、preview.mjs 和 info.mjs，菜单和提示在 menu.mjs 和 hint.mjs，滚动位置的恢复在 restore.mjs，
 // 文件名搜索的状态在 search.mjs、搜索框在 searchbar.mjs、「在目录中显示」在 locate.mjs。
-import { EXIT, paintBar } from './bar.mjs';
+import { EXIT, paintBar, refitBar } from './bar.mjs';
 import { createChat } from './chat.mjs';
 import { connect } from './connection.mjs';
 import { infoText, sortName } from './format.mjs';
@@ -19,7 +19,8 @@ import { createRestore, createTrail } from './restore.mjs';
 import { createSearch } from './search.mjs';
 import { mountSearchbar } from './searchbar.mjs';
 import { browseAction, previewAction } from './keys.mjs';
-import { mountTree, rootName } from './tree.mjs';
+import { rootLabel } from './rootname.mjs';
+import { mountTree } from './tree.mjs';
 
 const coda = window.coda;
 const $ = id => document.getElementById(id);
@@ -374,7 +375,7 @@ const toolbarItems = () => infoOpen ? [] : hasToolbar
 // 预览时和属性页一样只留返回（竖屏整条不显示）：标题和 ⋯ 在预览头部，⋯ 里只有刷新和复制路径。
 // 属性页上只留返回：竖屏有原生导航栏，整条工具条不显示；横屏导航栏隐藏，页面自己给返回（显示与否都由 style.css 的横屏媒体查询决定）。
 const MORE = { id: 'more', label: '更多', kind: 'button', glyph: 'ellipsis', iconOnly: true, menu: true };
-const phoneItems = () => infoOpen || mode() === 'preview' ? [EXIT] : [EXIT, { kind: 'title', label: model.ready ? dirTitle() : '' }, MORE];
+const phoneItems = () => infoOpen || mode() === 'preview' ? [EXIT] : [EXIT, { kind: 'title', label: model.ready ? dirTitle() : '', ...(model.ready && titleIsRoot() && model.root.project ? { root: { path: model.root.path, project: model.root.project } } : {}) }, MORE];
 // 比较键就是要画的项：根目录名变了（换会话）工具条跟着重画。
 let lastItems = '';
 function syncToolbar() {
@@ -647,14 +648,15 @@ function landed() {
 // ---- 上一层：iPhone 用原生返回，路径只在这里声明 ----
 // 路径是上层的标题，由远到近，不含当前页：图标视图在 a/b 是 [根目录名, 'a']；列表视图没有。属性页、预览各多一层当前页（要回到的那一页）：列表视图是 '资源管理器'，图标视图是当前目录名。
 // 预览开着是 opened 不为空、且根目录就绪；没就绪时页面是说明区，路径为空。
-// 标题是当前目录名：根目录是根目录名。
+// 标题是当前目录名：根目录是根目录名（worktree 是「项目名-wt-编号」，这里给完整写法，不省略：文字由客户端排版）。
 // 搜索时结果盖住了图标视图的目录：标题是根目录名。
-const dirTitle = () => (model.cwd === '' || model.view !== View.ICONS || searching() ? rootName(model.root.path) : model.cwd.slice(model.cwd.lastIndexOf('/') + 1));
+const titleIsRoot = () => model.cwd === '' || model.view !== View.ICONS || searching();
+const dirTitle = () => (titleIsRoot() ? rootLabel(model.root) : model.cwd.slice(model.cwd.lastIndexOf('/') + 1));
 const previewOpen = () => model.ready && model.opened !== null;
 // 搜索本身不是一级：搜索模式下图标视图的目录层级不声明（搜索盖住了它们），从结果打开的预览和属性页要回到的那一页叫「搜索」（第 18.5 节的表）。
 function backPath() {
   const icons = model.view === View.ICONS && model.ready && !searching();
-  const upper = icons && model.cwd !== '' ? [rootName(model.root.path), ...model.cwd.split('/').slice(0, -1)] : [];
+  const upper = icons && model.cwd !== '' ? [rootLabel(model.root), ...model.cwd.split('/').slice(0, -1)] : [];
   const here = searching() ? '搜索' : icons ? dirTitle() : '资源管理器';
   return [...upper, ...(infoOpen ? [here] : []), ...(previewOpen() ? [here] : [])];
 }
@@ -757,7 +759,7 @@ function onChanged(data) {
   search.research(); // 搜索期间目录模型照常刷新；有搜索词就重搜，旧结果留到新结果来
 }
 
-const remeasure = () => { tree.remeasure(); grid.remeasure(); hits.remeasure(); };
+const remeasure = () => { tree.remeasure(); grid.remeasure(); hits.remeasure(); refitBar($('bar')); };
 remeasure();
 quiet(() => coda.on('theme', remeasure));
 render();

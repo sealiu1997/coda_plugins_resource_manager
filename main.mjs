@@ -62,7 +62,7 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits })
   const postSession = () => post({ type: Type.SESSION, generation: s.generation, session: s.session });
   function postRoot() {
     s.sent = s.root;
-    post({ type: Type.ROOT, generation: s.generation, state: s.root.state, path: s.root.path });
+    post({ type: Type.ROOT, generation: s.generation, state: s.root.state, path: s.root.path, project: s.root.project });
   }
 
   // 重新查询根目录。结果和上次推给页面的不同才推送；查询失败保留上一次的。
