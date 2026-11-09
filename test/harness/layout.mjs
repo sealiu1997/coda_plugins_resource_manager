@@ -2492,63 +2492,97 @@ try {
   }
 
   // ---- 0.8.1 worktree 的根目录名（会话 W：真实的 git worktree，目录名 UUID，主仓库文件夹名 coda_plugins_resource_manager）----
-  // 模块自己反查项目名，页面收到的 root 消息带 project；标题按元素现在的宽度分三步省略。三档宽度不凭感觉定：
-  // 先在宽的视口里用页面里的隐藏元素（同标题的字体）量出完整写法和「项目名只剩 2 个字」的宽度，再按量到的算视口，
-  // 窄档窄到项目名只剩 2 个字也放不下。判断落在第几步看标题的文字，不看宽度。
+  // 写法「项目名 worktree-编号」，两段两个元素（.rn-name 粗体、.rn-tag 常规字重三级灰小一号），四步省略（设计第 19.6 节）：
+  // 1 完整写法不超过可用宽度的 90%；2 后缀缩成 wt-编号，整行放得下；3 项目名从中间省略；4 整段尾部省略。
+  // 模块自己反查项目名，页面收到的 root 消息带 project。四档宽度不凭感觉定：先在宽的视口里用页面里的隐藏元素（各带项目名、后缀自己的字体，布局引擎的量法，不是实现里用的 canvas）
+  // 量出完整、短写法、项目名只剩 2 个字的宽度，再按量到的算视口：每档取在对应步骤的区间正中，窄档窄到项目名只剩 2 个字也放不下。判断落在第几步看标题的文字，不看宽度。
   {
     await fetch(`${serverUrl}ctl?action=session:W`);
-    const tag = WT_UUID.slice(0, 4), full = `${WT_PROJECT}-wt-${tag}`, minimal = `${WT_PROJECT[0]}…${WT_PROJECT.at(-1)}-wt-${tag}`, realWt = await realpath(wtDir);
-    const stepFn = `(text => text === ${JSON.stringify(full)} ? 1 : text.endsWith('…') ? 3 : text.endsWith(${JSON.stringify(`-wt-${tag}`)}) && text.includes('…') && text.startsWith(${JSON.stringify(WT_PROJECT[0])}) ? 2 : 0)`;
-    const stepOf = text => (text === full ? 1 : text.endsWith('…') ? 3 : text.endsWith(`-wt-${tag}`) && text.includes('…') && text.startsWith(WT_PROJECT[0]) ? 2 : 0);
-    // 页面里量文字的宽度：隐藏的 span 带上标题的字体（布局引擎的量法，不是实现里用的 canvas）。
+    const tag = WT_UUID.slice(0, 4), P = WT_PROJECT, full = `${P} worktree-${tag}`, short = `${P} wt-${tag}`, realWt = await realpath(wtDir);
+    const stepFn = `(text => text === ${JSON.stringify(full)} ? 1 : text === ${JSON.stringify(short)} ? 2 : text.endsWith('…') ? 4 : text.endsWith(${JSON.stringify(` wt-${tag}`)}) && text.includes('…') && text.startsWith(${JSON.stringify(P[0])}) ? 3 : 0)`;
+    const stepOf = text => (text === full ? 1 : text === short ? 2 : text.endsWith('…') ? 4 : text.endsWith(` wt-${tag}`) && text.includes('…') && text.startsWith(P[0]) ? 3 : 0);
+    // 页面里量文字的宽度：隐藏的 span 带上那个元素的字体（项目名的粗体、后缀的小字号常规字重各量各的）。
     const textWidth = (selector, text) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}), style = getComputedStyle(el), span = document.createElement('span');
       Object.assign(span.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'nowrap', font: style.font }); span.textContent = ${JSON.stringify(text)}; document.body.append(span); const w = span.getBoundingClientRect().width; span.remove(); return w; })()`);
     const pad = selector => evaluate(`(() => { const style = getComputedStyle(document.querySelector(${JSON.stringify(selector)})); return parseFloat(style.paddingLeft) + parseFloat(style.paddingRight); })()`);
-    const shown = selector => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? { text: el.textContent, title: el.title, overflow: el.scrollWidth - el.clientWidth, page: document.documentElement.scrollWidth - innerWidth, client: el.clientWidth } : null; })()`);
+    const shown = selector => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? { text: el.textContent, title: el.title, overflow: el.scrollWidth - el.clientWidth, page: document.documentElement.scrollWidth - innerWidth, client: el.clientWidth, parts: [...el.children].map(c => c.className) } : null; })()`);
     const waitStep = (selector, step, what) => until(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el !== null && ${stepFn}(el.textContent) === ${step}; })()`, what);
     // 视口宽：现在是 baseW 宽时标题的 clientWidth 是 client，要让它变成 target。
     const widthFor = async (selector, baseW, target) => Math.round(baseW - ((await shown(selector)).client - target));
+    // 两段的计算样式：字号、字重、颜色（三级灰要和 --coda-tertiary 解出来的颜色一致）。
+    const styles = selector => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}), name = el.querySelector('.rn-name'), tag = el.querySelector('.rn-tag'); if (!name || !tag) return null;
+      const probe = document.createElement('i'); probe.style.color = 'var(--coda-tertiary)'; document.body.append(probe); const tertiary = getComputedStyle(probe).color; probe.remove();
+      const n = getComputedStyle(name), t = getComputedStyle(tag), root = parseFloat(getComputedStyle(document.documentElement).fontSize);
+      return { nameSize: parseFloat(n.fontSize), tagSize: parseFloat(t.fontSize), nameWeight: Number(n.fontWeight), tagWeight: Number(t.fontWeight), tagColor: t.color, tertiary, nameColor: n.color, root }; })()`);
 
-    for (const [platform, selector, baseSize, label] of [['mac', '#tree .section', 'window', 'Mac 侧栏'], ['ios', '.bar-title', 'portrait', 'iPhone 工具条']]) {
+    for (const [platform, container, baseSize, label] of [['mac', '#tree .section', 'window', 'Mac 侧栏'], ['ios', '.bar-title', 'portrait', 'iPhone 工具条']]) {
       await open(baseSize, platform, 'light');
-      const wFull = await textWidth(selector, full), wMin = await textWidth(selector, minimal), padding = await pad(selector); // 内容宽 = clientWidth - 左右 padding（Mac 的 .section 是 16+16，iPhone 的 .bar-title 是 8+8）
-      const baseW = SIZES[baseSize][0];
-      const widths = { wide: await widthFor(selector, baseW, wFull + padding + 6), medium: await widthFor(selector, baseW, (wFull + wMin) / 2 + padding), narrow: await widthFor(selector, baseW, wMin + padding - 30) };
-      for (const [name, w] of Object.entries(widths)) SIZES[`wt-${platform}-${name}`] = [w, SIZES[baseSize][1], SIZES[baseSize][2]];
-      console.log(`${label}：完整 ${wFull.toFixed(1)} 点，项目名只剩 2 个字 ${wMin.toFixed(1)} 点；视口宽 宽 ${widths.wide} / 中 ${widths.medium} / 窄 ${widths.narrow}`);
-      check(`${label}：三档视口宽依次变窄，窄档不小于 60`, widths.wide > widths.medium && widths.medium > widths.narrow && widths.narrow >= 60, JSON.stringify(widths));
+      const nameSel = `${container} .rn-name`, tagSel = `${container} .rn-tag`, padding = await pad(container);
+      const wName = await textWidth(nameSel, P), wMin = await textWidth(nameSel, `${P[0]}…${P.at(-1)}`);
+      const wTagLong = await textWidth(tagSel, ` worktree-${tag}`), wTagShort = await textWidth(tagSel, ` wt-${tag}`);
+      const wFull = wName + wTagLong, wShort = wName + wTagShort, wMinimal = wMin + wTagShort;
+      // 可用宽度 = clientWidth - padding - 2（量字的误差）；各档的可用宽度取在区间正中。
+      const avail = { wide: wFull / 0.9 + 12, medium: (wShort + wFull / 0.9) / 2, small: (wMinimal + wShort) / 2, narrow: wMinimal - 30 };
+      const baseW = SIZES[baseSize][0], widths = {};
+      for (const [name, a] of Object.entries(avail)) { widths[name] = await widthFor(container, baseW, a + padding + 2); SIZES[`wt-${platform}-${name}`] = [widths[name], SIZES[baseSize][1], SIZES[baseSize][2]]; }
+      console.log(`${label}：完整 ${wFull.toFixed(1)}（90% 线 ${(wFull / 0.9).toFixed(1)}）、短写法 ${wShort.toFixed(1)}、项目名只剩 2 个字 ${wMinimal.toFixed(1)} 点；视口宽 宽 ${widths.wide} / 中 ${widths.medium} / 小 ${widths.small} / 窄 ${widths.narrow}`);
+      check(`${label}：四档视口宽依次变窄，窄档不小于 60；步骤之间的区间都有宽度（短写法 < 90% 线）`, widths.wide > widths.medium && widths.medium > widths.small && widths.small > widths.narrow && widths.narrow >= 60 && wShort < wFull / 0.9, JSON.stringify({ widths, wFull, wShort, wMinimal }));
 
-      // 同一个页面不重载：宽 → 中 → 窄 → 宽，每次变视口都重新算（拖窄侧栏、转屏）。
+      // 同一个页面不重载：宽 → 中 → 小 → 窄 → 宽，每次变视口都重新算（拖窄侧栏、转屏）。
       await open(`wt-${platform}-wide`, platform, 'light');
-      let now = await shown(selector);
-      check(`${label} 宽：完整写法「${full}」（第 1 步），标题不横向溢出，页面不出横向滚动条`, stepOf(now.text) === 1 && now.overflow <= 0 && now.page <= 0, JSON.stringify(now));
+      let now = await shown(container);
+      check(`${label} 宽：完整写法「${full}」（第 1 步），两个元素（项目名、后缀），标题不横向溢出，页面不出横向滚动条`, stepOf(now.text) === 1 && now.parts.join() === 'rn-name,rn-tag' && now.overflow <= 0 && now.page <= 0, JSON.stringify(now));
       if (platform === 'mac') check(`${label}：标题悬停是完整路径`, now.title === realWt, JSON.stringify(now));
-      if (platform === 'mac') await shoot('rm-0.8.1-mac-light-wide');
-      for (const [name, step] of [['medium', 2], ['narrow', 3], ['wide', 1]]) {
+      // 字体层级：后缀常规字重、三级灰、比项目名小；项目名粗体、不是三级灰。
+      const st = await styles(container);
+      check(`${label}：后缀是常规字重（400）、三级灰（${st?.tertiary}）、字号 ${st?.tagSize} 比项目名 ${st?.nameSize} 小；项目名是粗体（${st?.nameWeight}）且不是三级灰`,
+        st && st.tagWeight === 400 && st.tagColor === st.tertiary && st.tagSize < st.nameSize && st.nameWeight >= 600 && st.nameColor !== st.tertiary, JSON.stringify(st));
+      // 字号用相对单位跟着 --coda-font-size：Mac 项目名约 .92em（比 0.8.1 之前的 .85em 大），后缀约 .85em（原来标题的字号）；iPhone 项目名不变（1em），后缀约 .88em。
+      if (platform === 'mac') check(`Mac 标题：项目名字号 ${st.nameSize} 约 .92 × ${st.root}，比 0.8.1 之前的 .85 × ${st.root} = ${(0.85 * st.root).toFixed(2)} 大；后缀 ${st.tagSize.toFixed(2)} 约等于原来的字号`,
+        Math.abs(st.nameSize - 0.92 * st.root) < 0.3 && st.nameSize > 0.85 * st.root + 0.5 && Math.abs(st.tagSize - 0.85 * st.root) < 0.3, JSON.stringify(st));
+      else check(`iPhone 标题：项目名字号不变（${st.nameSize} = 正文 ${st.root}），后缀小一号（${st.tagSize.toFixed(2)} ≈ .88 × ${st.root}）`, Math.abs(st.nameSize - st.root) < 0.3 && Math.abs(st.tagSize - 0.88 * st.root) < 0.3, JSON.stringify(st));
+      if (platform === 'mac') await shoot('rm-0.8.1b-mac-light-wide');
+      for (const [name, step] of [['medium', 2], ['small', 3], ['narrow', 4], ['wide', 1]]) {
         await setViewport(`wt-${platform}-${name}`, platform);
-        await waitStep(selector, step, `${label}：同一个页面里视口变成「${name}」后标题落到第 ${step} 步`);
-        now = await shown(selector);
-        check(`${label} ${name}：落在第 ${step} 步（${now.text}），标题不横向溢出，页面不出横向滚动条${step === 2 ? '，-wt-编号完整，项目名留了首尾' : step === 3 ? '，整段尾部省略' : ''}`, stepOf(now.text) === step && now.overflow <= 0 && now.page <= 0, JSON.stringify(now));
-        if (platform === 'mac' && step === 2) await shoot('rm-0.8.1-mac-light-narrow'); // 真实侧栏会有的窄（185 点）：第 2 步；第 3 步的 74 点不是实际会有的宽度
+        await waitStep(container, step, `${label}：同一个页面里视口变成「${name}」后标题落到第 ${step} 步`);
+        now = await shown(container);
+        const extra = { 2: '，后缀缩成 wt-编号', 3: '，wt-编号完整、项目名留了首尾', 4: '，整段尾部省略' }[step] ?? '';
+        check(`${label} ${name}：落在第 ${step} 步（${now.text}），标题不横向溢出，页面不出横向滚动条${extra}`, stepOf(now.text) === step && now.overflow <= 0 && now.page <= 0, JSON.stringify(now));
+        if (step > 1 && step < 4) { // 省略以后两段的样式不变
+          const again = await styles(container);
+          check(`${label} ${name}：省略后后缀仍是常规字重、三级灰、比项目名小`, again && again.tagWeight === 400 && again.tagColor === again.tertiary && again.tagSize < again.nameSize, JSON.stringify(again));
+        }
+        if (platform === 'mac' && step === 3) await shoot('rm-0.8.1b-mac-light-narrow');
       }
     }
-    // iPhone 深色截图：中档（省略的写法）。
-    await open('wt-ios-medium', 'ios', 'dark');
-    await waitStep('.bar-title', 2, 'iPhone 深色 中档');
-    await shoot('rm-0.8.1-ios-dark');
+    // Mac 浅色之外的截图：Mac 深色宽（第 1 步）、iPhone 深色竖屏。
+    await open('wt-mac-wide', 'mac', 'dark');
+    await waitStep('#tree .section', 1, 'Mac 深色 宽');
+    await shoot('rm-0.8.1b-mac-dark-wide');
+    await open('portrait', 'ios', 'dark'); // 真实的 iPhone 竖屏宽度（420 点）
+    await waitStep('.bar-title', 2, 'iPhone 深色 竖屏：这么长的项目名在 420 点里是第 2 步');
+    await shoot('rm-0.8.1b-ios-dark');
 
-    // Mac 图标视图头部：窄档落在第 3 步，宽档完整；头部标题不溢出、悬停是完整路径。
-    // 头部有文件夹图标和左右内边距，标题的宽度和目录树标题不同：视口宽按头部标题自己的宽度重算。
+    // 普通文件夹名（会话 A，不是 worktree）：Mac 标题同样大一号（.92em），是纯文本，没有两段；iPhone 工具条标题字号不变。
+    await fetch(`${serverUrl}ctl?action=session:A`);
+    await open('window', 'mac', 'light');
+    const plainMac = await evaluate(`(() => { const el = document.querySelector('#tree .section'), s = getComputedStyle(el), root = parseFloat(getComputedStyle(document.documentElement).fontSize); return { text: el.textContent, parts: el.children.length, size: parseFloat(s.fontSize), root, weight: Number(s.fontWeight) }; })()`);
+    check(`Mac 普通文件夹名标题：纯文本「${plainMac.text}」（没有两段），字号 ${plainMac.size} 约 .92 × ${plainMac.root}（同样大一号），粗体`, plainMac.text === 'demo-project' && plainMac.parts === 0 && Math.abs(plainMac.size - 0.92 * plainMac.root) < 0.3 && plainMac.weight >= 600, JSON.stringify(plainMac));
+    await fetch(`${serverUrl}ctl?action=session:W`);
+
+    // Mac 图标视图头部：项目名不变、后缀小一号；窄档落在第 4 步，宽档完整；头部标题不溢出、悬停是完整路径。
     const headSel = '#grid .gname-head';
     await openGrid('window', 'mac', 'light');
-    const headBase = SIZES.window[0], headFull = await textWidth(headSel, full), headMin = await textWidth(headSel, minimal);
-    SIZES['wt-grid-wide'] = [await widthFor(headSel, headBase, headFull + 6), SIZES.window[1], SIZES.window[2]];
-    SIZES['wt-grid-narrow'] = [await widthFor(headSel, headBase, headMin - 30), SIZES.window[1], SIZES.window[2]];
-    for (const [name, step] of [['wide', 1], ['narrow', 3]]) {
+    const headBase = SIZES.window[0], hName = await textWidth(`${headSel} .rn-name`, P), hMin = await textWidth(`${headSel} .rn-name`, `${P[0]}…${P.at(-1)}`);
+    const hLong = await textWidth(`${headSel} .rn-tag`, ` worktree-${tag}`), hShort = await textWidth(`${headSel} .rn-tag`, ` wt-${tag}`);
+    SIZES['wt-grid-wide'] = [await widthFor(headSel, headBase, (hName + hLong) / 0.9 + 12), SIZES.window[1], SIZES.window[2]];
+    SIZES['wt-grid-narrow'] = [await widthFor(headSel, headBase, hMin + hShort - 30 + 2), SIZES.window[1], SIZES.window[2]];
+    for (const [name, step] of [['wide', 1], ['narrow', 4]]) {
       await openGrid(`wt-grid-${name}`, 'mac', 'light');
-      await waitStep('#grid .gname-head', step, `图标视图头部 ${name}`);
-      const head = await shown('#grid .gname-head');
+      await waitStep(headSel, step, `图标视图头部 ${name}`);
+      const head = await shown(headSel), gs = await styles(headSel);
       check(`Mac 图标视图头部 ${name}：落在第 ${step} 步（${head.text}），不溢出，悬停是完整路径`, head.overflow <= 0 && head.title === realWt, JSON.stringify(head));
+      if (step === 1) check(`Mac 图标视图头部：项目名字号不变（${gs.nameSize} = 正文 ${gs.root}），后缀小一号、常规字重、三级灰`, Math.abs(gs.nameSize - gs.root) < 0.3 && gs.tagSize < gs.nameSize && gs.tagWeight === 400 && gs.tagColor === gs.tertiary, JSON.stringify(gs));
     }
     // iPhone 图标视图：工具条标题是同一套写法；系统返回的完整写法由 test/root-title.test.mjs 断言（harness 里 coda.back 只记录标题数组）。
     await openGrid('wt-ios-wide', 'ios', 'light');
