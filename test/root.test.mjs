@@ -42,8 +42,8 @@ test('ready 但目录已被回收（或变成文件）是 gone；接口出错则
 
 const UUID = 'c0377d40-2fa7-42a0-94ab-49a31b2215c3';
 const PROJECTS = { projects: [{ id: 'p1', name: 'ActaView' }, { id: 'p2', name: '  工具箱  ' }, { id: 'p3', name: '' }, { id: 'p4', name: 'Bad\u0007Name' }, { id: 'p5', name: 42 }, { id: 'p6' }, { name: 'no-id' }] };
-// 会话详情：checkout 带 projectId（kind 缺省是 worktree），thread 上也可以有 projectId。
-const session = (path, { kind = 'worktree', projectId, threadProjectId, state = 'ready' } = {}) => ({ ...(threadProjectId ? { projectId: threadProjectId } : {}), checkout: { kind, state, path, ...(projectId ? { projectId } : {}) } });
+// 会话详情的真实结构：{ thread: { …, projectId }, draft, checkout }（checkout 和 thread 并列；kind 缺省是 worktree）。checkout 和 thread 上都可以有 projectId。
+const session = (path, { kind = 'worktree', projectId, threadProjectId, state = 'ready' } = {}) => ({ thread: { id: 'thread-1', ...(threadProjectId ? { projectId: threadProjectId } : {}) }, draft: {}, checkout: { kind, state, path, ...(projectId ? { projectId } : {}) } });
 const agentCalls = fake => fake.api.filter(path => path === 'agents').length;
 const rootOf = async (t, threads) => { const base = await tempDir(t); await mkdir(join(base, UUID)); const dir = join(base, UUID); return { dir, fake: fakeCoda(threads(dir)) }; };
 
@@ -54,13 +54,17 @@ test('worktree：项目名是 Coda 项目列表里这个 id 的名字（checkout
   assert.equal(agentCalls(fake), 1, '列表缓存了：两个会话只请求一次');
 });
 
-test('checkout 里没有 projectId 时用 thread.projectId；两处都没有就不请求，project 是 null', async t => {
+test('checkout 里没有 projectId 时用详情里 thread.projectId；两处都没有就不请求，project 是 null', async t => {
   const { fake } = await rootOf(t, dir => ({ A: session(dir, { threadProjectId: 'p1' }), B: session(dir, { projectId: 'p2', threadProjectId: 'p1' }), C: session(dir), agents: PROJECTS }));
   assert.equal((await queryRoot(fake.coda, 'A')).project, 'ActaView');
   assert.equal((await queryRoot(fake.coda, 'B')).project, '工具箱', 'checkout 优先');
   const none = await rootOf(t, dir => ({ C: session(dir), agents: PROJECTS }));
   assert.equal((await queryRoot(none.fake.coda, 'C')).project, null);
   assert.equal(agentCalls(none.fake), 0, '没有 id：不请求');
+  // 详情顶层的 projectId 不是 id 的来源（thread 是详情里的字段，不是详情本身）。
+  const top = await rootOf(t, dir => ({ T: { ...session(dir), projectId: 'p1' }, agents: PROJECTS }));
+  assert.equal((await queryRoot(top.fake.coda, 'T')).project, null, '顶层的 projectId 不算');
+  assert.equal(agentCalls(top.fake), 0);
 });
 
 test('original（用户直接把目录当项目打开）不调 agents，project 是 null，即使有 projectId', async t => {
