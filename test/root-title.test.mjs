@@ -1,13 +1,12 @@
 // 根目录名的四处显示（设计第 19 节、19.6 节）：Mac 目录树标题、iPhone 页内工具条标题、图标视图头部、系统返回的路径。
 // 真实的 app.mjs 配假 DOM；页面收到 root 消息（带 project）后渲染。fit 的量宽度在假 DOM 里一个字算 1，元素的 clientWidth 是字数。
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { activate } from '../main.mjs';
 import { loadApp } from './support/dom.mjs';
-import { checkoutOf, deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
+import { deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
 import { openTree, sectionOf } from './support/treehost.mjs';
 
 const UUID = 'c0377d40-2fa7-42a0-94ab-49a31b2215c3';
@@ -179,17 +178,12 @@ test('根目录没就绪（gone）：iPhone 工具条标题空、系统返回的
   assert.equal(byClass(mac.page, mac.page.grid, 'ghead').hidden, true);
 });
 
-// ---- 真实入口：真实模块 + 真实 git worktree + 真实页面 ----
+// ---- 真实入口：真实模块（queryRoot 从 Coda 的项目列表取项目名）+ 真实页面 ----
 
-test('真实入口：真实 git worktree（UUID 目录、长项目名）经 queryRoot 反查，root 消息送到页面，标题按宽度省略', async t => {
-  const base = await tempDir(t), main = join(base, 'coda_plugins_resource_manager'), work = join(base, UUID);
-  await mkdir(main);
-  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: main, stdio: 'pipe' });
-  git('init', '-q');
-  git('commit', '-q', '--allow-empty', '-m', 'init');
-  git('worktree', 'add', '-q', work, '-b', `agent/${UUID}`);
-  t.after(() => { try { git('worktree', 'prune'); } catch { /* 目录已删 */ } });
-  const fake = fakeCoda({ A: checkoutOf(work) });
+test('真实入口：真实 activate 的 queryRoot 从 agents 的项目列表取项目名（checkout.projectId），root 消息送到页面，标题按宽度省略', async t => {
+  const base = await tempDir(t), work = join(base, UUID);
+  await mkdir(work);
+  const fake = fakeCoda({ A: { checkout: { kind: 'worktree', state: 'ready', path: work, projectId: 'p1' } }, agents: { projects: [{ id: 'p1', name: 'coda_plugins_resource_manager' }] } });
   activate(fake.coda);
   const view = fake.open('A'), ready = deferred();
   let page;

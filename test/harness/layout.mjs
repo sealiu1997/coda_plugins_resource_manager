@@ -1,7 +1,7 @@
 // 开发用：无头 Chrome（不是 WKWebView）经 CDP 断言假 DOM 查不出的真实布局，并给 Mac 侧栏和预览、iPhone 竖屏和横屏的深浅色截图。不是产品代码。
 // 自己起 harness 服务和临时目录（用完删掉），截图放在系统临时目录里，不进仓库。
 // 用法：node test/harness/layout.mjs [Chrome 的路径]；失败时退出码非 0。
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -41,8 +41,8 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 
 // 先建临时目录，之后所有资源都在 try/finally 里创建，失败时一并清理。
 const base = await mkdtemp(join(tmpdir(), 'rm-ui-'));
-const WT_UUID = randomUUID(), WT_PROJECT = 'coda_plugins_resource_manager'; // 0.8.1：worktree 目录名是 UUID，主仓库文件夹名取长的，三档宽度才分得开
-const wtBase = join(base, 'wt'), wtMain = join(wtBase, WT_PROJECT), wtDir = join(wtBase, WT_UUID);
+const WT_UUID = randomUUID(), WT_PROJECT = 'coda_plugins_resource_manager'; // 0.8.1：worktree 目录名是 UUID，Coda 里的项目名取长的，四档宽度才分得开
+const wtBase = join(base, 'wt'), wtDir = join(wtBase, WT_UUID);
 const fixture = join(base, 'demo-project'), bulkRoot = join(base, 'bulk-project'), profile = join(base, 'profile'), shots = join(base, 'shots');
 const BULK = 20000; // 图标视图的量：一个目录里这么多文件，在会话 B 里（根目录是 bulk-project）
 const children = [];
@@ -73,12 +73,10 @@ const cleanup = async () => {
   ws?.close();
   await Promise.all(children.map(stop));
   await chmod(join(fixture, 'locked'), 0o755).catch(() => {});
-  try { gitIn(wtMain, 'worktree', 'remove', '--force', wtDir); gitIn(wtMain, 'worktree', 'prune'); } catch { /* 没建成，或目录已经不在 */ }
   // 跑完了截图才留下，中途失败时整个临时目录都删掉。
   for (const dir of keepShots ? [fixture, bulkRoot, wtBase, profile] : [base]) await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 };
 
-const gitIn = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=harness', '-c', 'user.email=harness@example.invalid', '-c', 'init.defaultBranch=main', ...args], { cwd, stdio: 'pipe' });
 
 let id = 0; const waiting = new Map();
 const send = (method, params = {}) => new Promise((resolve, reject) => { waiting.set(++id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params })); });
@@ -137,15 +135,11 @@ async function start() {
   await symlink('/nonexistent-target', join(fixture, 'dangling'));
   await chmod(join(fixture, 'locked'), 0);
 
-  // 真实的 git worktree（会话 W）：主仓库一次空提交加一个文件，worktree 建在 UUID 目录里，同 Coda 给会话建的那种。
-  await mkdir(wtMain, { recursive: true });
-  gitIn(wtMain, 'init', '-q');
-  await writeFile(join(wtMain, 'README.md'), 'x\n');
-  gitIn(wtMain, 'add', '.');
-  gitIn(wtMain, 'commit', '-q', '-m', 'init');
-  gitIn(wtMain, 'worktree', 'add', '-q', wtDir, '-b', `agent/${WT_UUID}`);
+  // 会话 W：worktree 会话，目录名是 UUID（同 Coda 给会话建的那种）；项目名不从目录里读，由 server.mjs 的 agents 替身给（第五个参数）。
+  await mkdir(wtDir, { recursive: true });
+  await writeFile(join(wtDir, 'README.md'), 'x\n');
 
-  const server = launch('harness 服务', process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url)), fixture, bulkRoot, '0', wtDir], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const server = launch('harness 服务', process.execPath, [fileURLToPath(new URL('./server.mjs', import.meta.url)), fixture, bulkRoot, '0', wtDir, WT_PROJECT], { stdio: ['ignore', 'pipe', 'inherit'] });
   serverUrl = await within(Promise.race([server.early, new Promise(resolve => server.stdout.on('data', data => { const m = /http:\/\/\S+/.exec(String(data)); if (m) resolve(m[0]); }))]), STARTUP_MS, 'harness 服务启动');
 
   // 端口上已经有调试服务时，连上的会是别人的 Chrome，不是我们起的这个。
@@ -2491,10 +2485,10 @@ try {
     gated.registered === FIND_BATCH_SIZE && gated.held === 1 && gated.done === 0 && cancelled === 0 && after.size === 0 && after.done === 0 && after.hidden, JSON.stringify({ gated, cancelled, released, after }));
   }
 
-  // ---- 0.8.1 worktree 的根目录名（会话 W：真实的 git worktree，目录名 UUID，主仓库文件夹名 coda_plugins_resource_manager）----
+  // ---- 0.8.1 worktree 的根目录名（会话 W：worktree 会话，目录名 UUID，Coda 里的项目名 coda_plugins_resource_manager）----
   // 写法「项目名 worktree-编号」，两段两个元素（.rn-name 粗体、.rn-tag 常规字重三级灰小一号），四步省略（设计第 19.6 节）：
   // 1 完整写法不超过可用宽度的 90%；2 后缀缩成 wt-编号，整行放得下；3 项目名从中间省略；4 整段尾部省略。
-  // 模块自己反查项目名，页面收到的 root 消息带 project。四档宽度不凭感觉定：先在宽的视口里用页面里的隐藏元素（各带项目名、后缀自己的字体，布局引擎的量法，不是实现里用的 canvas）
+  // 真实的 queryRoot 从 checkout.projectId 和 agents 的项目列表（server.mjs 的替身）取项目名，页面收到的 root 消息带 project。四档宽度不凭感觉定：先在宽的视口里用页面里的隐藏元素（各带项目名、后缀自己的字体，布局引擎的量法，不是实现里用的 canvas）
   // 量出完整、短写法、项目名只剩 2 个字的宽度，再按量到的算视口：每档取在对应步骤的区间正中，窄档窄到项目名只剩 2 个字也放不下。判断落在第几步看标题的文字，不看宽度。
   {
     await fetch(`${serverUrl}ctl?action=session:W`);
