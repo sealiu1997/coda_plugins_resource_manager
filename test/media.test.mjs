@@ -5,7 +5,7 @@ import { mkdir, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createMedia } from '../lib/media.mjs';
-import { mediaOf } from '../view/protocol.mjs';
+import { mediaOf, servedType } from '../view/protocol.mjs';
 import { tempDir } from './support/fake.mjs';
 
 const BODY = Buffer.from('0123456789abcdefghij'); // 20 字节
@@ -139,4 +139,51 @@ test('中途断开（大文件读到一半）：之后的请求照常', async t 
   controller.abort();
   await utimes(join(root, 'a.mp3'), 1, 1);
   assert.equal((await get('a.mp3')).res.status, 200);
+});
+
+test('3D 模型（第 21 节）：mediaOf 认 glb、gltf、stl、obj、ply、3mf；.bin、.mtl 不是媒体，但服务供应它们', async t => {
+  for (const ext of ['glb', 'gltf', 'stl', 'obj', 'ply', '3mf']) assert.equal(mediaOf(`m.${ext.toUpperCase()}`)?.kind, 'model', ext);
+  assert.deepEqual(mediaOf('a/x.glb'), { kind: 'model', type: 'model/gltf-binary', preview: true });
+  for (const name of ['x.bin', 'x.mtl']) assert.equal(mediaOf(name), null, `${name} 页面不当媒体预览`);
+  assert.equal(servedType('x.BIN'), 'application/octet-stream');
+  assert.equal(servedType('x.mtl'), 'text/plain; charset=utf-8');
+  assert.equal(servedType('x.png'), 'image/png');
+  assert.equal(servedType('x.stl'), 'model/stl');
+  assert.equal(servedType('x.mkv'), null);
+  assert.equal(servedType('x.txt'), null);
+  assert.equal(servedType('noext'), null);
+  const { root, get } = await serving(t);
+  await mkdir(join(root, 'm'), { recursive: true });
+  await writeFile(join(root, 'm', 'scene.bin'), BODY);
+  await writeFile(join(root, 'm', 'a b.mtl'), 'newmtl x\n');
+  await writeFile(join(root, 'm', 'model.glb'), BODY);
+  const bin = await get('m/scene.bin');
+  assert.deepEqual([bin.res.status, bin.res.headers.get('content-type'), bin.body.equals(BODY)], [200, 'application/octet-stream', true]);
+  const mtl = await get('m/a%20b.mtl');
+  assert.deepEqual([mtl.res.status, mtl.res.headers.get('content-type'), mtl.body.toString()], [200, 'text/plain; charset=utf-8', 'newmtl x\n']);
+  assert.equal((await get('m/model.glb')).res.headers.get('content-type'), 'model/gltf-binary');
+  assert.equal((await get('m/scene.bin', { headers: { range: 'bytes=2-3' } })).body.toString(), '23');
+  assert.equal((await get('notes.txt')).res.status, 415, '文本仍然不供应');
+});
+
+test('跨源：所有响应（含 304、416 和各种错误）带 Access-Control-Allow-Origin: *；OPTIONS 回 204 并列出方法和请求头', async t => {
+  const { get } = await serving(t);
+  const origin = r => r.res.headers.get('access-control-allow-origin');
+  const ok = await get('a.mp3');
+  assert.equal(origin(ok), '*');
+  assert.match(ok.res.headers.get('access-control-expose-headers'), /content-length.*content-range.*etag/);
+  assert.equal(origin(await get('a.mp3', { headers: { 'if-none-match': ok.res.headers.get('etag') } })), '*', '304');
+  const partial = await get('a.mp3', { headers: { range: 'bytes=2-3' } });
+  assert.deepEqual([partial.res.status, origin(partial)], [206, '*']);
+  const bad = await get('a.mp3', { headers: { range: 'bytes=99-' } });
+  assert.deepEqual([bad.res.status, origin(bad)], [416, '*']);
+  for (const [path, status, tok] of [['notes.txt', 415], ['nope.mp3', 404], ['a.mp3', 404, 'wrong'], ['..%2Fx.mp3', 400]]) {
+    const res = await get(path, { tok });
+    assert.deepEqual([res.res.status, origin(res)], [status, '*'], path);
+  }
+  const preflight = await get('a.mp3', { method: 'OPTIONS', headers: { origin: 'coda-view://plugin', 'access-control-request-method': 'GET', 'access-control-request-headers': 'range' } });
+  assert.deepEqual([preflight.res.status, origin(preflight), preflight.res.headers.get('access-control-allow-methods')], [204, '*', 'GET, HEAD']);
+  assert.match(preflight.res.headers.get('access-control-allow-headers'), /range/);
+  assert.equal(preflight.body.length, 0);
+  assert.equal((await get('a.mp3', { method: 'POST' })).res.status, 405);
 });

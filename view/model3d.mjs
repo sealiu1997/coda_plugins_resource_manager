@@ -17,9 +17,10 @@ export const directoryUrl = (token, path) => {
 };
 export const extensionOf = path => (path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : '');
 
-// 「3D / 文本」切换：这四种格式既可以是文本也可以是二进制；内容是文本（模块按前 8000 字节没有 NUL 判断）才提供。glb、3mf 一定是二进制。
+// 「3D / 文本」切换：这四种格式既可以是文本也可以是二进制，要读一块看内容；内容是文本（模块按前 8000 字节没有 NUL 判断）才提供。glb、3mf 一定是二进制，不用读。
 const TEXTUAL = new Set(['gltf', 'obj', 'stl', 'ply']);
-export const offersTextView = (path, contentKind) => TEXTUAL.has(extensionOf(path)) && contentKind === ContentKind.TEXT;
+export const mayBeText = path => TEXTUAL.has(extensionOf(path));
+export const offersTextView = (path, contentKind) => mayBeText(path) && contentKind === ContentKind.TEXT;
 
 // glTF 的 JSON：.gltf 是文本；.glb 是 12 字节头，后面第一块必须是 JSON 块。读不出来抛带原因的错。
 export function gltfJson(bytes, ext) {

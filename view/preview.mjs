@@ -7,7 +7,7 @@ import { icon, iconFor } from './icons.mjs';
 import { languageOf } from './languages.mjs';
 import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, TEXT_LIMIT, imageType, mediaOf } from './protocol.mjs';
 import { clippedSelection, linesOf } from './selection.mjs';
-import { offersTextView } from './model3d.mjs';
+import { mayBeText, offersTextView } from './model3d.mjs';
 import { mountViewer } from './viewer3d.mjs';
 
 function fromBase64(data) {
@@ -237,7 +237,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if ((player && kind !== 'image') || (viewer && kind === 'model')) { changed = true; paintMeta(); return true; }
     }
     if (kind === 'model') { // 内容是不是文本，用模块现有的判断（读第一块）；不经查看器，没有 WebGL 的设备上文本模型也能切到文本看
-      offersText = offersTextView(path, (await read(path, 0)).kind);
+      offersText = mayBeText(path) && offersTextView(path, (await read(path, 0)).kind);
       if (!mark()) return true;
       paintMode();
     }

@@ -52,11 +52,12 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
   const abort = new AbortController();
   let dead = false, disposed = false, gate = null, playback = null, requestRender = () => {}, sync = () => {};
   const held = { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, frame: 0, mixer: null, envTarget: null };
+  const stopFrame = () => { if (held.frame) caf(held.frame); held.frame = 0; };
   const onVisibility = () => { playback?.setVisible(!document.hidden); sync(); if (!document.hidden) requestRender(); };
   document.addEventListener('visibilitychange', onVisibility);
   const release = () => {
     document.removeEventListener('visibilitychange', onVisibility);
-    caf(held.frame);
+    stopFrame();
     held.observer?.disconnect();
     held.controls?.dispose();
     if (held.mixer && held.wrapper) { held.mixer.stopAllAction(); held.mixer.uncacheRoot(held.wrapper); }
@@ -65,9 +66,9 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     held.renderer?.dispose();
     held.renderer?.forceContextLoss();
     if (held.canvas) { held.canvas.width = held.canvas.height = 0; held.canvas.remove(); } // 连画布的后备存储一起还掉（iOS 上不还会攒着）
-    Object.assign(held, { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, frame: 0, mixer: null, envTarget: null });
+    Object.assign(held, { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, mixer: null, envTarget: null });
   };
-  const say = (text, ...extra) => { status.hidden = false; status.replaceChildren(h('p', {}, text), ...extra); };
+  const say = (text, ...extra) => { status.hidden = false; status.replaceChildren(h('p', {}, text), ...extra.filter(Boolean)); }; // 真 DOM 的 replaceChildren 会把 null 变成文字「null」
   const fail = (title, detail) => {
     resetButton.hidden = bar.hidden = true;
     say(title, detail ? h('p', { class: 'secondary caption' }, detail) : null);
@@ -154,9 +155,10 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     const pmrem = new THREE.PMREMGenerator(renderer), room = new RoomEnvironment();
     held.envTarget = pmrem.fromScene(room, 0.04);
     scene.environment = held.envTarget.texture;
+    scene.environmentIntensity = 0.6; // 默认的 1 会把中性灰的亮面照成一片白
     room.dispose();
     pmrem.dispose();
-    const key = new THREE.DirectionalLight(0xffffff, 1.2);
+    const key = new THREE.DirectionalLight(0xffffff, 0.8);
     key.position.set(1, 1.5, 1);
     camera.add(key);
     scene.add(wrapper);
@@ -212,7 +214,7 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     };
     requestRender = () => { if (!held.frame && !disposed) held.frame = raf(frame); };
     sync = () => {
-      if (playback.running) { if (!held.frame) { last = now(); held.frame = raf(frame); } } else { caf(held.frame); held.frame = 0; }
+      if (playback.running) { if (!held.frame) { last = now(); held.frame = raf(frame); } } else stopFrame();
     };
     if (clips.length) {
       held.mixer = new THREE.AnimationMixer(parsed.object);
@@ -250,7 +252,7 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     fail('加载出错', String(error?.message ?? error));
   });
 
-  const cancel = () => { dead = true; abort.abort(); gate?.(); playback?.stop(); caf(held.frame); held.frame = 0; };
+  const cancel = () => { dead = true; abort.abort(); gate?.(); playback?.stop(); stopFrame(); };
   return {
     cancel,
     dispose() {
@@ -282,6 +284,7 @@ async function parseModel({ THREE, engine, manager, bytes, ext, token, path, dow
   if (ext === 'stl') {
     const { STLLoader } = await engine.module('loaders/STLLoader');
     const geometry = new STLLoader(manager).parse(exact(bytes));
+    geometry.computeVertexNormals(); // 不信文件里的面法线：很多导出工具写成 0 0 0，会画成一片白；没有索引，算出来的是每个面自己的法线
     const material = neutral();
     if (geometry.hasColors === true) material.vertexColors = true;
     return done(new THREE.Mesh(geometry, material));
