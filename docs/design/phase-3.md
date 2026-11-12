@@ -1591,14 +1591,14 @@ Coda 给 worktree 会话建的工作目录以一串 UUID 命名（如 `c0377d40-
 
 - `lib/media.mjs`：服务供应的扩展名由 `view/protocol.mjs` 的 `servedType` 决定——能预览的媒体（含 3D 模型）加上模型的伴随文件 `.bin`、`.mtl`；其余 `415`。所有响应（含错误、`304`、`416`）带 `Access-Control-Allow-Origin: *` 和 `Access-Control-Expose-Headers`；`OPTIONS` 回 `204`，允许 `GET`、`HEAD`。`mediaOf` 增加 `model` 一类（页面决定怎么显示、模块决定服务哪些，仍各查一张表）；`.bin`、`.mtl` 不在 `mediaOf` 里，页面不把它们当媒体预览。
 - `view/model3d.mjs`（新增，不碰 DOM、不碰 three，Node 里能测）：服务地址、glTF 头和压缩扩展检查、`mtllib`、相对路径拼接、文本切换的显示条件、64 MiB 常量、动画的播放状态（`createPlayback`：播放、暂停、选段、可见、停止，是否连续渲染只看它）。
-- `view/viewer3d.mjs`（新增）：`mountViewer`。three 只在这里动态导入；字节自己 `fetch`（用 `crossOrigin` 的流，边下边报进度），自己 `parse`。解析在主线程（见第 21.6 节）。导入、`fetch`、`requestAnimationFrame`、WebGL 探测、减弱动态效果的判断都可以注入，测试用假 three 的渲染器。
+- `view/viewer3d.mjs`（新增）：`mountViewer`。three 只在这里动态导入；字节自己 `fetch`（边下边报进度），自己 `parse`。解析在主线程（见第 21.6 节）。导入、`fetch`、`requestAnimationFrame`、WebGL 探测、减弱动态效果的判断都可以注入，测试用假 three 的渲染器。
 - `view/preview.mjs`：`model` 一类走 `mountViewer`；刷新、「文件已变化」、「重载」同音视频；文本切换由预览持有（模式按打开的文件记，换文件回到 3D）。判断内容是不是文本发一次 `read`（偏移 0，复用模块的现有判断），不依赖查看器，所以没有 WebGL 的设备上文本的 `gltf`、`obj` 仍然能切到文本看。没有流式服务（旧 Coda）：不走查看器，回到分块读取——文本格式当文本显示，二进制的写「二进制文件，不预览」。
 
 ### 21.5 不做
 
 - Draco、KTX2（`KHR_texture_basisu`）、meshopt 压缩的 glTF：three 的解码器要另带 wasm，不在本期，提示不能预览（作者定）。
 - 不用 Worker 解析：主线程解析大模型会卡一下页面，记在 `docs/backlog.md`。
-- 不做测量、剖面、线框、材质替换、灯光调节、截图、导出、变换动画的时间轴。
+- 不做测量、剖面、线框、材质替换、灯光调节、截图、导出、动画时间轴。
 - 取景不随动画范围变（按初始姿势）。
 - 样例模型和下载第三方样例的脚本不进仓库。
 
