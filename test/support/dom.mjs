@@ -86,6 +86,12 @@ export class Element extends Emitter {
       this.children.push(child);
     }
   }
+  prepend(...nodes) {
+    const old = this.children;
+    this.children = [];
+    for (const child of old) child.parent = null;
+    this.append(...nodes, ...old);
+  }
   remove() { this.parent?.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; }
   contains(node) { for (let at = node; at; at = at.parent) if (at === this) return true; return false; }
   // 选择器只支持逗号分隔的列表，每项是 标签名 加任意个 .类（如 .row.entry、button、.a, .b），不支持后代、伪类。

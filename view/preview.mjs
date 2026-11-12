@@ -7,6 +7,8 @@ import { icon, iconFor } from './icons.mjs';
 import { languageOf } from './languages.mjs';
 import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, TEXT_LIMIT, imageType, mediaOf } from './protocol.mjs';
 import { clippedSelection, linesOf } from './selection.mjs';
+import { mayBeText, offersTextView } from './model3d.mjs';
+import { mountViewer } from './viewer3d.mjs';
 
 function fromBase64(data) {
   const binary = atob(data), bytes = new Uint8Array(binary.length);
@@ -65,7 +67,8 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // 选区为空、或裁到正文里之后为空时不接管，走系统默认。内容和行号在这里取好，交出去之后和选区无关。
 // media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
 // 不传 media 就一律走分块读取（直接挂载预览的测试用）。
-export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null }) {
+// 3D 模型（第 21 节）：mountModel 挂查看器（默认 viewer3d.mjs，测试可换）。gltf、obj、stl、ply 的内容是文本时头部有「3D / 文本」切换，文本走分块读取。
+export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null, mountModel = mountViewer }) {
   const name = h('div', { class: 'pname truncate' }), meta = h('div', { class: 'pmeta caption secondary truncate' }, ' ');
   const fileIcon = h('span', { class: 'pico', 'aria-hidden': 'true' });
   // 图标按钮：可访问名称和 Mac 的悬停提示都是 label；没有图标的退回文字。
@@ -73,10 +76,12 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const copyPath = () => path !== null && copy(path);
   const retryButton = h('button', { class: 'link', onclick: () => load(!changed), hidden: true }, '重试');
   const body = h('div', { class: 'pbody', tabindex: '-1' }); // 可聚焦：关查找条后焦点回正文
+  const modes = [['3d', '3D'], ['text', '文本']].map(([value, label]) => ({ value, button: h('button', { class: 'link', onclick: () => setMode(value) }, label) }));
+  const modeBar = h('div', { class: 'pmode', role: 'group', 'aria-label': '显示方式', hidden: true }, ...modes.map(({ button }) => button));
   let gutterEl = null;
   const find = createFind({ body, gutterWidth: () => gutterEl?.offsetWidth ?? 0 });
   const extra = actions.map(({ label, icon: glyph, run }) => { const button = action(label, glyph, () => path !== null && run(path, button)); return button; });
-  el.replaceChildren(h('div', { class: 'phead' }, ...(back ? [action('返回', 'back', back)] : []), fileIcon, h('div', { class: 'grow' }, name, meta), retryButton,
+  el.replaceChildren(h('div', { class: 'phead' }, ...(back ? [action('返回', 'back', back)] : []), fileIcon, h('div', { class: 'grow' }, name, meta), modeBar, retryButton,
     ...(copyInHead ? [action('复制路径', 'copy', copyPath)] : []), ...extra), find.el, body);
   find.done.addEventListener('click', () => { find.close(); body.focus(); });
   // 查找条的键盘：Esc 关（从查找条里关，焦点回正文；焦点在正文里，焦点留在正文）；⌘G、⇧⌘G 下一个、上一个。输入法组字中的按键不管，菜单消费掉的 Esc 不再处理。
@@ -111,12 +116,24 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const setMeta = (text, title = '') => { metaText = text; metaTitle = title; stale = null; changed = false; paintMeta(); };
   const setStale = reason => { stale = reason; paintMeta(); };
   let player = null; // 正在显示的音视频或图片元素
+  let viewer = null; // 正在显示的 3D 模型视图：revoke 释放它，stop 只停加载和动画
+  let mode = '3d', offersText = false; // 模型文件现在看 3D 还是文本；内容是文本的才有切换（换文件时都回到初始）
+  const paintMode = () => {
+    modeBar.hidden = !offersText;
+    for (const { value, button } of modes) button.setAttribute('aria-pressed', String(mode === value));
+  };
+  function setMode(next) {
+    if (path === null || mode === next) return;
+    mode = next;
+    paintMode();
+    load(false);
+  }
   const stopMedia = () => {
     if (!player) return;
     player.pause?.(); player.removeAttribute('src'); player.load?.();
     player = null;
   };
-  const revoke = () => { stopMedia(); if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
+  const revoke = () => { stopMedia(); viewer?.dispose(); viewer = null; if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
   const notice = (title, detail, action) => body.replaceChildren(h('div', { class: 'empty' },
     h('p', {}, title), detail ? h('p', { class: 'secondary' }, detail) : null,
     action ? h('button', { class: 'link', onclick: action.run }, action.label) : null));
@@ -166,7 +183,8 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
 
   function failure(error, silent, retry) {
     if (error.stale) return;
-    if (error.code === ErrorCode.NOT_FOUND) { shown = null; textShown = false; find.clearContent(); setMeta(' '); return notice('文件已不存在', path); }
+    // 文件没了（后台刷新发现）：先释放，正文被换掉后，播放中的音视频和 3D 的画布不能继续占着。
+    if (error.code === ErrorCode.NOT_FOUND) { revoke(); shown = null; textShown = false; find.clearContent(); setMeta(' '); return notice('文件已不存在', path); }
     if (silent && shown) return setStale(error.message); // 后台刷新失败：保留正文，提示原因
     textShown = false;
     find.clearContent(); // 整页重读失败：标记清掉，计数写「—」，之后再读成功就重新找
@@ -196,20 +214,36 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     el.src = `coda-view://service/media/${key}/${path.split('/').map(encodeURIComponent).join('/')}?v=${size}-${mtimeMs}`;
   }
 
-  // 媒体文件（按扩展名）：返回 true 表示已经处理（显示、提示或已作废），false 表示这个文件走分块读取（宿主没有流式服务时的图片）。
-  // 刷新不打断播放：音视频变了只在元信息行提示「文件已变化」，点「重载」才换；图片和提示页变了直接换。
+  // 3D 模型：查看器自己取字节、解析、渲染（第 21 节）。
+  function showModel({ token: key, size, mtimeMs }) {
+    revoke();
+    textShown = false; find.close(); pendingFind = null;
+    shown = { size, mtimeMs };
+    const parts = mediaMeta(size), title = `修改于 ${formatTime(mtimeMs)}`;
+    setMeta(line(parts), title);
+    const mine = viewer = mountModel({ body, token: key, path, size, version: `${size}-${mtimeMs}`, onMeta: extra => { if (viewer === mine) setMetaText(line([...parts, ...extra]), title); } });
+  }
+
+  // 媒体文件（按扩展名）：返回 true 表示已经处理（显示、提示或已作废），false 表示这个文件走分块读取（宿主没有流式服务时的图片和模型，模型选了看文本时）。
+  // 刷新不打断播放：音视频和模型变了只在元信息行提示「文件已变化」，点「重载」才换；图片和提示页变了直接换。
   async function loadMedia({ kind, preview }, silent, mark) {
+    if (kind === 'model' && mode === 'text') return false;
     const granted = await media(path);
     if (!mark()) return true;
     const { token: key, size, mtimeMs } = granted;
-    if (key === null && preview && kind === 'image') return false;
+    if (key === null && preview && (kind === 'image' || kind === 'model')) return false;
     if (silent && shown) {
       if (shown.size === size && shown.mtimeMs === mtimeMs) { changed = false; setStale(null); return true; }
-      if (player && kind !== 'image') { changed = true; paintMeta(); return true; }
+      if ((player && kind !== 'image') || (viewer && kind === 'model')) { changed = true; paintMeta(); return true; }
+    }
+    if (kind === 'model') { // 内容是不是文本，用模块现有的判断（读第一块）；不经查看器，没有 WebGL 的设备上文本模型也能切到文本看
+      const first = mayBeText(path) ? await read(path, 0) : null;
+      if (!mark()) return true; // 先核对作废，再动共享状态
+      offersText = first !== null && offersTextView(path, first.kind);
+      paintMode();
     }
     const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });
-    if (preview && key !== null) showMedia(kind, granted);
-    else {
+    if (preview && key !== null) { if (kind === 'model') showModel(granted); else showMedia(kind, granted); } else {
       revoke();
       textShown = false; find.close(); pendingFind = null;
       shown = { size, mtimeMs };
@@ -251,6 +285,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       settle(false);
       if (next !== path) find.close(); // 换了文件就关查找，不靠调用方先 stop()
       opens++;
+      if (next !== path) { mode = '3d'; offersText = false; paintMode(); } // 换了文件：回到 3D，切换等读到内容再决定有没有
       path = next;
       const base = next.split('/').pop();
       name.textContent = base;
@@ -265,7 +300,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     // 内容的来源变了（根目录换了位置）：旧正文不能留，也不能按元数据判断「没变」。
     reload() { find.close(); return path === null ? undefined : load(false); }, // 来源变了：查找也关
     // 停止（逻辑关闭，立即）：不再读、不再刷新，待恢复的位置结算；画面（正文、图片的 URL）留着，由 release 在退场结束时清掉。
-    stop() { settle(false); player?.pause?.(); token++; path = null; shown = null; textShown = false; find.close(); stoppedAt = opens; },
+    stop() { settle(false); player?.pause?.(); viewer?.cancel(); token++; path = null; shown = null; textShown = false; find.close(); stoppedAt = opens; },
     // 释放（画面）：停止之后又打开过就什么都不做。
     release() {
       if (stoppedAt !== opens) return; // 停止之后又打开过（打开次数变了）：这一屏是新的，不是退场的旧页

@@ -72,11 +72,16 @@ const MEDIA_TYPES = {
   png: ['image', 'image/png'], jpg: ['image', 'image/jpeg'], jpeg: ['image', 'image/jpeg'], gif: ['image', 'image/gif'], webp: ['image', 'image/webp'],
   svg: ['image', 'image/svg+xml'], avif: ['image', 'image/avif'], heic: ['image', 'image/heic'], heif: ['image', 'image/heif'],
   bmp: ['image', 'image/bmp'], tif: ['image', 'image/tiff'], tiff: ['image', 'image/tiff'],
+  // 3D 模型（第 21 节）：页面用 three.js 画，字节同样经流式服务取。
+  glb: ['model', 'model/gltf-binary'], gltf: ['model', 'model/gltf+json'], stl: ['model', 'model/stl'], obj: ['model', 'model/obj'],
+  ply: ['model', 'model/ply'], '3mf': ['model', 'model/3mf'],
 };
+// 模型的伴随文件：服务要供应（gltf 的 .bin、obj 的 .mtl），但页面不把它们当媒体预览（.mtl 仍是文本，.bin 仍是二进制）。
+const COMPANION_TYPES = { bin: 'application/octet-stream', mtl: 'text/plain; charset=utf-8' };
 // 查证过 Coda 播放器不支持的视频：按扩展名直接不预览，不读字节（mkv 容器不支持，avi 的 canPlayType 说 maybe 但实际报错）。
 const NO_PREVIEW = new Set(['mkv', 'avi']);
 
-// 按扩展名给出 { kind: 'audio' | 'video' | 'image', type, preview }；不是媒体文件返回 null。preview 为 false 的没有 type，不经服务。
+// 按扩展名给出 { kind: 'audio' | 'video' | 'image' | 'model', type, preview }；不是媒体文件返回 null。preview 为 false 的没有 type，不经服务。
 export function mediaOf(name) {
   const dot = String(name).lastIndexOf('.');
   if (dot < 0) return null;
@@ -84,6 +89,14 @@ export function mediaOf(name) {
   if (NO_PREVIEW.has(ext)) return { kind: 'video', type: null, preview: false };
   const entry = MEDIA_TYPES[ext];
   return entry ? { kind: entry[0], type: entry[1], preview: true } : null;
+}
+
+// 流式服务肯供应的文件的 MIME 类型：能预览的媒体加上模型的伴随文件；其余返回 null（服务回 415）。
+export function servedType(name) {
+  const media = mediaOf(name);
+  if (media) return media.preview ? media.type : null;
+  const dot = String(name).lastIndexOf('.');
+  return dot < 0 ? null : COMPANION_TYPES[name.slice(dot + 1).toLowerCase()] ?? null;
 }
 
 // 相对路径的规则只在这一处：模块（lib/paths.mjs）校验请求，页面恢复保存的 cwd 时用同一个函数。

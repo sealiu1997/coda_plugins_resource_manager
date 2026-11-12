@@ -165,3 +165,16 @@ test('换了根目录：旧元素暂停并撤掉地址（不再向服务要）',
   assert.ok(paused >= 1);
   assert.equal(el.src, '');
 });
+
+test('播放中文件被删（后台刷新发现）：先撤掉元素的地址再写「文件已不存在」，已缓冲的不会继续播', async t => {
+  const { page, host } = await start(t, { path: 'a.mp3', files: { 'a.mp3': { kind: 'binary', size: 10 } } });
+  const el = find(page, 'AUDIO');
+  let paused = 0;
+  el.pause = () => paused++;
+  delete host.files['a.mp3'];
+  host.changed();
+  await flush();
+  assert.ok(paused >= 1);
+  assert.equal(el.src, '');
+  assert.match(page.preview.textContent, /文件已不存在/);
+});

@@ -23,8 +23,10 @@ if (!dirA) { console.error('用法：node test/harness/server.mjs <目录A> [目
 const threads = { A: { checkout: { kind: 'worktree', state: 'ready', path: dirA } }, B: { checkout: { kind: 'worktree', state: 'ready', path: dirB } }, ...(dirW ? { W: { checkout: { kind: 'worktree', state: 'ready', path: dirW, projectId: 'project-w' } } } : {}) };
 const watchers = new Set(), views = new Set(), providers = new Map();
 const drafts = { A: { text: '', attachments: [], revision: 1 }, B: { text: '', attachments: [], revision: 1 }, W: { text: '', attachments: [], revision: 1 } };
+const services = new Map(); // 流式服务：模块登记的 handler，下面的 /service/<名字>/… 转给它
 activate({
   views: { register: (id, provider) => providers.set(id, provider) },
+  services: { register: (name, handler) => { services.set(name, handler); return { dispose: () => services.delete(name) }; } },
   api: async (path, body) => {
     if (path === 'agents') return { projects: dirW ? [{ id: 'project-w', name: nameW }] : [] }; // 项目列表（根目录标题的项目名从这里取）
     const session = draftSession(path);
@@ -71,6 +73,16 @@ const fire = (name, value) => (listeners[name] || []).forEach(f => f(value));
 const isFile = location.pathname.endsWith('/file.html');
 const key = 'harness-state:' + (isFile ? 'file:' : 'files') + (isFile ? query.get('session') + query.get('path') : '');
 const startArgs = isFile ? { session: query.get('session') ?? undefined, path: query.get('path') ?? undefined } : null;
+// 真实客户端的 coda-view://service/ 在浏览器里没有，这里改写成本机的 /service/（fetch、<img>、<audio>、<video> 的 src）。
+const rewrite = url => typeof url === 'string' ? url.replace('coda-view://service/', location.origin + '/service/') : url;
+const realFetch = window.fetch.bind(window);
+const RealRequest = window.Request; // three 的 FileLoader 先 new Request(url) 再 fetch，地址要在构造时改写
+window.Request = class extends RealRequest { constructor(input, init) { super(input instanceof RealRequest ? input : rewrite(String(input)), init); } };
+window.fetch = (input, init) => realFetch(input instanceof RealRequest ? input : rewrite(String(input)), init);
+for (const proto of [HTMLImageElement.prototype, HTMLMediaElement.prototype]) {
+  const { set, get } = Object.getOwnPropertyDescriptor(proto, 'src');
+  Object.defineProperty(proto, 'src', { configurable: true, get, set(value) { set.call(this, rewrite(value)); } });
+}
 window.coda = { platform: query.get('platform') || 'mac', plugin: 'resource-manager', view: isFile ? 'file' : 'files', args: startArgs,
   postMessage: message => opened.then(() => fetch('/rpc?id=' + connection, { method: 'POST', body: JSON.stringify(message) })).then(() => undefined),
   getState: () => JSON.parse(sessionStorage.getItem(key) || 'null'),
@@ -136,6 +148,13 @@ const server = createServer(async (req, res) => {
     if (kind === 'session') { session = value; for (const view of views) view.handlers.context?.({ session, args: null }); }
     if (kind === 'turn') { const id = url.searchParams.get('session') || session; emit(id, 't'); setTimeout(() => emit(id, null), 50); }
     return send(200, '');
+  }
+  if (url.pathname.startsWith('/service/')) {
+    const [, , name, ...rest] = url.pathname.split('/');
+    const handler = services.get(name);
+    if (!handler) return send(404, '');
+    req.url = `/${rest.join('/')}${url.search}`;
+    return handler(req, res);
   }
   if (url.pathname === '/shim.js') return send(200, shim, 'text/javascript');
   if (url.pathname.startsWith('/view/')) {
