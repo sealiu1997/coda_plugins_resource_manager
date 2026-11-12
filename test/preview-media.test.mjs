@@ -1,6 +1,7 @@
 // 预览里的音视频和图片（第 20 节）：真实的 file-app.mjs 和 preview.mjs，配假 DOM 和脚本化的假模块。
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { imageType } from '../view/protocol.mjs';
 import { flush } from './support/fake.mjs';
 import { open, start } from './support/filepage.mjs';
 
@@ -68,7 +69,7 @@ test('播放器或图片报错：兜底提示「这台设备放不了这种格�
 test('宿主没有流式服务（旧 Coda）：图片退回分块读取（blob），音视频不预览并说明', async t => {
   const image = await start(t, { path: 'logo.png', files: { 'logo.png': { kind: 'image', text: 'png', size: 3 } } }); // 先确认默认有服务
   assert.match(find(image.page, 'IMG').src, /^coda-view:/);
-  const files = { 'logo.png': { kind: 'image', text: 'png', size: 3 }, 'a.mp3': { kind: 'text', text: 'x', size: 3 }, 'b.avif': { kind: 'binary', size: 9 } };
+  const files = { 'logo.png': { kind: 'image', text: 'png', size: 3 }, 'a.mp3': { kind: 'text', text: 'x', size: 3 }, ...Object.fromEntries(['avif', 'heic', 'bmp', 'tiff'].map(ext => [`pic.${ext}`, { kind: imageType(`pic.${ext}`) ? 'image' : 'binary', size: 9 }])) }; // 假模块的类型取真实的类型表
   const noService = async path => {
     const ctx = await open(t, { path, files });
     ctx.host.service = false;
@@ -83,6 +84,12 @@ test('宿主没有流式服务（旧 Coda）：图片退回分块读取（blob�
   assert.equal(meta(page).textContent, '3 B');
 
   const audio = await noService('a.mp3');
+  for (const ext of ['avif', 'heic', 'bmp', 'tiff']) { // 新增的图片格式不在分块读取的类型表里：按二进制显示
+    const one = await noService(`pic.${ext}`);
+    assert.equal(reads(one.host).length, 1, ext);
+    assert.equal(find(one.page, 'IMG'), undefined, ext);
+    assert.match(one.page.preview.textContent, /二进制文件，不预览/, ext);
+  }
   assert.match(audio.page.preview.textContent, /这个版本的 Coda 不能预览音视频/);
   assert.equal(reads(audio.host).length, 0, '音视频不读字节');
   assert.equal(find(audio.page, 'AUDIO'), undefined);

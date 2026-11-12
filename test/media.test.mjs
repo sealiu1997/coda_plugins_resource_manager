@@ -18,6 +18,7 @@ async function serving(t) {
   await writeFile(join(root, 'empty.wav'), '');
   await writeFile(join(root, 'notes.txt'), 'x');
   await writeFile(join(root, 'old.mkv'), BODY);
+  await writeFile(join(root, 'old.avi'), BODY);
   await writeFile(join(base, 'secret.mp3'), 'SECRET');
   await symlink(join(base, 'secret.mp3'), join(root, 'leak.mp3'));
   await symlink('a.mp3', join(root, 'inner.mp3'));
@@ -115,6 +116,7 @@ test('路径：不是媒体扩展名、mkv、avi 415；越界（..、绝对路�
   const { get, url } = await serving(t);
   assert.equal((await get('notes.txt')).res.status, 415);
   assert.equal((await get('old.mkv')).res.status, 415, 'mkv 不经服务');
+  assert.equal((await get('old.avi')).res.status, 415, 'avi 不经服务');
   assert.equal((await get('..%2Fsecret.mp3')).res.status, 400);
   assert.equal((await get('sub%2F..%2F..%2Fsecret.mp3')).res.status, 400);
   const leak = await get('leak.mp3');

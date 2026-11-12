@@ -5,7 +5,9 @@ import { createServer } from 'node:http';
 import { join } from 'node:path';
 import test from 'node:test';
 import { activate } from '../main.mjs';
-import { checkoutOf, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
+import { createListing } from '../lib/tree.mjs';
+import { countingFs } from './support/countfs.mjs';
+import { checkoutOf, deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
 
 async function repo(t, name = 'repo') {
   const root = join(await tempDir(t), name);
@@ -142,4 +144,29 @@ test('宿主没有流式服务（旧 Coda）：media 只回大小和修改时间
   const throws = fakeCoda({ A: checkoutOf(root) });
   throws.coda.services.register = () => { throw new Error('同步抛出'); };
   assert.equal((await media(await started(throws, 'A'), 1, 'a.mp3')).token, null);
+});
+
+test('media 的 stat 进行中工作目录换了：回 no_root，没有发口令', async t => {
+  const rootA = await repo(t, 'A'), rootB = await repo(t, 'B');
+  const fake = fakeCoda({ S: checkoutOf(rootA) });
+  const gate = deferred(), entered = deferred();
+  const spy = countingFs({ hooks: { lstat: async (path, original) => {
+    if (path.endsWith('a.mp3')) { entered.resolve(); await gate.promise; }
+    return original(path);
+  } } });
+  activate(fake.coda, { makeListing: () => createListing({ fs: spy.fs }) });
+  const view = fake.open('S');
+  view.send({ type: 'hello' });
+  await waitFor(() => view.of('root').length > 0, 'root');
+  view.send({ type: 'media', generation: 1, requestId: 'slow', path: 'a.mp3' });
+  await entered.promise;
+  fake.threads.S = checkoutOf(rootB);
+  fake.emit('S', 'turn-1');
+  fake.emit('S', null);
+  await waitFor(() => view.lastRoot().path === rootB, '根目录换了');
+  gate.resolve();
+  const reply = await view.answer('slow');
+  assert.equal(reply.error.code, 'no_root');
+  assert.equal(reply.token, undefined, '没有发口令');
+  assert.equal((await media(view, 1, 'a.mp3')).error, undefined, '之后在新根目录照常领口令');
 });
