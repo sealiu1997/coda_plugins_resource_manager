@@ -1,7 +1,7 @@
 // view/format.mjs：大小、相对日期、完整日期、排序名称。日期都用本地时间构造，和时区、语言设置无关。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countText, dateText, dirSizeText, fileSizeText, formatDate, formatFullDate, formatSize, infoText, modeText, sizeText, sortName, subText, thousands } from '../view/format.mjs';
+import { countText, dateText, dirSizeText, fileSizeText, formatDate, formatDuration, formatFullDate, formatSize, infoText, modeText, sizeText, sortName, subText, thousands } from '../view/format.mjs';
 
 const at = (...parts) => new Date(...parts).getTime();
 
@@ -76,4 +76,8 @@ test('dirSizeText：完整、读不到、没统计完、目录正忙', () => {
 test('modeText：rwx 九位，setuid、setgid、sticky 照 ls', () => {
   assert.deepEqual([0o644, 0o755, 0o600, 0o777, 0o000].map(modeText), ['rw-r--r--', 'rwxr-xr-x', 'rw-------', 'rwxrwxrwx', '---------']);
   assert.deepEqual([0o4755, 0o4644, 0o2755, 0o2645, 0o1777, 0o1776].map(modeText), ['rwsr-xr-x', 'rwSr--r--', 'rwxr-sr-x', 'rw-r-Sr-x', 'rwxrwxrwt', 'rwxrwxrwT']);
+});
+
+test('formatDuration：不到一小时 m:ss，一小时以上 h:mm:ss，四舍五入到秒', () => {
+  assert.deepEqual([0, 5, 59.6, 187.4, 3599, 3600, 3725].map(formatDuration), ['0:00', '0:05', '1:00', '3:07', '59:59', '1:00:00', '1:02:05']);
 });

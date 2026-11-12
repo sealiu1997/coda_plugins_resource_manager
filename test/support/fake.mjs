@@ -37,11 +37,12 @@ export const checkoutOf = (path, state = 'ready', kind = 'worktree') => ({ check
 
 // threads[id] 可以是对象、返回对象或 Promise 的函数、或 Error。
 export function fakeCoda(threads = {}) {
-  const views = new Map(), watchers = new Set(), api = [];
+  const views = new Map(), watchers = new Set(), api = [], services = new Map();
   const fake = {
-    threads, api, views, disposed: 0,
+    threads, api, views, services, disposed: 0,
     coda: {
       views: { register: (id, provider) => views.set(id, provider) },
+      services: { register: async (name, handler) => { services.set(name, handler); } }, // 流式服务；测旧宿主时 delete fake.coda.services
       async api(path) {
         api.push(path);
         const value = threads[decodeURIComponent(path.replace(/^threads\//, ''))];

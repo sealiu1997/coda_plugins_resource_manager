@@ -19,16 +19,16 @@ export const SEARCH_RESULTS = 500;
 
 export const Type = Object.freeze({
   HELLO: 'hello', REFRESH: 'refresh', LIST: 'list', READ: 'read', STAT: 'stat', DIR_SIZE: 'dir_size', ADD_TEXT: 'add_text',
-  SEARCH: 'search',
+  SEARCH: 'search', MEDIA: 'media',
   DIR_SIZE_CANCEL: 'dir_size_cancel', SEARCH_CANCEL: 'search_cancel', // 没有回答
   SESSION: 'session', ROOT: 'root', CHANGED: 'changed',
-  LISTED: 'listed', CHUNK: 'chunk', STATTED: 'statted', SIZED: 'sized', ADDED: 'added', SEARCHED: 'searched',
+  LISTED: 'listed', CHUNK: 'chunk', STATTED: 'statted', SIZED: 'sized', ADDED: 'added', SEARCHED: 'searched', MEDIA_GRANTED: 'media_granted',
 });
 
 // 请求 → 回答的类型。模块回答、页面分发都查这一张。
 export const ReplyOf = Object.freeze({
   [Type.LIST]: Type.LISTED, [Type.READ]: Type.CHUNK, [Type.STAT]: Type.STATTED,
-  [Type.DIR_SIZE]: Type.SIZED, [Type.ADD_TEXT]: Type.ADDED, [Type.SEARCH]: Type.SEARCHED,
+  [Type.DIR_SIZE]: Type.SIZED, [Type.ADD_TEXT]: Type.ADDED, [Type.SEARCH]: Type.SEARCHED, [Type.MEDIA]: Type.MEDIA_GRANTED,
 });
 export const isReply = type => Object.values(ReplyOf).includes(type);
 
@@ -62,6 +62,28 @@ const IMAGE_TYPES = {
 export function imageType(name) {
   const dot = String(name).lastIndexOf('.');
   return dot < 0 ? null : IMAGE_TYPES[name.slice(dot + 1).toLowerCase()] ?? null;
+}
+
+// 音视频和图片走模块的本机流式服务（设计见 docs/design/phase-3.md 第 20 节）：扩展名 → [种类, MIME 类型]，页面决定怎么显示、模块决定服务哪些，都查这一张。
+const MEDIA_TYPES = {
+  mp3: ['audio', 'audio/mpeg'], m4a: ['audio', 'audio/mp4'], aac: ['audio', 'audio/aac'], wav: ['audio', 'audio/wav'], flac: ['audio', 'audio/flac'],
+  ogg: ['audio', 'audio/ogg'], opus: ['audio', 'audio/ogg'], aiff: ['audio', 'audio/aiff'], aif: ['audio', 'audio/aiff'], caf: ['audio', 'audio/x-caf'],
+  mp4: ['video', 'video/mp4'], m4v: ['video', 'video/x-m4v'], mov: ['video', 'video/quicktime'], webm: ['video', 'video/webm'],
+  png: ['image', 'image/png'], jpg: ['image', 'image/jpeg'], jpeg: ['image', 'image/jpeg'], gif: ['image', 'image/gif'], webp: ['image', 'image/webp'],
+  svg: ['image', 'image/svg+xml'], avif: ['image', 'image/avif'], heic: ['image', 'image/heic'], heif: ['image', 'image/heif'],
+  bmp: ['image', 'image/bmp'], tif: ['image', 'image/tiff'], tiff: ['image', 'image/tiff'],
+};
+// 查证过 Coda 播放器不支持的视频：按扩展名直接不预览，不读字节（mkv 容器不支持，avi 的 canPlayType 说 maybe 但实际报错）。
+const NO_PREVIEW = new Set(['mkv', 'avi']);
+
+// 按扩展名给出 { kind: 'audio' | 'video' | 'image', type, preview }；不是媒体文件返回 null。preview 为 false 的没有 type，不经服务。
+export function mediaOf(name) {
+  const dot = String(name).lastIndexOf('.');
+  if (dot < 0) return null;
+  const ext = name.slice(dot + 1).toLowerCase();
+  if (NO_PREVIEW.has(ext)) return { kind: 'video', type: null, preview: false };
+  const entry = MEDIA_TYPES[ext];
+  return entry ? { kind: entry[0], type: entry[1], preview: true } : null;
 }
 
 // 相对路径的规则只在这一处：模块（lib/paths.mjs）校验请求，页面恢复保存的 cwd 时用同一个函数。

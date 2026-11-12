@@ -4,10 +4,11 @@ import { createListing, listDirectory } from './lib/tree.mjs';
 import { readChunk } from './lib/content.mjs';
 import { addText } from './lib/draft.mjs';
 import { dirSize, statPath } from './lib/info.mjs';
+import { createMedia } from './lib/media.mjs';
 import { createSearcher } from './lib/search.mjs';
 import { NO_ROOT, queryRoot, sameRoot } from './lib/root.mjs';
 import {
-  ErrorCode, MESSAGE_LIMIT, REQUEST_ID_MAX, ReplyOf, RootState, Type, fail, messageSize,
+  EntryKind, ErrorCode, MESSAGE_LIMIT, REQUEST_ID_MAX, ReplyOf, RootState, Type, fail, messageSize,
 } from './view/protocol.mjs';
 
 const POLL_MS = 2000;
@@ -22,7 +23,10 @@ const sessionOfFile = context => {
 
 // options 只给测试用，运行时不传：makeListing 换成带假文件系统的读取状态；sizeLimits 调文件夹大小的项数、用时上限；searchLimits 调文件名搜索的条数、项数、用时、队列字节、回答字节上限。
 export function activate(coda, { makeListing = createListing, sizeLimits = {}, searchLimits = {} } = {}) {
-  const options = { makeListing, sizeLimits, searchLimits };
+  // 音视频和图片的本机流式服务，所有视图共用一个，口令按视图发。宿主没有这个接口（旧版本）或登记失败时 service.on 为假，页面退回分块读取。
+  const media = createMedia(), service = { on: true };
+  try { Promise.resolve(coda.services.register('media', media.handler)).catch(() => { service.on = false; }); } catch { service.on = false; }
+  const options = { makeListing, sizeLimits, searchLimits, media, service };
   coda.views.register('files', { open: view => serve(coda, view, sessionOfTree, options) });
   coda.views.register('file', { open: view => serve(coda, view, sessionOfFile, options) });
 }
@@ -30,7 +34,7 @@ export function activate(coda, { makeListing = createListing, sizeLimits = {}, s
 const validRequestId = id => (typeof id === 'string' && id.length <= REQUEST_ID_MAX) || Number.isSafeInteger(id);
 const errorOf = error => (error?.protocol ? { code: error.code, message: error.message } : { code: ErrorCode.IO, message: '读取失败' });
 
-function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits }) {
+function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits, media, service }) {
   // 代次：每换一次会话加 1，所有异步出口回来后都要核对。
   const s = {
     session: sessionOf(view.context), generation: 1, root: NO_ROOT, sent: null,
@@ -45,8 +49,10 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits })
   const stopSizing = () => { sizing?.abort.abort(); sizing = null; };
   // 文件名搜索：同样每个视图同时只有一次，槽、待启动位和排空屏障都在 lib/search.mjs 的 searcher 里。
   const searcher = createSearcher(s.listing, searchLimits);
-  // 换会话、根目录变化、视图关闭：读取状态丢弃，统计和搜索也停。
-  const resetReads = () => { s.listing.clear(); stopSizing(); searcher.clear(); };
+  // 媒体口令：这个视图第一次要放音视频或图片时发，映射到当时的根目录。
+  let token = null;
+  // 换会话、根目录变化、视图关闭：读取状态丢弃，统计和搜索也停，媒体口令作废。
+  const resetReads = () => { s.listing.clear(); stopSizing(); searcher.clear(); media.revoke(token); token = null; };
 
   function post(message) {
     if (s.closed) return;
@@ -119,6 +125,13 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits })
       } finally { if (sizing === mine) sizing = null; }
     },
     [Type.SEARCH]: (message, { root, valid, generation, requestId }) => searcher.search(message, { root, valid, generation, requestId }),
+    async [Type.MEDIA](message, { root, valid }) {
+      const info = await statPath(s.listing, root, message.path);
+      if (info.kind !== EntryKind.FILE) throw fail(ErrorCode.NOT_FILE, '不是文件');
+      if (!valid()) throw fail(ErrorCode.NO_ROOT, '工作目录已变化');
+      if (service.on) token ??= media.grant(root);
+      return { token, size: info.size, mtimeMs: info.mtimeMs }; // token 为 null：没有流式服务，页面退回分块读取
+    },
     async [Type.ADD_TEXT](message, { generation }) {
       if (!s.session) throw fail(ErrorCode.NO_ROOT, '没有会话');
       return await addText(coda, s.session, message, { valid: () => !stale(generation) }) ? {} : null;
@@ -164,7 +177,7 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits })
         if (stale(message.generation)) return undefined;
         s.listing.detach();
         return refreshRoot();
-      case Type.LIST: case Type.READ: case Type.STAT: case Type.DIR_SIZE: case Type.ADD_TEXT: case Type.SEARCH: return request(message);
+      case Type.LIST: case Type.READ: case Type.STAT: case Type.DIR_SIZE: case Type.ADD_TEXT: case Type.SEARCH: case Type.MEDIA: return request(message);
       case Type.DIR_SIZE_CANCEL: return cancelSizing(message);
       case Type.SEARCH_CANCEL: return cancelSearch(message);
     }

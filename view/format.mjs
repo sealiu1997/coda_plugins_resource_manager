@@ -11,6 +11,12 @@ export function formatSize(bytes) {
 
 const two = n => String(n).padStart(2, '0');
 
+// 音视频时长：3:07，不到一小时不写小时。
+export function formatDuration(seconds) {
+  const total = Math.round(seconds), hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60);
+  return hours > 0 ? `${hours}:${two(minutes)}:${two(total % 60)}` : `${minutes}:${two(total % 60)}`;
+}
+
 // 相对格式，按本地时间：今天 14:05，今年 11月4日，往年 2025年3月。
 export function formatDate(ms, now) {
   const date = new Date(ms), current = new Date(now);
