@@ -41,6 +41,7 @@ const press = mountPress({ consumed: menu.consumed }); // 按下反馈：刷新�
 const chat = createChat({ link: conn.link, copy: text => coda.copy(text), hint });
 const preview = mountPreview($('preview'), {
   read: (path, offset) => conn.link.call('read', { path, offset }), copy: text => coda.copy(text),
+  media: path => conn.link.call('media', { path }),
   selectionMenu: isIOS ? null : (event, selection) => menu.open(event, { items: chat.selectionItems(selection) }),
   consumed: menu.consumed,
 });

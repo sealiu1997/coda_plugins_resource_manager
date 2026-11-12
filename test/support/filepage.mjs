@@ -2,10 +2,10 @@
 import { loadFileApp } from './dom.mjs';
 import { flush } from './fake.mjs';
 
-// files：路径 → { kind, text, size?, mtimeMs? }；size 省略就是正文的字节数。
+// files：路径 → { kind, text, size?, mtimeMs? }；size 省略就是正文的字节数。host.service 为假时模拟宿主没有流式服务（media 回答的 token 是 null）。
 const timersOn = new WeakSet();
 export async function open(t, { path, files, platform = 'web', coda = {} }) {
-  const sent = [], copied = [], events = {}, host = { files, failRead: null, closed: 0, copied, events };
+  const sent = [], copied = [], events = {}, host = { files, failRead: null, closed: 0, copied, events, service: true };
   let generation = 0, page;
   const answer = request => {
     if (request.generation !== generation) return;
@@ -16,10 +16,17 @@ export async function open(t, { path, files, platform = 'web', coda = {} }) {
     const data = Buffer.from(file.text ?? '');
     page.post({ type: 'chunk', ...base, data: data.toString('base64'), offset: 0, size: file.size ?? data.length, mtimeMs: file.mtimeMs ?? 1, kind: file.kind ?? 'text', eof: true });
   };
+  const answerMedia = request => {
+    if (request.generation !== generation) return;
+    const base = { type: 'media_granted', generation, requestId: request.requestId };
+    const file = host.files[request.path];
+    if (!file) return page.post({ ...base, error: { code: 'not_found', message: '没有这个文件' } });
+    page.post({ ...base, token: host.service ? 'tok' : null, size: file.size ?? Buffer.byteLength(file.text ?? ''), mtimeMs: file.mtimeMs ?? 1 });
+  };
   if (!timersOn.has(t)) { timersOn.add(t); t.mock.timers.enable({ apis: ['setTimeout'] }); }
   page = await loadFileApp(t, {
     platform, args: { session: 's1', path },
-    postMessage: message => { sent.push(message); if (message.type === 'read') queueMicrotask(() => answer(message)); },
+    postMessage: message => { sent.push(message); if (message.type === 'read') queueMicrotask(() => answer(message)); else if (message.type === 'media') queueMicrotask(() => answerMedia(message)); },
     on: (name, fn) => { events[name] = fn; }, copy: text => copied.push(text), getState: () => undefined, setState: () => {},
     close: () => { host.closed++; }, ...coda,
   });

@@ -111,6 +111,7 @@ test('图片和二进制不受影响：即使名字是代码文件', async t => 
   const image = await start(t, { path: 'logo.png', files: { 'logo.png': { kind: 'image', text: 'png', size: 3 } } });
   assert.equal(meta(image.page).textContent, '3 B');
   assert.equal(image.page.preview.find(node => node.tagName === 'IMG').length, 1);
+  assert.match(image.page.preview.find(node => node.tagName === 'IMG')[0].src, /^coda-view:\/\/service\/media\/tok\/logo\.png/, '图片走流式服务');
 });
 
 // ---- 上色后选中文字加到聊天（Mac 窗口）----

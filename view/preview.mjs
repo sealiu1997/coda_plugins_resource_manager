@@ -1,11 +1,11 @@
 // 文件预览：只接收路径和读块的能力，不依赖树的状态。readFile 是纯逻辑；mountPreview 才碰 DOM。
 import { h } from './dom.mjs';
 import { createFind } from './find.mjs';
-import { formatSize } from './format.mjs';
+import { formatDuration, formatSize } from './format.mjs';
 import { HIGHLIGHT_LIMIT, appendAll, hasLongLine, highlight } from './highlight.mjs';
 import { icon, iconFor } from './icons.mjs';
 import { languageOf } from './languages.mjs';
-import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, TEXT_LIMIT, imageType } from './protocol.mjs';
+import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, TEXT_LIMIT, imageType, mediaOf } from './protocol.mjs';
 import { clippedSelection, linesOf } from './selection.mjs';
 
 function fromBase64(data) {
@@ -63,13 +63,15 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // 页面只负责入口：canFind（有显示着的文本才有）、openFind()（⌘F、iPhone 的「查找」菜单项）。consumed(event)：这个按键已经被菜单消费了（菜单开着时的 Esc）。
 // selectionMenu(event, { path, text, startLine, endLine })：给了就接管正文里选中文字的右键（只有 Mac 传）；预览不知道菜单里是什么。
 // 选区为空、或裁到正文里之后为空时不接管，走系统默认。内容和行号在这里取好，交出去之后和选区无关。
-export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false }) {
+// media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
+// 不传 media 就一律走分块读取（直接挂载预览的测试用）。
+export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null }) {
   const name = h('div', { class: 'pname truncate' }), meta = h('div', { class: 'pmeta caption secondary truncate' }, ' ');
   const fileIcon = h('span', { class: 'pico', 'aria-hidden': 'true' });
   // 图标按钮：可访问名称和 Mac 的悬停提示都是 label；没有图标的退回文字。
   const action = (label, glyph, run) => h('button', { class: glyph ? 'icon' : 'link', 'aria-label': label, title: label, onclick: run }, glyph ? icon(glyph, 18) : label);
   const copyPath = () => path !== null && copy(path);
-  const retryButton = h('button', { class: 'link', onclick: () => load(true), hidden: true }, '重试');
+  const retryButton = h('button', { class: 'link', onclick: () => load(!changed), hidden: true }, '重试');
   const body = h('div', { class: 'pbody', tabindex: '-1' }); // 可聚焦：关查找条后焦点回正文
   let gutterEl = null;
   const find = createFind({ body, gutterWidth: () => gutterEl?.offsetWidth ?? 0 });
@@ -97,17 +99,24 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   let opens = 0, stoppedAt = -1; // 打开次数和上一次停止时的次数：释放只在停止之后没有再打开过时才做（返回的退场还没结束又打开了）
   let carry = null; // 待恢复的位置 { scroll, settle }：open 带进来，读取真正用上或作废后才清
   const settle = used => { const c = carry; carry = null; c?.settle(used); };
-  let metaText = ' ', metaTitle = '', stale = null; // stale：后台刷新失败的原因，此时正文还是上次的
-  // 更新失败的提示占用元信息那一行，重试按钮在头部，所以正文不会被顶动。
+  let metaText = ' ', metaTitle = '', stale = null, changed = false; // stale：后台刷新失败的原因，此时正文还是上次的；changed：正在播放的文件变了，等用户点「重载」
+  // 更新失败和文件已变化的提示占用元信息那一行，重试（重载）按钮在头部，所以正文不会被顶动。
   const paintMeta = () => {
-    meta.textContent = stale ? `更新失败：${stale}` : metaText;
-    meta.title = stale ?? metaTitle;
-    meta.classList.toggle('warn', stale !== null);
-    retryButton.hidden = stale === null;
+    meta.textContent = stale ? `更新失败：${stale}` : changed ? '文件已变化' : metaText;
+    meta.title = stale ?? (changed ? '点「重载」按新内容重新播放' : metaTitle);
+    meta.classList.toggle('warn', stale !== null || changed);
+    retryButton.hidden = stale === null && !changed;
+    retryButton.textContent = !stale && changed ? '重载' : '重试';
   };
-  const setMeta = (text, title = '') => { metaText = text; metaTitle = title; stale = null; paintMeta(); };
+  const setMeta = (text, title = '') => { metaText = text; metaTitle = title; stale = null; changed = false; paintMeta(); };
   const setStale = reason => { stale = reason; paintMeta(); };
-  const revoke = () => { if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
+  let player = null; // 正在显示的音视频或图片元素
+  const stopMedia = () => {
+    if (!player) return;
+    player.pause?.(); player.removeAttribute('src'); player.load?.();
+    player = null;
+  };
+  const revoke = () => { stopMedia(); if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
   const notice = (title, detail, action) => body.replaceChildren(h('div', { class: 'empty' },
     h('p', {}, title), detail ? h('p', { class: 'secondary' }, detail) : null,
     action ? h('button', { class: 'link', onclick: action.run }, action.label) : null));
@@ -164,11 +173,61 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     notice('读不到这个文件', error.message, { label: '重试', run: retry });
   }
 
+  const mediaMeta = size => [path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '', formatSize(size)];
+  const line = parts => parts.filter(Boolean).join(' · ');
+  const setMetaText = (text, title) => { metaText = text; metaTitle = title; paintMeta(); }; // 只换文字（时长到了），不清更新失败和文件已变化的提示
+  const unplayable = (size, mtimeMs, title) => {
+    stopMedia();
+    notice(title, `${formatSize(size)}，修改于 ${formatTime(mtimeMs)}`);
+  };
+
+  // 图片和音视频：地址指向模块的流式服务，元素自己按需取，不经分块读取（第 20 节）。
+  function showMedia(kind, { token: key, size, mtimeMs }) {
+    revoke();
+    textShown = false; find.close(); pendingFind = null;
+    shown = { size, mtimeMs };
+    const parts = mediaMeta(size), title = `修改于 ${formatTime(mtimeMs)}`;
+    setMeta(line(parts), title);
+    const el = kind === 'image' ? h('img', { alt: path, draggable: 'false' }) : h(kind, { controls: '', playsinline: '', preload: 'metadata' });
+    el.addEventListener('error', () => { if (player === el) unplayable(size, mtimeMs, '这台设备放不了这种格式'); });
+    if (kind !== 'image') el.addEventListener('loadedmetadata', () => { if (player === el && Number.isFinite(el.duration)) setMetaText(line([...parts, formatDuration(el.duration)]), title); });
+    player = el;
+    body.replaceChildren(h('div', { class: kind === 'image' ? 'image' : 'media' }, el));
+    el.src = `coda-view://service/media/${key}/${path.split('/').map(encodeURIComponent).join('/')}?v=${size}-${mtimeMs}`;
+  }
+
+  // 媒体文件（按扩展名）：返回 true 表示已经处理（显示、提示或已作废），false 表示这个文件走分块读取（宿主没有流式服务时的图片）。
+  // 刷新不打断播放：音视频变了只在元信息行提示「文件已变化」，点「重载」才换；图片和提示页变了直接换。
+  async function loadMedia({ kind, preview }, silent, mark) {
+    const granted = await media(path);
+    if (!mark()) return true;
+    const { token: key, size, mtimeMs } = granted;
+    if (key === null && preview && kind === 'image') return false;
+    if (silent && shown) {
+      if (shown.size === size && shown.mtimeMs === mtimeMs) { changed = false; setStale(null); return true; }
+      if (player && kind !== 'image') { changed = true; paintMeta(); return true; }
+    }
+    const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });
+    if (preview && key !== null) showMedia(kind, granted);
+    else {
+      revoke();
+      textShown = false; find.close(); pendingFind = null;
+      shown = { size, mtimeMs };
+      setMeta(line(mediaMeta(size)), `修改于 ${formatTime(mtimeMs)}`);
+      unplayable(size, mtimeMs, preview ? '这个版本的 Coda 不能预览音视频' : '这种格式不能预览');
+    }
+    body.scrollTop = keep.top; body.scrollLeft = keep.left;
+    settle(true);
+    return true;
+  }
+
   // silent：刷新。没变化不重画；变了就换内容，并尽量留在原来的滚动位置；有待恢复的位置时用它。
   async function load(silent) {
     const mine = ++token, mark = () => mine === token;
     if (!silent) { shown = null; textShown = false; find.clearContent(); setMeta('读取中…'); revoke(); body.replaceChildren(); }
     try {
+      const kind = media && mediaOf(path);
+      if (kind && await loadMedia(kind, silent, mark)) return;
       const result = await readFile(offset => read(path, offset), {
         prev: silent ? shown : null, cancelled: () => !mark(),
         onProgress: (got, total) => { if (mark() && !silent && total > TEXT_LIMIT / 4) setMeta(`读取中 ${formatSize(got)} / ${formatSize(total)}`); },
@@ -206,7 +265,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     // 内容的来源变了（根目录换了位置）：旧正文不能留，也不能按元数据判断「没变」。
     reload() { find.close(); return path === null ? undefined : load(false); }, // 来源变了：查找也关
     // 停止（逻辑关闭，立即）：不再读、不再刷新，待恢复的位置结算；画面（正文、图片的 URL）留着，由 release 在退场结束时清掉。
-    stop() { settle(false); token++; path = null; shown = null; textShown = false; find.close(); stoppedAt = opens; },
+    stop() { settle(false); player?.pause?.(); token++; path = null; shown = null; textShown = false; find.close(); stoppedAt = opens; },
     // 释放（画面）：停止之后又打开过就什么都不做。
     release() {
       if (stoppedAt !== opens) return; // 停止之后又打开过（打开次数变了）：这一屏是新的，不是退场的旧页

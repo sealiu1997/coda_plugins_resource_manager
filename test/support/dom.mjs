@@ -64,6 +64,10 @@ export class Element extends Emitter {
 
   setAttribute(name, value) { if (name === 'class') this.className = value; else this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); }
+  // 音视频和图片的 src：同浏览器，属性和属性值是同一个。
+  get src() { return this.attributes.get('src') ?? ''; }
+  set src(value) { this.attributes.set('src', String(value)); }
 
   // 焦点：和浏览器一样，聚焦的元素被摘掉后 activeElement 回到没有。
   focus() { if (!this.inert) globalThis.document.activeElement = this; }
