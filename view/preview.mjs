@@ -183,9 +183,9 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
 
   function failure(error, silent, retry) {
     if (error.stale) return;
+    // 文件没了（后台刷新发现）：先释放，正文被换掉后，播放中的音视频和 3D 的画布不能继续占着。
     if (error.code === ErrorCode.NOT_FOUND) { revoke(); shown = null; textShown = false; find.clearContent(); setMeta(' '); return notice('文件已不存在', path); }
     if (silent && shown) return setStale(error.message); // 后台刷新失败：保留正文，提示原因
-    revoke(); // 要换掉正文了：先停播放、释放 3D，不然它们会继续占着
     textShown = false;
     find.clearContent(); // 整页重读失败：标记清掉，计数写「—」，之后再读成功就重新找
     notice('读不到这个文件', error.message, { label: '重试', run: retry });

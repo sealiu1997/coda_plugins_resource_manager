@@ -344,12 +344,23 @@ test('没有动画：没有播放控件', async t => {
   assert.equal(ctx.find(n => n.classList.contains('mbar'))[0].hidden, true);
 });
 
-test('动画释放：混合器停掉，释放后没有排着的帧', async t => {
+test('动画释放：混合器停掉并撤掉缓存的根，释放后没有排着的帧', async t => {
+  const original = REAL.AnimationMixer.prototype.uncacheRoot;
+  const uncached = [];
+  REAL.AnimationMixer.prototype.uncacheRoot = function uncacheRoot(root) { uncached.push(root === this.getRoot()); return original.call(this, root); };
+  t.after(() => { REAL.AnimationMixer.prototype.uncacheRoot = original; });
   const ctx = setup(t, { clips: 1 });
   await flush();
   ctx.viewer.dispose();
+  assert.deepEqual(uncached, [true]);
   assert.equal(ctx.frames.size, 0);
   assert.equal(renderer(ctx).counts.dispose, 1);
+});
+
+test('渲染器创建失败时元信息不报面数', async t => {
+  const ctx = setup(t, { failRenderer: true });
+  await flush();
+  assert.deepEqual(ctx.calls.metas, []);
 });
 
 test('渲染中途出错（贴图晚到后上传失败）：写「渲染出错」并释放，不再排帧', async t => {

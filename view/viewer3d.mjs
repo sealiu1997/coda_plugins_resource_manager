@@ -60,7 +60,7 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     stopFrame();
     held.observer?.disconnect();
     held.controls?.dispose();
-    if (held.mixer && held.wrapper) { held.mixer.stopAllAction(); held.mixer.uncacheRoot(held.wrapper); }
+    if (held.mixer) { held.mixer.stopAllAction(); held.mixer.uncacheRoot(held.mixer.getRoot()); }
     held.envTarget?.dispose();
     if (held.wrapper) disposeObject(held.wrapper);
     held.renderer?.dispose();
@@ -139,7 +139,6 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     if (box.isEmpty()) throw new Friendly('模型里没有可显示的几何体');
     const stats = measure(wrapper);
     const clips = parsed.animations;
-    onMeta([stats.triangles > 0 || stats.points === 0 ? `${count(stats.triangles)} 面` : `${count(stats.points)} 个点`, clips.length ? `${clips.length} 段动画` : '']);
 
     const canvas = h('canvas', { class: 'mcanvas' });
     held.canvas = canvas;
@@ -239,6 +238,7 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     manager.onLoad = () => requestRender(); // 贴图晚到（obj 的 mtl 里的贴图）：到了就重画
 
     renderer.render(scene, camera);
+    onMeta([stats.triangles > 0 || stats.points === 0 ? `${count(stats.triangles)} 面` : `${count(stats.points)} 个点`, clips.length ? `${clips.length} 段动画` : '']);
     status.hidden = true;
     resetButton.hidden = false;
     resetButton.addEventListener('click', () => { fit(); requestRender(); });
