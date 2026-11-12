@@ -53,11 +53,12 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
   let dead = false, disposed = false, gate = null, playback = null, requestRender = () => {}, sync = () => {};
   const held = { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, frame: 0, mixer: null, envTarget: null, manager: null };
   const stopFrame = () => { if (held.frame) caf(held.frame); held.frame = 0; };
-  // dead：停止（cancel）或失败（release）之后的终态，所有绘制入口都不再排帧；停止时画面留着，只是不再画。
-  const onVisibility = () => { if (dead) return; playback?.setVisible(!document.hidden); sync(); if (!document.hidden) requestRender(); };
+  // dead：停止（cancel）或失败（release）之后的终态：requestRender 和帧不再排帧（停止时画面留着，只是不再画），playback 也停了，其余入口（可见性、sync）自然落空。
+  const onVisibility = () => { playback?.setVisible(!document.hidden); sync(); if (!document.hidden) requestRender(); };
   document.addEventListener('visibilitychange', onVisibility);
   const release = () => {
     dead = true;
+    playback?.stop();
     if (held.manager) held.manager.onLoad = undefined;
     document.removeEventListener('visibilitychange', onVisibility);
     stopFrame();
@@ -216,7 +217,7 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     };
     requestRender = () => { if (!held.frame && !dead) held.frame = raf(frame); };
     sync = () => {
-      if (!dead && playback.running) { if (!held.frame) { last = now(); held.frame = raf(frame); } } else stopFrame();
+      if (playback.running) { if (!held.frame) { last = now(); held.frame = raf(frame); } } else stopFrame();
     };
     if (clips.length) {
       held.mixer = new THREE.AnimationMixer(parsed.object);
