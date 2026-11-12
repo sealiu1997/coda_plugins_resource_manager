@@ -59,7 +59,7 @@ function setup(t, { path = 'm/a.glb', size = 10, clips = 0, reduced = false, web
   const modules = {
     'controls/OrbitControls': { OrbitControls: Controls },
     'environments/RoomEnvironment': { RoomEnvironment: class { constructor() { calls.rooms++; } dispose() { this.gone = true; } } },
-    'loaders/GLTFLoader': { GLTFLoader: class { parse(data, base, ok, no) { calls.parse++; calls.base = base; if (parse) return parse(data, base, ok, no); ok({ scene: made.scene, animations: made.animations }); } } },
+    'loaders/GLTFLoader': { GLTFLoader: class { constructor(manager) { calls.manager = manager; } parse(data, base, ok, no) { calls.parse++; calls.base = base; if (parse) return parse(data, base, ok, no); ok({ scene: made.scene, animations: made.animations }); } } },
     ...extraModules,
   };
   const engine = { three: async () => { calls.imports.push('three'); return THREE; }, module: async name => { calls.imports.push(name); return modules[name]; } };
@@ -244,6 +244,7 @@ test('解析失败：写原因；损坏的 glb 写文件被截断；用了 Draco
   assert.match(parseFail.status().textContent, /模型解析失败/);
   assert.match(parseFail.status().textContent, /bad accessor/);
   assert.equal(parseFail.calls.renderers.length, 0);
+  assert.equal(parseFail.globals.doc.listeners.size, 0, 'visibilitychange 监听撤掉');
 
   const truncated = glbBytes();
   const cut = truncated.slice(0, truncated.byteLength - 4);
@@ -262,6 +263,33 @@ test('解析失败：写原因；损坏的 glb 写文件被截断；用了 Draco
   assert.match(draco.status().textContent, /这种压缩的模型不能预览/);
   assert.match(draco.status().textContent, /KHR_draco_mesh_compression/);
   assert.equal(draco.calls.parse, 0);
+});
+
+test('解析到一半失败（已经建出几何体、材质、贴图）：这些都 dispose，监听撤掉，迟到的回调不画、不抛错', async t => {
+  const geometry = new REAL.BufferGeometry(), texture = new REAL.Texture(), material = new REAL.MeshBasicMaterial({ map: texture });
+  const disposed = { geometry: 0, material: 0, texture: 0 }, mtlMaterial = new REAL.MeshBasicMaterial({ map: new REAL.Texture() });
+  geometry.dispose = () => disposed.geometry++; material.dispose = () => disposed.material++; texture.dispose = () => disposed.texture++;
+  let mtlDisposed = 0, mtlTextureDisposed = 0;
+  mtlMaterial.dispose = () => mtlDisposed++; mtlMaterial.map.dispose = () => mtlTextureDisposed++;
+  geometry.computeVertexNormals = () => { throw new Error('bad normals'); }; // 模型建出来了，后处理时失败
+  let manager;
+  const modules = {
+    'loaders/OBJLoader': { OBJLoader: class { constructor(m) { manager = m; } setMaterials() {} parse() { const group = new REAL.Group(); group.add(new REAL.Mesh(geometry, material)); return group; } } },
+    'loaders/MTLLoader': { MTLLoader: class { parse() { return { preload() {}, materials: { a: mtlMaterial } }; } } },
+  };
+  const ctx = setup(t, { path: 'a.obj', clips: 0, extraModules: modules, fetchResult: url => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => new TextEncoder().encode(url.includes('.mtl') ? 'newmtl a' : 'mtllib a.mtl\nv 0 0 0\n').buffer }) });
+  await flush();
+  assert.match(ctx.status().textContent, /模型解析失败/);
+  assert.match(ctx.status().textContent, /bad normals/);
+  assert.deepEqual(disposed, { geometry: 1, material: 1, texture: 1 });
+  assert.deepEqual([mtlDisposed, mtlTextureDisposed], [1, 1], '.mtl 建的材质和贴图也释放');
+  assert.equal(ctx.calls.renderers.length, 0);
+  assert.equal(ctx.globals.doc.listeners.size, 0);
+  const rendersBefore = ctx.calls.renders;
+  manager.onLoad?.(); // 迟到的加载完成回调
+  ctx.globals.doc.show(false);
+  assert.equal(ctx.frames.size, 0);
+  assert.equal(ctx.calls.renders, rendersBefore);
 });
 
 test('空模型：没有可显示的几何体', async t => {
@@ -363,6 +391,40 @@ test('渲染器创建失败时元信息不报面数', async t => {
   assert.deepEqual(ctx.calls.metas, []);
 });
 
+test('停止（cancel）之后：可见性变化、尺寸变化、控件变化都不再画，画面还在', async t => {
+  const ctx = setup(t, { clips: 1 });
+  await flush();
+  ctx.viewer.cancel();
+  const rendersBefore = ctx.calls.renders;
+  ctx.globals.doc.show(true);
+  ctx.globals.doc.show(false);
+  ctx.globals.observers[0].fn();
+  ctx.calls.controls[0].listeners.change();
+  ctx.calls.manager.onLoad?.();
+  assert.equal(ctx.frames.size, 0);
+  ctx.pump();
+  assert.equal(ctx.calls.renders, rendersBefore);
+  assert.equal(renderer(ctx).counts.dispose, 0, '停止不清画面');
+  assert.ok(ctx.find(n => n.tagName === 'CANVAS')[0]);
+});
+
+test('渲染出错并释放之后：迟到的 manager.onLoad 不排帧、不抛错（带动画）；可见性变化也不画', async t => {
+  const ctx = setup(t, { clips: 1 });
+  await flush();
+  const late = ctx.calls.manager.onLoad;
+  assert.equal(typeof late, 'function');
+  renderer(ctx).failRender = 'tainted texture';
+  ctx.pump();
+  assert.match(ctx.status().textContent, /渲染出错/);
+  assert.equal(ctx.calls.manager.onLoad, undefined, '出错时断开');
+  const rendersBefore = ctx.calls.renders;
+  assert.doesNotThrow(() => late());
+  ctx.globals.doc.show(false);
+  assert.equal(ctx.frames.size, 0);
+  ctx.pump();
+  assert.equal(ctx.calls.renders, rendersBefore);
+});
+
 test('渲染中途出错（贴图晚到后上传失败）：写「渲染出错」并释放，不再排帧', async t => {
   const ctx = setup(t, { clips: 1 });
   await flush();
@@ -422,4 +484,19 @@ test('点云：没有面的写点数', async t => {
   const ctx = setup(t, { path: 'c.ply', extraModules: modules });
   await flush();
   assert.deepEqual(ctx.calls.metas, [['3 个点', '']]);
+});
+
+// 三个顶点、一个三角面、面级 texcoord 的 ASCII PLY：PLYLoader 把它展开成没有索引的三角形，不能当点云。
+test('PLY：按头里的面数判断点云；带面级 texcoord 的 PLY 是网格，写 1 面', async t => {
+  const { PLYLoader } = await import('../view/vendor/three/jsm/loaders/PLYLoader.mjs');
+  const modules = { 'loaders/PLYLoader': { PLYLoader } };
+  const ply = body => new TextEncoder().encode(body).buffer;
+  const withFace = 'ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_indices\nproperty list uchar float texcoord\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2 6 0 0 1 0 0 1\n';
+  const mesh = setup(t, { path: 'f.ply', extraModules: modules, fetchResult: () => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => ply(withFace) }) });
+  await flush();
+  assert.deepEqual(mesh.calls.metas, [['1 面', '']]);
+  const cloud = 'ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nend_header\n0 0 0\n1 0 0\n0 1 0\n';
+  const points = setup(t, { path: 'c.ply', extraModules: modules, fetchResult: () => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => ply(cloud) }) });
+  await flush();
+  assert.deepEqual(points.calls.metas, [['3 个点', '']]);
 });

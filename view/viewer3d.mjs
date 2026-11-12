@@ -4,7 +4,7 @@
 // 释放登记在 held 里，建一个登记一个，中途失败、中途切走也释放得干净。
 import { h } from './dom.mjs';
 import { formatSize } from './format.mjs';
-import { BIG_FILE, Z_UP, createPlayback, directoryUrl, extensionOf, gltfJson, joinRelative, mtllibOf, serviceUrl, unsupportedExtensions } from './model3d.mjs';
+import { BIG_FILE, Z_UP, createPlayback, directoryUrl, extensionOf, gltfJson, joinRelative, mtllibOf, plyFaceCount, serviceUrl, unsupportedExtensions } from './model3d.mjs';
 
 const VENDOR = './vendor/three';
 
@@ -51,11 +51,14 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
 
   const abort = new AbortController();
   let dead = false, disposed = false, gate = null, playback = null, requestRender = () => {}, sync = () => {};
-  const held = { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, frame: 0, mixer: null, envTarget: null };
+  const held = { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, frame: 0, mixer: null, envTarget: null, manager: null };
   const stopFrame = () => { if (held.frame) caf(held.frame); held.frame = 0; };
-  const onVisibility = () => { playback?.setVisible(!document.hidden); sync(); if (!document.hidden) requestRender(); };
+  // dead：停止（cancel）或失败（release）之后的终态，所有绘制入口都不再排帧；停止时画面留着，只是不再画。
+  const onVisibility = () => { if (dead) return; playback?.setVisible(!document.hidden); sync(); if (!document.hidden) requestRender(); };
   document.addEventListener('visibilitychange', onVisibility);
   const release = () => {
+    dead = true;
+    if (held.manager) held.manager.onLoad = undefined;
     document.removeEventListener('visibilitychange', onVisibility);
     stopFrame();
     held.observer?.disconnect();
@@ -66,7 +69,7 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     held.renderer?.dispose();
     held.renderer?.forceContextLoss();
     if (held.canvas) { held.canvas.width = held.canvas.height = 0; held.canvas.remove(); } // 连画布的后备存储一起还掉（iOS 上不还会攒着）
-    Object.assign(held, { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, mixer: null, envTarget: null });
+    Object.assign(held, { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, mixer: null, envTarget: null, manager: null });
   };
   const say = (text, ...extra) => { status.hidden = false; status.replaceChildren(h('p', {}, text), ...extra.filter(Boolean)); }; // 真 DOM 的 replaceChildren 会把 null 变成文字「null」
   const fail = (title, detail) => {
@@ -201,7 +204,7 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     };
     const frame = () => {
       held.frame = 0;
-      if (disposed) return;
+      if (dead) return;
       const t = now();
       if (playback.running) { held.mixer.update((t - last) / 1000); last = t; }
       try { renderer.render(scene, camera); } catch (error) {
@@ -211,9 +214,9 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
       }
       if (playback.running) held.frame = raf(frame);
     };
-    requestRender = () => { if (!held.frame && !disposed) held.frame = raf(frame); };
+    requestRender = () => { if (!held.frame && !dead) held.frame = raf(frame); };
     sync = () => {
-      if (playback.running) { if (!held.frame) { last = now(); held.frame = raf(frame); } } else stopFrame();
+      if (!dead && playback.running) { if (!held.frame) { last = now(); held.frame = raf(frame); } } else stopFrame();
     };
     if (clips.length) {
       held.mixer = new THREE.AnimationMixer(parsed.object);
@@ -231,10 +234,11 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     held.observer.observe(stage);
     canvas.addEventListener('webglcontextlost', event => {
       event.preventDefault();
-      if (disposed) return;
+      if (dead) return;
       release();
       fail('WebGL 上下文丢失', '系统收回了显卡资源（可能同时开了太多 3D 页面），关掉再打开');
     });
+    held.manager = manager;
     manager.onLoad = () => requestRender(); // 贴图晚到（obj 的 mtl 里的贴图）：到了就重画
 
     renderer.render(scene, camera);
@@ -293,7 +297,7 @@ async function parseModel({ THREE, engine, manager, bytes, ext, token, path, dow
     const { PLYLoader } = await engine.module('loaders/PLYLoader');
     const geometry = new PLYLoader(manager).parse(exact(bytes));
     const colored = !!geometry.getAttribute('color');
-    if (!geometry.index) { // 没有面：点云
+    if (plyFaceCount(bytes) === 0) { // 头里没有面：点云。不能看 geometry.index：带面级 texcoord 的 PLY 会被展开成没有索引的三角形
       return done(new THREE.Points(geometry, new THREE.PointsMaterial({ size: 1, sizeAttenuation: false, vertexColors: colored, color: colored ? 0xffffff : 0xb8bcc4 })));
     }
     if (!geometry.getAttribute('normal')) geometry.computeVertexNormals();
@@ -305,25 +309,32 @@ async function parseModel({ THREE, engine, manager, bytes, ext, token, path, dow
     const { OBJLoader } = await engine.module('loaders/OBJLoader');
     const text = new TextDecoder().decode(bytes);
     const loader = new OBJLoader(manager);
-    let withMaterials = false;
+    let withMaterials = false, creator = null;
     const mtlName = mtllibOf(text);
     const mtlPath = mtlName && joinRelative(path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '', mtlName);
     if (mtlPath) { // 找不到 .mtl（或指向工作目录外）就用中性灰，不当错误
       try {
         const mtl = await download(serviceUrl(token, mtlPath), mtlPath);
         const { MTLLoader } = await engine.module('loaders/MTLLoader');
-        const creator = new MTLLoader(manager).parse(new TextDecoder().decode(mtl), directoryUrl(token, mtlPath));
+        creator = new MTLLoader(manager).parse(new TextDecoder().decode(mtl), directoryUrl(token, mtlPath));
         creator.preload();
         loader.setMaterials(creator);
         withMaterials = true;
       } catch (error) { if (error?.name === 'AbortError') throw error; }
     }
-    const object = loader.parse(text);
-    object.traverse(o => {
-      if (!o.isMesh) return;
-      if (!withMaterials) o.material = neutral();
-      if (!o.geometry.getAttribute('normal')) o.geometry.computeVertexNormals();
-    });
+    let object;
+    try {
+      object = loader.parse(text);
+      object.traverse(o => {
+        if (!o.isMesh) return;
+        if (!withMaterials) o.material = neutral();
+        if (!o.geometry.getAttribute('normal')) o.geometry.computeVertexNormals();
+      });
+    } catch (error) { // 解析到一半失败：已经建出来的材质、贴图和几何体不留着
+      if (object) disposeObject(object);
+      for (const material of Object.values(creator?.materials ?? {})) disposeMaterial(material);
+      throw error;
+    }
     return done(object);
   }
   if (ext === '3mf') {
@@ -351,10 +362,10 @@ function disposeObject(root) {
   root.traverse(o => {
     o.geometry?.dispose();
     o.skeleton?.dispose?.();
-    for (const m of [o.material].flat()) {
-      if (!m) continue;
-      for (const value of Object.values(m)) if (value?.isTexture) { value.dispose(); value.image?.close?.(); }
-      m.dispose();
-    }
+    for (const m of [o.material].flat()) if (m) disposeMaterial(m);
   });
+}
+function disposeMaterial(m) {
+  for (const value of Object.values(m)) if (value?.isTexture) { value.dispose(); value.image?.close?.(); }
+  m.dispose();
 }

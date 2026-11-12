@@ -1,7 +1,7 @@
 // 3D 预览里不碰 DOM、不碰 three 的部分（第 21 节）：地址、glb 头和压缩扩展检测、mtllib、相对路径、文本切换的条件、动画的播放状态。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BIG_FILE, Z_UP, createPlayback, directoryUrl, extensionOf, gltfJson, joinRelative, mayBeText, mtllibOf, offersTextView, serviceUrl, unsupportedExtensions } from '../view/model3d.mjs';
+import { BIG_FILE, Z_UP, createPlayback, directoryUrl, extensionOf, gltfJson, joinRelative, mayBeText, mtllibOf, offersTextView, plyFaceCount, serviceUrl, unsupportedExtensions } from '../view/model3d.mjs';
 
 function glb(json, { magic = 0x46546c67, type = 0x4e4f534a, claim } = {}) {
   const text = Buffer.from(JSON.stringify(json));
@@ -104,4 +104,14 @@ test('减弱动态效果：不自动播放；用户点播放或选段才播', ()
   const q = createPlayback({ clips: 2, reducedMotion: true });
   q.select(1);
   assert.deepEqual([q.clip, q.running], [1, true]);
+});
+
+test('PLY 头里的面数：ASCII 和二进制都读；没有面、没有头结束行、头里的 element face 不算数据区的', () => {
+  const head = faces => `ply\nformat binary_little_endian 1.0\nelement vertex 3\nproperty float x\n${faces === null ? '' : `element face ${faces}\nproperty list uchar int vertex_indices\n`}end_header\n`;
+  const bin = text => new Uint8Array([...Buffer.from(text), 0xff, 0x00, 0x80, 0x00]);
+  assert.equal(plyFaceCount(bin(head(12))), 12);
+  assert.equal(plyFaceCount(bin(head(0))), 0);
+  assert.equal(plyFaceCount(bin(head(null))), 0, '点云');
+  assert.equal(plyFaceCount(Buffer.from('ply\nelement face 5\n')), 0, '没有头结束行');
+  assert.equal(plyFaceCount(Buffer.from(`${head(null)}element face 9\n`)), 0, '数据区里的字样不算');
 });

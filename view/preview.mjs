@@ -237,8 +237,9 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if ((player && kind !== 'image') || (viewer && kind === 'model')) { changed = true; paintMeta(); return true; }
     }
     if (kind === 'model') { // 内容是不是文本，用模块现有的判断（读第一块）；不经查看器，没有 WebGL 的设备上文本模型也能切到文本看
-      offersText = mayBeText(path) && offersTextView(path, (await read(path, 0)).kind);
-      if (!mark()) return true;
+      const first = mayBeText(path) ? await read(path, 0) : null;
+      if (!mark()) return true; // 先核对作废，再动共享状态
+      offersText = first !== null && offersTextView(path, first.kind);
       paintMode();
     }
     const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });

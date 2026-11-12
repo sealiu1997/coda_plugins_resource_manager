@@ -59,6 +59,15 @@ export function joinRelative(dir, rel) {
   return out.join('/');
 }
 
+// PLY 头里 element face 的个数（ASCII 和二进制都适用）；没有或读不出头返回 0，按点云处理。
+export function plyFaceCount(bytes) {
+  const head = new TextDecoder('latin1').decode(bytes.subarray(0, 65536));
+  const end = /^end_header/m.exec(head);
+  if (!end) return 0;
+  const face = /^element[ \t]+face[ \t]+(\d+)/m.exec(head.slice(0, end.index));
+  return face ? Number(face[1]) : 0;
+}
+
 // 动画的播放状态：是否在连续渲染（running）只看这里。clips 是动画段数；reducedMotion 为真时不自动播放。
 // 选了一段就从头播；页面不可见时不跑，可见了接着跑（用户没按暂停的话）；停止之后不再跑。
 export function createPlayback({ clips, reducedMotion }) {

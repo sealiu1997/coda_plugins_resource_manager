@@ -8,14 +8,14 @@ import { open, start } from './support/filepage.mjs';
 
 async function mounted(t, files) {
   await open(t, { path: 'x.txt', files: {} }); // 只为装好假 DOM 的全局
-  const calls = { read: [], media: [], models: [] }, host = { token: 'tok', files, holdMedia: null, failRead: null };
+  const calls = { read: [], media: [], models: [] }, host = { token: 'tok', files, holdMedia: null, failRead: null, holdRead: {} };
   const chunk = (path, offset) => {
     const file = host.files[path];
     if (!file) throw Object.assign(new Error('没有这个文件'), { code: 'not_found' });
     const data = Buffer.from(file.text ?? '');
     return { data: data.toString('base64'), offset, size: file.size ?? data.length, mtimeMs: file.mtimeMs ?? 1, kind: file.kind ?? 'text', eof: true };
   };
-  const read = async (path, offset) => { calls.read.push(`${path}:${offset}`); if (host.failRead) throw Object.assign(new Error(host.failRead), { code: 'io' }); return chunk(path, offset); };
+  const read = async (path, offset) => { calls.read.push(`${path}:${offset}`); if (host.holdRead[path]) await host.holdRead[path].promise; if (host.failRead) throw Object.assign(new Error(host.failRead), { code: 'io' }); return chunk(path, offset); };
   const media = async path => {
     calls.media.push(path);
     if (host.holdMedia) await host.holdMedia.promise;
@@ -239,4 +239,22 @@ test('文件页里打开模型（真实的查看器，假 DOM 没有 WebGL）：
   assert.match(page.preview.textContent, /这台设备不能显示 3D 模型/);
   assert.equal(page.preview.find(node => node.classList.contains('pmeta'))[0].textContent, 'x · 5 B');
   assert.ok(page.preview.find(node => node.classList.contains('pbody'))[0].classList.contains('model'));
+});
+
+test('旧文件的首块回答晚到：不能改掉新文件的切换入口（二进制 a.stl 的回答在文本 b.gltf 之后到）', async t => {
+  const { preview, el, host, modeBar, button, calls } = await mounted(t, { 'a.stl': { kind: 'binary', size: 84 }, 'b.gltf': { kind: 'text', text: '{"asset":{}}' } });
+  host.holdRead['a.stl'] = deferred();
+  const slow = preview.open('a.stl');
+  await flush();
+  await preview.open('b.gltf');
+  assert.equal(modeBar().hidden, false);
+  host.holdRead['a.stl'].resolve();
+  await slow;
+  await flush();
+  assert.equal(modeBar().hidden, false, '旧回答不改共享状态');
+  button('文本').dispatch('click');
+  await flush();
+  assert.equal(modeBar().hidden, false, '点「文本」后入口还在');
+  assert.ok(el.find(n => n.classList.contains('text'))[0]);
+  assert.deepEqual(calls.models.map(model => model.options.path), ['b.gltf']);
 });
