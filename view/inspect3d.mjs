@@ -375,7 +375,8 @@ void main() {
 }
 
 // 线框叠加材质：WebGL 的 polygonOffset 只对填充面（GL_POLYGON_OFFSET_FILL）生效，对 GL_LINES 无效；
-// 在顶点着色器里给 clip-space Z 施加小幅偏移并保留深度测试，避免斜看共面网格时边线与底面竞争深度。
+// 在视图空间把顶点沿视线方向向相机微缩（mvPosition.xyz *= 1.0 - uDepthBias），屏幕投影位置完全不变、
+// 深度偏移与观察距离成正比，既解决斜看共面网格的深度竞争，又不会穿透前景不透明表面。
 function makeWireframeMaterial(THREE) {
   return new THREE.ShaderMaterial({
     wireframe: true,
@@ -385,14 +386,25 @@ function makeWireframeMaterial(THREE) {
     uniforms: {
       uColor: { value: new THREE.Color(0x111827) },
       uOpacity: { value: 0.55 },
-      uDepthBias: { value: 0.0005 },
+      uDepthBias: { value: 0.001 },
     },
     vertexShader: `${SKINNED_VERTEX_HEAD}
 uniform float uDepthBias;
 void main() {
   #include <skinbase_vertex>
-  ${SKINNED_POSITION_BODY}
-  gl_Position.z = max(-gl_Position.w, gl_Position.z - uDepthBias * gl_Position.w);
+  #include <begin_vertex>
+  #include <morphtarget_vertex>
+  #include <skinning_vertex>
+  vec4 mvPosition = vec4(transformed, 1.0);
+  #ifdef USE_BATCHING
+    mvPosition = batchingMatrix * mvPosition;
+  #endif
+  #ifdef USE_INSTANCING
+    mvPosition = instanceMatrix * mvPosition;
+  #endif
+  mvPosition = modelViewMatrix * mvPosition;
+  mvPosition.xyz *= (1.0 - uDepthBias);
+  gl_Position = projectionMatrix * mvPosition;
 }`,
     fragmentShader: `
 uniform vec3 uColor;
