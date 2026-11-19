@@ -1625,3 +1625,28 @@ Coda 给 worktree 会话建的工作目录以一串 UUID 命名（如 `c0377d40-
 - 解析在主线程，大模型（几十 MiB）打开时页面会卡一下；iPhone 上整份读进内存，64 MiB 的门槛只是提醒，不保证不崩。
 - WebGL 上下文数量受系统限制，同时开太多 3D 页面会丢上下文，页面写出原因，关掉再开。
 - 取景按初始姿势，动画跑出包围盒的部分可能出画面；复位视角回到的是同一个取景。
+
+---
+
+## 22. 3D 预览检视模式（Issue #17）
+
+在 3D 模型预览（第 21 节）的基础上，为预览头部增加通用的「检视」选择（Mac 和 iPhone 都有，默认「材质」）。不改文件读取路径与消息协议，不新增第三方依赖，只使用 three.js 自带的 `ShaderMaterial` 与 `MeshBasicMaterial`。
+
+### 22.1 交互与生命周期
+
+- **入口**：`view/preview.mjs` 在 `.phead` 中为 3D 查看器预留 `.pinspect-slot`；`view/viewer3d.mjs` 在模型解析成功并渲染首帧后，把 `<select class="pinspect" aria-label="检视">` 挂进去。加载中、失败、没有 WebGL、切到文本或换文件/关闭预览时清空并隐藏。
+- **状态保持与复位**：切换检视模式不重新下载、不重新解析、不移动相机和 `OrbitControls.target`，仅排一帧重绘（播放中的动画照常继续）。换文件或关闭预览时释放所有检视材质并回到默认「材质」。
+- **选项可用性**：
+  - 形体（线框、法线）：所有 3D 网格格式可用。
+  - 材质单通道（基色、粗糙度、金属度、自发光、环境遮蔽、透明度）：仅 `glb` / `gltf` 的非中性默认材质可用；STL、OBJ、PLY 等无 PBR 材质时置灰不可选（`disabled`）。
+  - UV 通道：只列出模型里实际存在的 `uv`、`uv1`、`uv2`、`uv3`（对应 `TEXCOORD_0`～`TEXCOORD_3`），没有的不出现。选中任一 UV 通道后，画布左上角出现 `.muvbar`，切换「棋盘格 / 数值 / 方向条纹」与密度（低 8 / 中 16 / 高 32；数值模式隐藏密度）。
+
+### 22.2 实现与资源边界（`view/inspect3d.mjs`）
+
+- **形体**：
+  - **线框**：保持原材质不动，为每个原网格创建共享 `geometry`（以及 `skeleton`、`morphTargetInfluences`、`instanceMatrix`）的线框叠加网格，材质启用 `wireframe` 和 `polygonOffset`。
+  - **法线**：`DoubleSide` 的 `ShaderMaterial`，按世界空间法线 `n * 0.5 + 0.5` 上色；`!gl_FrontFacing` 背面用洋红斜条纹标识翻面。
+- **材质单通道**：平涂无光照 `ShaderMaterial`，按通道读取原材质的标量、贴图（遵循 glTF 通道约定：粗糙度 `.g`、金属度 `.b`、AO `.r`、透明度 `map.a * alphaMap.g`，并尊重贴图的 `channel` 与 `matrix`）和顶点色；颜色通道（基色、自发光）经 `colorspace_fragment` 输出。
+- **UV 通道着色**：`analyzeModel` 扫描整个模型在各通道上的实际 `minU/maxU/minV/maxV`。棋盘格按 `floor(uv * density)` 着色；数值模式按全模型最小最大值归一化，正值暖色（红/绿/黄），U 或 V 为负值时切到蓝/紫/青冷色调以区分；方向条纹按 `fract(v * density)` 抗锯齿画细线。UV 模式下元信息行追加 `<通道> U[min, max] V[min, max]`。
+- **蒙皮与释放**：所有自定义 `ShaderMaterial` 均包含 three.js 的 `morphtarget_*` 和 `skinning_*` 顶点片段；线框叠加对 `SkinnedMesh` 创建并绑定同一 `skeleton`。切换模式或 `dispose()` 时，检视控制器只 `dispose()` 自己创建的检视材质并移除叠加对象，绝不释放原材质持有的贴图与几何体。
+

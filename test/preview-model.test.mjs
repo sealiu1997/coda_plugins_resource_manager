@@ -258,3 +258,24 @@ test('旧文件的首块回答晚到：不能改掉新文件的切换入口（�
   assert.ok(el.find(n => n.classList.contains('text'))[0]);
   assert.deepEqual(calls.models.map(model => model.options.path), ['b.gltf']);
 });
+
+test('预览头部给查看器留出检视选择槽：切到文本或换文件时清空隐藏', async t => {
+  const { preview, el, calls, button } = await mounted(t, { 'a.gltf': { kind: 'text', text: '{"asset":{}}' }, 'b.txt': { kind: 'text', text: 'hi' } });
+  await preview.open('a.gltf');
+  const slot = el.find(n => n.classList.contains('pinspect-slot'))[0];
+  assert.ok(slot);
+  assert.equal(calls.models[0].options.head, slot);
+  slot.append(new Element('select'));
+  slot.hidden = false;
+  button('文本').dispatch('click');
+  await flush();
+  assert.equal(slot.hidden, true);
+  assert.equal(slot.children.length, 0);
+
+  await preview.open('a.gltf');
+  slot.append(new Element('select'));
+  slot.hidden = false;
+  await preview.open('b.txt');
+  assert.equal(slot.hidden, true);
+  assert.equal(slot.children.length, 0);
+});
