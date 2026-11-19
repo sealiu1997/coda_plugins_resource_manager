@@ -374,6 +374,35 @@ void main() {
   });
 }
 
+// 线框叠加材质：WebGL 的 polygonOffset 只对填充面（GL_POLYGON_OFFSET_FILL）生效，对 GL_LINES 无效；
+// 在顶点着色器里给 clip-space Z 施加小幅偏移并保留深度测试，避免斜看共面网格时边线与底面竞争深度。
+function makeWireframeMaterial(THREE) {
+  return new THREE.ShaderMaterial({
+    wireframe: true,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    uniforms: {
+      uColor: { value: new THREE.Color(0x111827) },
+      uOpacity: { value: 0.55 },
+      uDepthBias: { value: 0.0005 },
+    },
+    vertexShader: `${SKINNED_VERTEX_HEAD}
+uniform float uDepthBias;
+void main() {
+  #include <skinbase_vertex>
+  ${SKINNED_POSITION_BODY}
+  gl_Position.z = max(-gl_Position.w, gl_Position.z - uDepthBias * gl_Position.w);
+}`,
+    fragmentShader: `
+uniform vec3 uColor;
+uniform float uOpacity;
+void main() {
+  gl_FragColor = vec4(uColor, uOpacity);
+}`,
+  });
+}
+
 // 为一个网格创建与原网格同步变形的线框叠加对象（共享 geometry / skeleton / morph / instanceMatrix）。
 function makeWireOverlay(THREE, mesh, wireMat) {
   let overlay;
@@ -438,17 +467,7 @@ export function createInspector(THREE, root, ext) {
     if (resolved === 'material') return { meta: '' };
 
     if (resolved === 'wireframe') {
-      const wireMat = track(new THREE.MeshBasicMaterial({
-        color: 0x111827,
-        wireframe: true,
-        transparent: true,
-        opacity: 0.55,
-        depthTest: true,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
-      }));
+      const wireMat = track(makeWireframeMaterial(THREE));
       for (const mesh of originals.keys()) {
         const overlay = makeWireOverlay(THREE, mesh, wireMat);
         mesh.add(overlay);

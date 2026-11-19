@@ -1644,9 +1644,9 @@ Coda 给 worktree 会话建的工作目录以一串 UUID 命名（如 `c0377d40-
 ### 22.2 实现与资源边界（`view/inspect3d.mjs`）
 
 - **形体**：
-  - **线框**：保持原材质不动，为每个原网格创建共享 `geometry`（以及 `skeleton`、`morphTargetInfluences`、`instanceMatrix`）的线框叠加网格，材质启用 `wireframe` 和 `polygonOffset`。
+  - **线框**：保持原材质不动，为每个原网格创建共享 `geometry`（以及 `skeleton`、`morphTargetInfluences`、`instanceMatrix`）的线框叠加网格，材质为 `wireframe: true` 的 `ShaderMaterial`，在顶点着色器里给 clip-space Z 施加小幅深度偏移（`gl_Position.z - uDepthBias * gl_Position.w`）并保留深度测试，避免与共面网格竞争深度。
   - **法线**：`DoubleSide` 的 `ShaderMaterial`，按世界空间法线 `n * 0.5 + 0.5` 上色；`!gl_FrontFacing` 背面用洋红斜条纹标识翻面。
 - **材质单通道**：平涂无光照 `ShaderMaterial`，按通道读取原材质的标量、贴图（遵循 glTF 通道约定：粗糙度 `.g`、金属度 `.b`、AO `.r`、透明度 `map.a * alphaMap.g`，并尊重贴图的 `channel` 与 `matrix`）和顶点色；颜色通道（基色、自发光）经 `colorspace_fragment` 输出。
-- **UV 通道着色**：`analyzeModel` 扫描整个模型在各通道上的实际 `minU/maxU/minV/maxV`。棋盘格按 `floor(uv * density)` 着色；数值模式按全模型最小最大值归一化，正值暖色（红/绿/黄），U 或 V 为负值时切到蓝/紫/青冷色调以区分；方向条纹按 `fract(v * density)` 抗锯齿画细线。UV 模式下元信息行追加 `<通道> U[min, max] V[min, max]`。
+- **UV 通道着色**：`analyzeModel` 扫描整个模型在各通道上的实际 `minU/maxU/minV/maxV`。棋盘格按 `floor(uv * density)` 着色；数值模式按全模型最小最大值归一化，正值暖色（红/绿/黄），U 或 V 为负值时切到蓝/紫/青冷色调以区分；方向条纹按 `fract(v * density)` 抗锯齿画细线。UV 模式下元信息行追加 `<通道> U[min, max] V[min, max]`，同时在画布上方独立的可换行信息条（`.muvrange`）完整展示，确保 iPhone 窄屏下两轴范围不被单行省略截断。
 - **蒙皮与释放**：所有自定义 `ShaderMaterial` 均包含 three.js 的 `morphtarget_*` 和 `skinning_*` 顶点片段；线框叠加对 `SkinnedMesh` 创建并绑定同一 `skeleton`。切换模式或 `dispose()` 时，检视控制器只 `dispose()` 自己创建的检视材质并移除叠加对象，绝不释放原材质持有的贴图与几何体。
 

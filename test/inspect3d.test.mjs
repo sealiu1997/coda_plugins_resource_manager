@@ -5,62 +5,7 @@ import * as THREE from '../view/vendor/three/build/three.module.mjs';
 import { GLTFLoader } from '../view/vendor/three/jsm/loaders/GLTFLoader.mjs';
 import { STLLoader } from '../view/vendor/three/jsm/loaders/STLLoader.mjs';
 import { PBR_CHANNELS, analyzeModel, createInspector, formatUvMeta } from '../view/inspect3d.mjs';
-
-// 构造合法的二进制 .glb，包含一个三角形和指定的 TEXCOORD 通道数据（数组形式，每通道 6 个 float）。
-function buildGlbWithUvs(uvSets = {}, material = { pbrMetallicRoughness: { baseColorFactor: [0.8, 0.4, 0.2, 1], roughnessFactor: 0.35, metallicFactor: 0.7 } }) {
-  const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
-  const chunks = [Buffer.from(positions.buffer)];
-  const bufferViews = [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength, target: 34962 }];
-  const accessors = [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] }];
-  const attributes = { POSITION: 0 };
-
-  let offset = positions.byteLength;
-  for (const [semantic, values] of Object.entries(uvSets)) {
-    const arr = new Float32Array(values);
-    const buf = Buffer.from(arr.buffer);
-    chunks.push(buf);
-    const bvIndex = bufferViews.length;
-    bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: buf.byteLength, target: 34962 });
-    const accIndex = accessors.length;
-    accessors.push({ bufferView: bvIndex, componentType: 5126, count: 3, type: 'VEC2' });
-    attributes[semantic] = accIndex;
-    offset += buf.byteLength;
-  }
-
-  const binRaw = Buffer.concat(chunks);
-  const binPad = Buffer.alloc((4 - (binRaw.length % 4)) % 4, 0);
-  const bin = Buffer.concat([binRaw, binPad]);
-
-  const jsonObj = {
-    asset: { version: '2.0' },
-    scene: 0,
-    scenes: [{ nodes: [0] }],
-    nodes: [{ mesh: 0 }],
-    materials: [material],
-    meshes: [{ primitives: [{ attributes, material: 0 }] }],
-    buffers: [{ byteLength: bin.length }],
-    bufferViews,
-    accessors,
-  };
-  const jsonRaw = Buffer.from(JSON.stringify(jsonObj));
-  const jsonPad = Buffer.alloc((4 - (jsonRaw.length % 4)) % 4, 0x20);
-  const json = Buffer.concat([jsonRaw, jsonPad]);
-
-  const total = 12 + 8 + json.length + 8 + bin.length;
-  const head = Buffer.alloc(12);
-  head.writeUInt32LE(0x46546c67, 0);
-  head.writeUInt32LE(2, 4);
-  head.writeUInt32LE(total, 8);
-  const jsonHead = Buffer.alloc(8);
-  jsonHead.writeUInt32LE(json.length, 0);
-  jsonHead.writeUInt32LE(0x4e4f534a, 4);
-  const binHead = Buffer.alloc(8);
-  binHead.writeUInt32LE(bin.length, 0);
-  binHead.writeUInt32LE(0x004e4942, 4);
-
-  const all = Buffer.concat([head, jsonHead, json, binHead, bin]);
-  return all.buffer.slice(all.byteOffset, all.byteOffset + all.length);
-}
+import { buildGlbWithUvs, buildSkinnedAnimatedGlb } from './support/glb.mjs';
 
 const parseGlb = buffer => new Promise((ok, no) => new GLTFLoader().parse(buffer, '', ok, no));
 
@@ -118,12 +63,17 @@ test('STL：材质通道和 UV 通道不可用，线框和法线可用', () => {
   inspector.apply({ mode: 'uv:uv' });
   assert.equal(inspector.state.mode, 'material');
 
-  // 线框：原材质不动，叠加一个 wireframe 子网格
+  // 线框：原材质不动，叠加一个带 clip-space 深度偏移的 wireframe ShaderMaterial 子网格
   inspector.apply({ mode: 'wireframe' });
   assert.equal(inspector.state.mode, 'wireframe');
   assert.equal(mesh.material, neutral);
   assert.equal(mesh.children.length, 1);
+  assert.equal(mesh.children[0].material.isShaderMaterial, true);
   assert.equal(mesh.children[0].material.wireframe, true);
+  assert.equal(mesh.children[0].material.depthTest, true);
+  assert.equal(mesh.children[0].material.depthWrite, false);
+  assert.ok(mesh.children[0].material.uniforms.uDepthBias.value > 0);
+  assert.match(mesh.children[0].material.vertexShader, /gl_Position\.z\s*=\s*max\(/);
 
   // 法线：替换成 ShaderMaterial，且清除之前的线框叠加层
   inspector.apply({ mode: 'normal' });
@@ -211,13 +161,53 @@ test('蒙皮网格：线框叠加绑定同一骨架；法线、材质单通道�
   assert.ok(overlay?.isSkinnedMesh, '线框叠加对象是 SkinnedMesh');
   assert.equal(overlay.skeleton, skeleton, '线框叠加对象共享同一骨架');
 
-  for (const mode of ['normal', 'pbr:baseColor', 'uv:uv']) {
+  for (const mode of ['wireframe', 'normal', 'pbr:baseColor', 'uv:uv']) {
     inspector.apply({ mode });
-    assert.match(skinned.material.vertexShader, /#include <skinning_pars_vertex>/, mode);
-    assert.match(skinned.material.vertexShader, /#include <skinning_vertex>/, mode);
+    const mat = mode === 'wireframe' ? skinned.children.find(c => c.userData?.__inspectOverlay).material : skinned.material;
+    assert.match(mat.vertexShader, /#include <skinning_pars_vertex>/, mode);
+    assert.match(mat.vertexShader, /#include <skinning_vertex>/, mode);
   }
 
   inspector.dispose();
   assert.equal(skinned.material, orig);
   assert.equal(skinned.children.find(c => c.userData?.__inspectOverlay), undefined);
+});
+
+test('带骨骼动画的真实 glb：各检视模式下姿势随动画持续变化，线框与蒙皮表面严格同步', async () => {
+  const gltf = await parseGlb(buildSkinnedAnimatedGlb());
+  let skinned = null;
+  gltf.scene.traverse(o => { if (o.isSkinnedMesh) skinned = o; });
+  assert.ok(skinned, '真实解析出 SkinnedMesh');
+  assert.equal(gltf.animations.length, 1);
+
+  const mixer = new THREE.AnimationMixer(gltf.scene);
+  mixer.clipAction(gltf.animations[0]).play();
+  const samplePos = mesh => {
+    gltf.scene.updateMatrixWorld(true);
+    mesh.skeleton.update();
+    const v = new THREE.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 1);
+    return mesh.applyBoneTransform(1, v);
+  };
+
+  mixer.setTime(0);
+  const bindPos = samplePos(skinned);
+  assert.ok(Math.abs(bindPos.x - 0) < 1e-5, 't=0 在绑定姿势 x=0');
+
+  const inspector = createInspector(THREE, gltf.scene, 'glb');
+  let prevX = bindPos.x;
+  for (const [mode, t] of [['wireframe', 0.2], ['normal', 0.4], ['pbr:baseColor', 0.6], ['uv:uv', 0.8]]) {
+    inspector.apply({ mode });
+    mixer.setTime(t);
+    const pos = samplePos(skinned);
+    assert.ok(pos.x > prevX + 0.1, `${mode} 在 t=${t} 姿势继续前移（${prevX} -> ${pos.x}）`);
+    assert.ok(Math.abs(pos.x - t * 2) < 1e-4, `${mode} 顶点随骨骼准确位移到 x=${t * 2}`);
+    if (mode === 'wireframe') {
+      const overlay = skinned.children.find(c => c.userData?.__inspectOverlay);
+      assert.ok(overlay?.isSkinnedMesh);
+      const wirePos = samplePos(overlay);
+      assert.ok(wirePos.distanceTo(pos) < 1e-6, '线框叠加层顶点与蒙皮表面严格同步');
+    }
+    prevX = pos.x;
+  }
+  inspector.dispose();
 });

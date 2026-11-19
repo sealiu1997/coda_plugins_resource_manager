@@ -51,12 +51,13 @@ export function mountViewer({ body, head = null, token, path, size, version, onM
   const uvBar = h('div', { class: 'muvbar', hidden: true },
     h('div', { class: 'muvmodes', role: 'group', 'aria-label': 'UV 显示方式' }, ...uvModeButtons.map(({ button }) => button)),
     densitySelect);
+  const uvRange = h('div', { class: 'muvrange caption secondary', hidden: true });
   const playButton = h('button', { class: 'mbtn' }, '暂停');
   const clipSelect = h('select', { class: 'mclip', 'aria-label': '动画' });
   const bar = h('div', { class: 'mbar', hidden: true }, playButton, clipSelect);
   const stage = h('div', { class: 'mstage' }, status, ...(head ? [] : [inspectSelect]), uvBar, resetButton, bar);
   body.classList.add('model');
-  body.replaceChildren(h('div', { class: 'mview' }, stage));
+  body.replaceChildren(h('div', { class: 'mview' }, uvRange, stage));
 
   const abort = new AbortController();
   let dead = false, disposed = false, gate = null, playback = null, requestRender = () => {}, sync = () => {};
@@ -67,6 +68,8 @@ export function mountViewer({ body, head = null, token, path, size, version, onM
   document.addEventListener('visibilitychange', onVisibility);
   const clearInspectUI = () => {
     uvBar.hidden = true;
+    uvRange.hidden = true;
+    uvRange.textContent = '';
     inspectSelect.hidden = true;
     inspectSelect.replaceChildren();
     if (head) { head.replaceChildren(); head.hidden = true; }
@@ -91,7 +94,7 @@ export function mountViewer({ body, head = null, token, path, size, version, onM
   };
   const say = (text, ...extra) => { status.hidden = false; status.replaceChildren(h('p', {}, text), ...extra.filter(Boolean)); }; // 真 DOM 的 replaceChildren 会把 null 变成文字「null」
   const fail = (title, detail) => {
-    resetButton.hidden = bar.hidden = uvBar.hidden = inspectSelect.hidden = true;
+    resetButton.hidden = bar.hidden = uvBar.hidden = uvRange.hidden = inspectSelect.hidden = true;
     if (head) { head.replaceChildren(); head.hidden = true; }
     say(title, detail ? h('p', { class: 'secondary caption' }, detail) : null);
   };
@@ -281,6 +284,8 @@ export function mountViewer({ body, head = null, token, path, size, version, onM
       inspectSelect.value = activeMode;
       const inUv = activeMode.startsWith('uv:');
       uvBar.hidden = !inUv;
+      uvRange.hidden = !meta;
+      uvRange.textContent = meta;
       densitySelect.hidden = uvMode === 'value';
       densitySelect.value = String(uvDensity);
       for (const { id, button } of uvModeButtons) button.setAttribute('aria-pressed', String(uvMode === id));

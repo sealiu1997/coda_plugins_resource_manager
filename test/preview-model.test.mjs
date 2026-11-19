@@ -49,6 +49,9 @@ test('模型走查看器：不发 read（二进制的），参数是口令、路
   assert.match(meta().title, /^修改于 /);
   options.onMeta(['12,408 面', '2 段动画']);
   assert.equal(meta().textContent, 'm · 3.0 MiB · 12,408 面 · 2 段动画');
+  options.onMeta(['12,408 面', '2 段动画', 'uv1 U[-2.5, 4] V[-1.5, 2.75]']);
+  assert.equal(meta().textContent, 'm · 3.0 MiB · 12,408 面 · 2 段动画 · uv1 U[-2.5, 4] V[-1.5, 2.75]');
+  assert.match(meta().title, /^uv1 U\[-2\.5, 4\] V\[-1\.5, 2\.75\] · 修改于 /);
   options.onMeta(['3 个点', '']);
   assert.equal(meta().textContent, 'm · 3.0 MiB · 3 个点');
 });

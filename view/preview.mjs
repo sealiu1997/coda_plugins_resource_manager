@@ -222,7 +222,11 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     shown = { size, mtimeMs };
     const parts = mediaMeta(size), title = `修改于 ${formatTime(mtimeMs)}`;
     setMeta(line(parts), title);
-    const mine = viewer = mountModel({ body, head: inspectSlot, token: key, path, size, version: `${size}-${mtimeMs}`, onMeta: extra => { if (viewer === mine) setMetaText(line([...parts, ...extra]), title); } });
+    const mine = viewer = mountModel({ body, head: inspectSlot, token: key, path, size, version: `${size}-${mtimeMs}`, onMeta: extra => {
+      if (viewer !== mine) return;
+      const full = line([...parts, ...extra]);
+      setMetaText(full, extra.length > 2 && extra[2] ? `${extra[2]} · ${title}` : title);
+    } });
   }
 
   // 媒体文件（按扩展名）：返回 true 表示已经处理（显示、提示或已作废），false 表示这个文件走分块读取（宿主没有流式服务时的图片和模型，模型选了看文本时）。

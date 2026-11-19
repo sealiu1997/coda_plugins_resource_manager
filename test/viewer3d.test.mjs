@@ -524,24 +524,79 @@ test('检视模式：切换不重下不重解析、相机位置不变、动画�
     assert.ok(ctx.frames.size >= 1, `${mode} 下动画照常继续`);
   }
 
-  // UV 模式下显示子栏，切数值隐藏密度，元信息追加范围；切回材质还原
+  // UV 模式下显示子栏与独立可换行范围条，切数值隐藏密度，元信息追加范围；切回材质还原
   const uvBar = ctx.find(n => n.classList.contains('muvbar'))[0];
+  const uvRange = ctx.find(n => n.classList.contains('muvrange'))[0];
   const density = ctx.find(n => n.classList.contains('mdensity'))[0];
   assert.equal(uvBar.hidden, false);
+  assert.equal(uvRange.hidden, false);
+  assert.equal(uvRange.textContent, 'uv U[0, 1] V[0, 1]');
   assert.equal(density.hidden, false);
   ctx.button('数值').dispatch('click');
   assert.equal(density.hidden, true);
   assert.equal(ctx.calls.metas.at(-1)[2], 'uv U[0, 1] V[0, 1]');
+  assert.equal(uvRange.textContent, 'uv U[0, 1] V[0, 1]');
 
   select.value = 'material';
   select.dispatch('change');
   assert.equal(uvBar.hidden, true);
+  assert.equal(uvRange.hidden, true);
+  assert.equal(uvRange.textContent, '');
   assert.deepEqual(ctx.calls.metas.at(-1), ['12 面', '1 段动画']);
 
   ctx.viewer.dispose();
   assert.equal(ctx.head.hidden, true);
   assert.equal(ctx.head.children.length, 0);
   assert.deepEqual(ctx.made.disposed, { geometry: 1, material: 1, texture: 1 });
+});
+
+test('检视模式：带骨骼动画的真实 glb 切换各模式后蒙皮姿势继续变化，线框与表面同步', async t => {
+  const { GLTFLoader } = await import('../view/vendor/three/jsm/loaders/GLTFLoader.mjs');
+  const { buildSkinnedAnimatedGlb } = await import('./support/glb.mjs');
+  const glb = buildSkinnedAnimatedGlb();
+  let parsedScene = null;
+  const ctx = setup(t, {
+    path: 'm/rig.glb',
+    extraModules: {
+      'loaders/GLTFLoader': {
+        GLTFLoader: class {
+          parse(data, base, ok, no) {
+            new GLTFLoader().parse(data, base, gltf => { parsedScene = gltf.scene; ok(gltf); }, no);
+          }
+        },
+      },
+    },
+    fetchResult: () => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => glb }),
+  });
+  await flush();
+  let skinned = null;
+  parsedScene.traverse(o => { if (o.isSkinnedMesh) skinned = o; });
+  assert.ok(skinned);
+
+  const sample = mesh => {
+    parsedScene.updateMatrixWorld(true);
+    mesh.skeleton.update();
+    const v = new REAL.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 1);
+    return mesh.applyBoneTransform(1, v);
+  };
+  const select = ctx.inspect();
+  let prevX = sample(skinned).x;
+  assert.ok(Math.abs(prevX) < 1e-5);
+
+  for (const mode of ['wireframe', 'normal', 'pbr:baseColor', 'uv:uv']) {
+    select.value = mode;
+    select.dispatch('change');
+    ctx.pump(200);
+    const pos = sample(skinned);
+    assert.ok(pos.x > prevX + 0.1, `${mode} 下骨骼动画推动顶点位移（${prevX} -> ${pos.x}）`);
+    if (mode === 'wireframe') {
+      const overlay = skinned.children.find(c => c.userData?.__inspectOverlay);
+      assert.ok(overlay?.isSkinnedMesh);
+      assert.ok(sample(overlay).distanceTo(pos) < 1e-6, '线框与蒙皮表面严格同步');
+    }
+    prevX = pos.x;
+  }
+  ctx.viewer.dispose();
 });
 
 test('检视模式：STL 材质通道置灰且无 UV 选项；WebGL 不可用时不显示检视选择', async t => {
