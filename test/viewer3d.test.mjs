@@ -34,7 +34,8 @@ function sceneWith({ clips = 0 } = {}) {
 // 搭一个查看器：calls 记着假渲染器、控件、环境、fetch 被怎么用；frames 是手动的 requestAnimationFrame。
 function setup(t, { path = 'm/a.glb', size = 10, clips = 0, reduced = false, webgl = true, failRenderer = false, fetchResult, parse, extraModules = {} } = {}) {
   const globals = installGlobals(t);
-  const body = new Element('div'), calls = { fetch: [], imports: [], parse: 0, renders: 0, renderers: [], controls: [], env: [], metas: [], rooms: 0 };
+  const body = new Element('div'), head = new Element('div'), calls = { fetch: [], imports: [], parse: 0, renders: 0, renderers: [], controls: [], env: [], metas: [], rooms: 0 };
+  head.hidden = true;
   const made = sceneWith({ clips });
   const frames = new Map();
   let next = 0, clock = 0;
@@ -51,7 +52,7 @@ function setup(t, { path = 'm/a.glb', size = 10, clips = 0, reduced = false, web
   };
   const THREE = { ...REAL, ...fake };
   class Controls {
-    constructor(camera, dom) { this.target = new REAL.Vector3(); this.listeners = {}; this.disposed = 0; this.dom = dom; calls.controls.push(this); }
+    constructor(camera, dom) { this.camera = camera; this.target = new REAL.Vector3(); this.listeners = {}; this.disposed = 0; this.dom = dom; calls.controls.push(this); }
     addEventListener(type, fn) { this.listeners[type] = fn; }
     update() {}
     dispose() { this.disposed++; }
@@ -73,13 +74,14 @@ function setup(t, { path = 'm/a.glb', size = 10, clips = 0, reduced = false, web
       return { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => (path.endsWith('.glb') ? glbBytes() : bytes.buffer) };
     },
   };
-  const viewer = mountViewer({ body, token: 'tok', path, size, version: '10-1', onMeta: parts => calls.metas.push(parts), env });
+  const viewer = mountViewer({ body, head, token: 'tok', path, size, version: '10-1', onMeta: parts => calls.metas.push(parts), env });
   // 手动的帧：跑当前排着的每一帧一次，时间前进 ms（帧里新排的下一轮不跑）。
   const pump = (ms = 16) => { clock += ms; const batch = [...frames]; frames.clear(); for (const [, fn] of batch) fn(); };
   const find = predicate => body.find(predicate);
   const button = label => find(n => n.tagName === 'BUTTON' && n.textContent === label)[0];
   const status = () => find(n => n.classList.contains('mstatus'))[0];
-  return { body, calls, made, frames, viewer, pump, find, button, status, globals, bytes, advance: ms => { clock += ms; } };
+  const inspect = () => head.find(n => n.classList.contains('pinspect'))[0];
+  return { body, head, calls, made, frames, viewer, pump, find, button, status, inspect, globals, bytes, advance: ms => { clock += ms; } };
 }
 
 // 最小的合法 glb：JSON 块里只有 asset。
@@ -322,13 +324,13 @@ test('动画：自动循环播放第一段；播放时每帧都画并排下一�
 test('动画：多于一段才有下拉；选一段从它开始播，暂停时选也播；一段的没有下拉', async t => {
   const one = setup(t, { clips: 1 });
   await flush();
-  assert.equal(one.find(n => n.tagName === 'SELECT')[0].hidden, true);
+  assert.equal(one.find(n => n.classList.contains('mclip'))[0].hidden, true);
 
   const ctx = setup(t, { clips: 3 });
   await flush();
-  const select = ctx.find(n => n.tagName === 'SELECT')[0];
+  const select = ctx.find(n => n.classList.contains('mclip'))[0];
   assert.equal(select.hidden, false);
-  assert.deepEqual(ctx.find(n => n.tagName === 'OPTION').slice(-3).map(n => n.textContent), ['动画 1', 'clip1', 'clip2'], '没有名字的写「动画 序号」');
+  assert.deepEqual(select.find(n => n.tagName === 'OPTION').map(n => n.textContent), ['动画 1', 'clip1', 'clip2'], '没有名字的写「动画 序号」');
   ctx.button('暂停').dispatch('click');
   assert.equal(ctx.frames.size, 0);
   select.value = '2';
@@ -499,4 +501,123 @@ test('PLY：按头里的面数判断点云；带面级 texcoord 的 PLY 是网�
   const points = setup(t, { path: 'c.ply', extraModules: modules, fetchResult: () => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => ply(cloud) }) });
   await flush();
   assert.deepEqual(points.calls.metas, [['3 个点', '']]);
+});
+
+test('检视模式：切换不重下不重解析、相机位置不变、动画照常播放；释放清空头部与检视材质', async t => {
+  const ctx = setup(t, { clips: 1 });
+  await flush();
+  assert.equal(ctx.head.hidden, false);
+  const select = ctx.inspect();
+  assert.equal(select.value, 'material');
+  const controls = ctx.calls.controls[0];
+  const camBefore = controls.camera.position.clone(), targetBefore = controls.target.clone();
+  const fetchCount = ctx.calls.fetch.length, parseCount = ctx.calls.parse;
+
+  for (const mode of ['wireframe', 'normal', 'pbr:baseColor', 'pbr:roughness', 'uv:uv']) {
+    select.value = mode;
+    select.dispatch('change');
+    assert.deepEqual(controls.camera.position.toArray(), camBefore.toArray(), `${mode} 不移动相机`);
+    assert.deepEqual(controls.target.toArray(), targetBefore.toArray(), `${mode} 不移动观察点`);
+    assert.equal(ctx.calls.fetch.length, fetchCount, `${mode} 不重下`);
+    assert.equal(ctx.calls.parse, parseCount, `${mode} 不重解析`);
+    ctx.pump(100);
+    assert.ok(ctx.frames.size >= 1, `${mode} 下动画照常继续`);
+  }
+
+  // UV 模式下显示子栏与独立可换行范围条，切数值隐藏密度，元信息追加范围；切回材质还原
+  const uvBar = ctx.find(n => n.classList.contains('muvbar'))[0];
+  const uvRange = ctx.find(n => n.classList.contains('muvrange'))[0];
+  const density = ctx.find(n => n.classList.contains('mdensity'))[0];
+  assert.equal(uvBar.hidden, false);
+  assert.equal(uvRange.hidden, false);
+  assert.equal(uvRange.textContent, 'uv U[0, 1] V[0, 1]');
+  assert.equal(density.hidden, false);
+  ctx.button('数值').dispatch('click');
+  assert.equal(density.hidden, true);
+  assert.equal(ctx.calls.metas.at(-1)[2], 'uv U[0, 1] V[0, 1]');
+  assert.equal(uvRange.textContent, 'uv U[0, 1] V[0, 1]');
+
+  select.value = 'material';
+  select.dispatch('change');
+  assert.equal(uvBar.hidden, true);
+  assert.equal(uvRange.hidden, true);
+  assert.equal(uvRange.textContent, '');
+  assert.deepEqual(ctx.calls.metas.at(-1), ['12 面', '1 段动画']);
+
+  ctx.viewer.dispose();
+  assert.equal(ctx.head.hidden, true);
+  assert.equal(ctx.head.children.length, 0);
+  assert.deepEqual(ctx.made.disposed, { geometry: 1, material: 1, texture: 1 });
+});
+
+test('检视模式：带骨骼动画的真实 glb 切换各模式后蒙皮姿势继续变化，线框与表面同步', async t => {
+  const { GLTFLoader } = await import('../view/vendor/three/jsm/loaders/GLTFLoader.mjs');
+  const { buildSkinnedAnimatedGlb } = await import('./support/glb.mjs');
+  const glb = buildSkinnedAnimatedGlb();
+  let parsedScene = null;
+  const ctx = setup(t, {
+    path: 'm/rig.glb',
+    extraModules: {
+      'loaders/GLTFLoader': {
+        GLTFLoader: class {
+          parse(data, base, ok, no) {
+            new GLTFLoader().parse(data, base, gltf => { parsedScene = gltf.scene; ok(gltf); }, no);
+          }
+        },
+      },
+    },
+    fetchResult: () => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => glb }),
+  });
+  await flush();
+  let skinned = null;
+  parsedScene.traverse(o => { if (o.isSkinnedMesh) skinned = o; });
+  assert.ok(skinned);
+
+  const sample = mesh => {
+    parsedScene.updateMatrixWorld(true);
+    mesh.skeleton.update();
+    const v = new REAL.Vector3().fromBufferAttribute(mesh.geometry.attributes.position, 1);
+    return mesh.applyBoneTransform(1, v);
+  };
+  const select = ctx.inspect();
+  let prevX = sample(skinned).x;
+  assert.ok(Math.abs(prevX) < 1e-5);
+
+  for (const mode of ['wireframe', 'normal', 'pbr:baseColor', 'uv:uv']) {
+    select.value = mode;
+    select.dispatch('change');
+    ctx.pump(200);
+    const pos = sample(skinned);
+    assert.ok(pos.x > prevX + 0.1, `${mode} 下骨骼动画推动顶点位移（${prevX} -> ${pos.x}）`);
+    if (mode === 'wireframe') {
+      const overlay = skinned.children.find(c => c.userData?.__inspectOverlay);
+      assert.ok(overlay?.isSkinnedMesh);
+      assert.ok(sample(overlay).distanceTo(pos) < 1e-6, '线框与蒙皮表面严格同步');
+    }
+    prevX = pos.x;
+  }
+  ctx.viewer.dispose();
+});
+
+test('检视模式：STL 材质通道置灰且无 UV 选项；WebGL 不可用时不显示检视选择', async t => {
+  const { STLLoader } = await import('../view/vendor/three/jsm/loaders/STLLoader.mjs');
+  const stl = new TextEncoder().encode('solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n').buffer;
+  const ctx = setup(t, {
+    path: 'a.stl',
+    extraModules: { 'loaders/STLLoader': { STLLoader } },
+    fetchResult: () => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => stl }),
+  });
+  await flush();
+  const options = ctx.inspect().find(n => n.tagName === 'OPTION');
+  const pbrOptions = options.filter(o => o.getAttribute('value')?.startsWith('pbr:'));
+  assert.equal(pbrOptions.length, 6);
+  assert.ok(pbrOptions.every(o => o.getAttribute('disabled') !== null), 'STL 的 PBR 材质通道全部置灰');
+  assert.equal(options.filter(o => o.getAttribute('value')?.startsWith('uv:')).length, 0, 'STL 没有 UV 通道选项');
+  assert.equal(options.find(o => o.getAttribute('value') === 'wireframe').getAttribute('disabled'), null);
+  assert.equal(options.find(o => o.getAttribute('value') === 'normal').getAttribute('disabled'), null);
+
+  const noGl = setup(t, { webgl: false });
+  await flush();
+  assert.equal(noGl.head.hidden, true);
+  assert.equal(noGl.head.children.length, 0);
 });

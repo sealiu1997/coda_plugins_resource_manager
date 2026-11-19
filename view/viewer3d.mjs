@@ -4,6 +4,7 @@
 // 释放登记在 held 里，建一个登记一个，中途失败、中途切走也释放得干净。
 import { h } from './dom.mjs';
 import { formatSize } from './format.mjs';
+import { PBR_CHANNELS, UV_DENSITIES, UV_MODES, createInspector } from './inspect3d.mjs';
 import { BIG_FILE, Z_UP, createPlayback, directoryUrl, extensionOf, gltfJson, joinRelative, mtllibOf, plyFaceCount, serviceUrl, unsupportedExtensions } from './model3d.mjs';
 
 const VENDOR = './vendor/three';
@@ -34,28 +35,45 @@ const browser = {
   reducedMotion: () => typeof matchMedia !== 'function' || matchMedia('(prefers-reduced-motion: reduce)').matches, // 拿不到 matchMedia 按减弱处理，同页面其他动画
 };
 
-// 在 body 里挂一个模型视图。size 是文件大小（超过 64 MiB 先问）；onMeta(parts)：把「N 面」「K 段动画」交给预览头部的元信息行。
+// 在 body 里挂一个模型视图。head 是预览头部里留给检视选择的槽（可选）；size 是文件大小（超过 64 MiB 先问）；onMeta(parts)：把「N 面」「K 段动画」及检视元信息交给预览头部的元信息行。
 // 返回 { cancel, dispose }：cancel 只停加载和动画循环（预览逻辑关闭时），dispose 释放一切（画面退场后）。
-export function mountViewer({ body, token, path, size, version, onMeta = () => {}, env = {} }) {
+export function mountViewer({ body, head = null, token, path, size, version, onMeta = () => {}, env = {} }) {
   const { engine, fetch: get, raf, caf, now, paint, hasWebGL, reducedMotion } = { ...browser, ...env };
   const ext = extensionOf(path);
 
   const status = h('div', { class: 'mstatus' });
   const resetButton = h('button', { class: 'mbtn mreset', hidden: true }, '复位视角');
+  const inspectSelect = h('select', { class: 'pinspect', 'aria-label': '检视', hidden: true });
+  const uvModeButtons = UV_MODES.map(({ id, label }) => ({ id, button: h('button', { class: 'mbtn', 'aria-pressed': String(id === 'checker') }, label) }));
+  const densitySelect = h('select', { class: 'mdensity', 'aria-label': '密度' },
+    ...UV_DENSITIES.map(({ label, value }) => h('option', { value: String(value), selected: value === 16 && '' }, `密度 ${label}`)));
+  densitySelect.value = '16';
+  const uvBar = h('div', { class: 'muvbar', hidden: true },
+    h('div', { class: 'muvmodes', role: 'group', 'aria-label': 'UV 显示方式' }, ...uvModeButtons.map(({ button }) => button)),
+    densitySelect);
+  const uvRange = h('div', { class: 'muvrange caption secondary', hidden: true });
   const playButton = h('button', { class: 'mbtn' }, '暂停');
   const clipSelect = h('select', { class: 'mclip', 'aria-label': '动画' });
   const bar = h('div', { class: 'mbar', hidden: true }, playButton, clipSelect);
-  const stage = h('div', { class: 'mstage' }, status, resetButton, bar);
+  const stage = h('div', { class: 'mstage' }, status, ...(head ? [] : [inspectSelect]), uvBar, resetButton, bar);
   body.classList.add('model');
-  body.replaceChildren(h('div', { class: 'mview' }, stage));
+  body.replaceChildren(h('div', { class: 'mview' }, uvRange, stage));
 
   const abort = new AbortController();
   let dead = false, disposed = false, gate = null, playback = null, requestRender = () => {}, sync = () => {};
-  const held = { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, frame: 0, mixer: null, envTarget: null, manager: null };
+  const held = { wrapper: null, inspector: null, canvas: null, renderer: null, controls: null, observer: null, frame: 0, mixer: null, envTarget: null, manager: null };
   const stopFrame = () => { if (held.frame) caf(held.frame); held.frame = 0; };
   // dead：停止（cancel）或失败（release）之后的终态：requestRender 和帧不再排帧（停止时画面留着，只是不再画），playback 也停了，其余入口（可见性、sync）自然落空。
   const onVisibility = () => { playback?.setVisible(!document.hidden); sync(); if (!document.hidden) requestRender(); };
   document.addEventListener('visibilitychange', onVisibility);
+  const clearInspectUI = () => {
+    uvBar.hidden = true;
+    uvRange.hidden = true;
+    uvRange.textContent = '';
+    inspectSelect.hidden = true;
+    inspectSelect.replaceChildren();
+    if (head) { head.replaceChildren(); head.hidden = true; }
+  };
   const release = () => {
     dead = true;
     playback?.stop();
@@ -66,15 +84,18 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     held.controls?.dispose();
     if (held.mixer) { held.mixer.stopAllAction(); held.mixer.uncacheRoot(held.mixer.getRoot()); }
     held.envTarget?.dispose();
+    held.inspector?.dispose();
     if (held.wrapper) disposeObject(held.wrapper);
     held.renderer?.dispose();
     held.renderer?.forceContextLoss();
     if (held.canvas) { held.canvas.width = held.canvas.height = 0; held.canvas.remove(); } // 连画布的后备存储一起还掉（iOS 上不还会攒着）
-    Object.assign(held, { wrapper: null, canvas: null, renderer: null, controls: null, observer: null, mixer: null, envTarget: null, manager: null });
+    clearInspectUI();
+    Object.assign(held, { wrapper: null, inspector: null, canvas: null, renderer: null, controls: null, observer: null, mixer: null, envTarget: null, manager: null });
   };
   const say = (text, ...extra) => { status.hidden = false; status.replaceChildren(h('p', {}, text), ...extra.filter(Boolean)); }; // 真 DOM 的 replaceChildren 会把 null 变成文字「null」
   const fail = (title, detail) => {
-    resetButton.hidden = bar.hidden = true;
+    resetButton.hidden = bar.hidden = uvBar.hidden = uvRange.hidden = inspectSelect.hidden = true;
+    if (head) { head.replaceChildren(); head.hidden = true; }
     say(title, detail ? h('p', { class: 'secondary caption' }, detail) : null);
   };
 
@@ -242,8 +263,43 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
     held.manager = manager;
     manager.onLoad = () => requestRender(); // 贴图晚到（obj 的 mtl 里的贴图）：到了就重画
 
+    const baseMeta = [stats.triangles > 0 || stats.points === 0 ? `${count(stats.triangles)} 面` : `${count(stats.points)} 个点`, clips.length ? `${clips.length} 段动画` : ''];
+    // 检视模式：按模型能力填充选项（无 PBR 时材质通道置灰；只列出模型里实际存在的 UV 通道）。
+    const inspector = held.inspector = createInspector(THREE, wrapper, ext);
+    const { hasPBR, uvChannels } = inspector.caps;
+    inspectSelect.replaceChildren(
+      h('option', { value: 'material' }, '材质'),
+      h('optgroup', { label: '形体' },
+        h('option', { value: 'wireframe' }, '线框'),
+        h('option', { value: 'normal' }, '法线')),
+      h('optgroup', { label: '材质通道' },
+        ...PBR_CHANNELS.map(({ id, label }) => h('option', { value: `pbr:${id}`, disabled: !hasPBR && '' }, label))),
+      ...(uvChannels.length ? [h('optgroup', { label: 'UV 通道' },
+        ...uvChannels.map(({ name }) => h('option', { value: `uv:${name}` }, `UV：${name}`)))] : []),
+    );
+    inspectSelect.value = 'material';
+    const applyInspect = next => {
+      const { meta } = inspector.apply(next);
+      const { mode: activeMode, uvMode, uvDensity } = inspector.state;
+      inspectSelect.value = activeMode;
+      const inUv = activeMode.startsWith('uv:');
+      uvBar.hidden = !inUv;
+      uvRange.hidden = !meta;
+      uvRange.textContent = meta;
+      densitySelect.hidden = uvMode === 'value';
+      densitySelect.value = String(uvDensity);
+      for (const { id, button } of uvModeButtons) button.setAttribute('aria-pressed', String(uvMode === id));
+      onMeta(meta ? [...baseMeta, meta] : baseMeta);
+      requestRender();
+    };
+    inspectSelect.addEventListener('change', () => applyInspect({ mode: inspectSelect.value }));
+    for (const { id, button } of uvModeButtons) button.addEventListener('click', () => applyInspect({ uvMode: id }));
+    densitySelect.addEventListener('change', () => applyInspect({ uvDensity: Number(densitySelect.value) }));
+    inspectSelect.hidden = false;
+    if (head) { head.replaceChildren(inspectSelect); head.hidden = false; }
+
     renderer.render(scene, camera);
-    onMeta([stats.triangles > 0 || stats.points === 0 ? `${count(stats.triangles)} 面` : `${count(stats.points)} 个点`, clips.length ? `${clips.length} 段动画` : '']);
+    onMeta(baseMeta);
     status.hidden = true;
     resetButton.hidden = false;
     resetButton.addEventListener('click', () => { fit(); requestRender(); });
@@ -272,7 +328,11 @@ export function mountViewer({ body, token, path, size, version, onMeta = () => {
 
 // 按格式解析成 three 的对象。返回 { object, animations }；失败抛 Friendly 或原样的错误。
 async function parseModel({ THREE, engine, manager, bytes, ext, token, path, download }) {
-  const neutral = () => new THREE.MeshStandardMaterial({ color: 0xb8bcc4, roughness: 0.65, metalness: 0.05, side: THREE.DoubleSide });
+  const neutral = () => {
+    const m = new THREE.MeshStandardMaterial({ color: 0xb8bcc4, roughness: 0.65, metalness: 0.05, side: THREE.DoubleSide });
+    m.userData.__neutral = true;
+    return m;
+  };
   const exact = view => (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength ? view.buffer : view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
   const done = (object, animations = []) => ({ object, animations });
 

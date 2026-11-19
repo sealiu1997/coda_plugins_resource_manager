@@ -179,10 +179,14 @@ button.icon svg { display: block; }
 .media { display: grid; place-items: start center; padding: 12px; }
 .media video { width: 100%; max-height: 70vh; border-radius: var(--coda-radius, 6px); background: #000; }
 .media audio { width: 100%; }
-/* 3D 模型（第 21 节）：正文不滚动，整块是画布；状态、复位和动画控制浮在画布上。「3D / 文本」切换在头部。 */
+/* 3D 模型（第 21 节）：正文不滚动，整块是画布；状态、复位和动画控制浮在画布上。「3D / 文本」切换和「检视」选择在头部。 */
 .pmode { flex: none; display: flex; gap: 2px; }
 .pmode button { padding: 2px 8px; border-radius: var(--coda-radius, 6px); }
 .pmode button[aria-pressed="true"] { background: var(--coda-selection, var(--hover)); font-weight: 600; }
+.pinspect-slot { flex: none; display: flex; align-items: center; }
+.pinspect-slot[hidden] { display: none; }
+.pinspect { max-width: 112px; padding: 3px 6px; border-radius: var(--coda-radius, 6px); border: 1px solid var(--line); background: var(--coda-card, var(--coda-background, #fff)); color: var(--coda-foreground, #1d1d1f); font: inherit; font-size: .92em; }
+.pinspect[hidden] { display: none; }
 .pbody.model { display: flex; flex-direction: column; overflow: hidden; }
 .mview { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .mstage { position: relative; flex: 1 1 auto; min-height: 160px; overflow: hidden; background: var(--coda-secondary-background, rgba(127,127,127,.08)); }
@@ -190,8 +194,16 @@ button.icon svg { display: block; }
 .mstatus { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center; gap: 6px; padding: 20px; text-align: center; pointer-events: none; }
 .mstatus[hidden] { display: none; }
 .mstatus button { pointer-events: auto; }
-.mbtn, .mclip { padding: 4px 10px; border-radius: var(--coda-radius, 6px); background: var(--coda-card, var(--coda-background, #fff)); border: 1px solid var(--line); color: var(--coda-accent, #0a84ff); }
+.mbtn, .mclip, .mdensity { padding: 4px 10px; border-radius: var(--coda-radius, 6px); background: var(--coda-card, var(--coda-background, #fff)); border: 1px solid var(--line); color: var(--coda-accent, #0a84ff); font: inherit; }
 .mreset { position: absolute; top: 8px; right: 8px; }
+.muvbar { position: absolute; top: 8px; left: 8px; right: 92px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; pointer-events: none; }
+.muvbar > * { pointer-events: auto; }
+.muvbar[hidden], .mdensity[hidden] { display: none; }
+.muvmodes { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--coda-radius, 6px); background: var(--coda-card, var(--coda-background, #fff)); border: 1px solid var(--line); }
+.muvmodes button { padding: 2px 8px; border: 0; background: transparent; color: var(--coda-foreground, #1d1d1f); }
+.muvmodes button[aria-pressed="true"] { background: var(--coda-selection, var(--hover)); color: var(--coda-accent, #0a84ff); font-weight: 600; }
+.muvrange { flex: none; padding: 4px 12px; border-bottom: 1px solid var(--line); background: var(--coda-background, #fff); white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.muvrange[hidden] { display: none; }
 .mbar { position: absolute; left: 8px; bottom: 8px; display: flex; gap: 8px; }
 .mbar[hidden], .mclip[hidden] { display: none; }
 .image { display: grid; place-items: start center; padding: 12px; }
@@ -300,6 +312,9 @@ button.icon svg { display: block; }
 .coda-ios .bar button.icon { padding: 0; justify-content: center; }
 .coda-ios .phead, .coda-ios .ghead { padding: 4px 12px; gap: 4px; }
 .coda-ios .phead button, .coda-ios .ghead button { padding: 0 8px; }
+.coda-ios .pinspect { min-height: 36px; max-width: 104px; font-size: max(14px, .9em); }
+.coda-ios .mdensity { min-height: 36px; }
+.coda-ios .muvmodes button { min-height: 36px; min-width: 44px; padding: 0 8px; }
 .coda-ios .preview:not(.info) .pbody { padding-bottom: var(--safe-bottom); } /* 资源页里没有底部工具条：最后一行不被 Home 指示条盖住 */
 .coda-ios .code { font-size: .8em; } /* 窄屏多看些：17 点下约 13.6 点 */
 .coda-ios .menu button { padding: 0 10px; }

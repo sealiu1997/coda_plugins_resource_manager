@@ -78,10 +78,11 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const body = h('div', { class: 'pbody', tabindex: '-1' }); // 可聚焦：关查找条后焦点回正文
   const modes = [['3d', '3D'], ['text', '文本']].map(([value, label]) => ({ value, button: h('button', { class: 'link', onclick: () => setMode(value) }, label) }));
   const modeBar = h('div', { class: 'pmode', role: 'group', 'aria-label': '显示方式', hidden: true }, ...modes.map(({ button }) => button));
+  const inspectSlot = h('div', { class: 'pinspect-slot', hidden: true });
   let gutterEl = null;
   const find = createFind({ body, gutterWidth: () => gutterEl?.offsetWidth ?? 0 });
   const extra = actions.map(({ label, icon: glyph, run }) => { const button = action(label, glyph, () => path !== null && run(path, button)); return button; });
-  el.replaceChildren(h('div', { class: 'phead' }, ...(back ? [action('返回', 'back', back)] : []), fileIcon, h('div', { class: 'grow' }, name, meta), modeBar, retryButton,
+  el.replaceChildren(h('div', { class: 'phead' }, ...(back ? [action('返回', 'back', back)] : []), fileIcon, h('div', { class: 'grow' }, name, meta), inspectSlot, modeBar, retryButton,
     ...(copyInHead ? [action('复制路径', 'copy', copyPath)] : []), ...extra), find.el, body);
   find.done.addEventListener('click', () => { find.close(); body.focus(); });
   // 查找条的键盘：Esc 关（从查找条里关，焦点回正文；焦点在正文里，焦点留在正文）；⌘G、⇧⌘G 下一个、上一个。输入法组字中的按键不管，菜单消费掉的 Esc 不再处理。
@@ -133,7 +134,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     player.pause?.(); player.removeAttribute('src'); player.load?.();
     player = null;
   };
-  const revoke = () => { stopMedia(); viewer?.dispose(); viewer = null; if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
+  const revoke = () => { stopMedia(); viewer?.dispose(); viewer = null; inspectSlot.replaceChildren(); inspectSlot.hidden = true; if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
   const notice = (title, detail, action) => body.replaceChildren(h('div', { class: 'empty' },
     h('p', {}, title), detail ? h('p', { class: 'secondary' }, detail) : null,
     action ? h('button', { class: 'link', onclick: action.run }, action.label) : null));
@@ -221,7 +222,11 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     shown = { size, mtimeMs };
     const parts = mediaMeta(size), title = `修改于 ${formatTime(mtimeMs)}`;
     setMeta(line(parts), title);
-    const mine = viewer = mountModel({ body, token: key, path, size, version: `${size}-${mtimeMs}`, onMeta: extra => { if (viewer === mine) setMetaText(line([...parts, ...extra]), title); } });
+    const mine = viewer = mountModel({ body, head: inspectSlot, token: key, path, size, version: `${size}-${mtimeMs}`, onMeta: extra => {
+      if (viewer !== mine) return;
+      const full = line([...parts, ...extra]);
+      setMetaText(full, extra.length > 2 && extra[2] ? `${extra[2]} · ${title}` : title);
+    } });
   }
 
   // 媒体文件（按扩展名）：返回 true 表示已经处理（显示、提示或已作废），false 表示这个文件走分块读取（宿主没有流式服务时的图片和模型，模型选了看文本时）。
