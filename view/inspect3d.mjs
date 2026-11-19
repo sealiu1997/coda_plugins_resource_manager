@@ -374,44 +374,16 @@ void main() {
   });
 }
 
-// 线框叠加材质：WebGL 的 polygonOffset 只对填充面（GL_POLYGON_OFFSET_FILL）生效，对 GL_LINES 无效；
-// 在视图空间把顶点沿视线方向向相机微缩（mvPosition.xyz *= 1.0 - uDepthBias），屏幕投影位置完全不变、
-// 深度偏移与观察距离成正比，既解决斜看共面网格的深度竞争，又不会穿透前景不透明表面。
+// 线框叠加材质：用真实深度绘制线段（不施加人工深度偏移，避免远距离穿透前景），
+// 由原不透明填充网格临时开启正向 polygonOffset（factor=1, units=1）按硬件斜率后推共面底面。
 function makeWireframeMaterial(THREE) {
-  return new THREE.ShaderMaterial({
+  return new THREE.MeshBasicMaterial({
+    color: 0x111827,
     wireframe: true,
     transparent: true,
+    opacity: 0.55,
     depthTest: true,
     depthWrite: false,
-    uniforms: {
-      uColor: { value: new THREE.Color(0x111827) },
-      uOpacity: { value: 0.55 },
-      uDepthBias: { value: 0.001 },
-    },
-    vertexShader: `${SKINNED_VERTEX_HEAD}
-uniform float uDepthBias;
-void main() {
-  #include <skinbase_vertex>
-  #include <begin_vertex>
-  #include <morphtarget_vertex>
-  #include <skinning_vertex>
-  vec4 mvPosition = vec4(transformed, 1.0);
-  #ifdef USE_BATCHING
-    mvPosition = batchingMatrix * mvPosition;
-  #endif
-  #ifdef USE_INSTANCING
-    mvPosition = instanceMatrix * mvPosition;
-  #endif
-  mvPosition = modelViewMatrix * mvPosition;
-  mvPosition.xyz *= (1.0 - uDepthBias);
-  gl_Position = projectionMatrix * mvPosition;
-}`,
-    fragmentShader: `
-uniform vec3 uColor;
-uniform float uOpacity;
-void main() {
-  gl_FragColor = vec4(uColor, uOpacity);
-}`,
   });
 }
 
@@ -449,6 +421,7 @@ export function createInspector(THREE, root, ext) {
 
   const ownedMaterials = new Set();
   const overlays = [];
+  const savedOffsets = new Map();
   let state = { mode: 'material', uvMode: 'checker', uvDensity: 16 };
   let disposed = false;
 
@@ -457,6 +430,12 @@ export function createInspector(THREE, root, ext) {
   function clearInspect() {
     for (const { parent, overlay } of overlays) parent.remove(overlay);
     overlays.length = 0;
+    for (const [mat, saved] of savedOffsets) {
+      mat.polygonOffset = saved.polygonOffset;
+      mat.polygonOffsetFactor = saved.polygonOffsetFactor;
+      mat.polygonOffsetUnits = saved.polygonOffsetUnits;
+    }
+    savedOffsets.clear();
     for (const [mesh, material] of originals) mesh.material = material;
     for (const mat of ownedMaterials) mat.dispose();
     ownedMaterials.clear();
@@ -480,7 +459,19 @@ export function createInspector(THREE, root, ext) {
 
     if (resolved === 'wireframe') {
       const wireMat = track(makeWireframeMaterial(THREE));
-      for (const mesh of originals.keys()) {
+      for (const [mesh, orig] of originals) {
+        for (const mat of [orig].flat()) {
+          if (mat && !savedOffsets.has(mat)) {
+            savedOffsets.set(mat, {
+              polygonOffset: mat.polygonOffset,
+              polygonOffsetFactor: mat.polygonOffsetFactor,
+              polygonOffsetUnits: mat.polygonOffsetUnits,
+            });
+            mat.polygonOffset = true;
+            mat.polygonOffsetFactor = 1;
+            mat.polygonOffsetUnits = 1;
+          }
+        }
         const overlay = makeWireOverlay(THREE, mesh, wireMat);
         mesh.add(overlay);
         overlays.push({ parent: mesh, overlay });

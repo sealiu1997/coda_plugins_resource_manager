@@ -14,6 +14,7 @@
   "files": ["main.mjs", "lib", "view"],
   "scripts": {
     "test": "node --test test/*.test.mjs",
+    "test:webgl": "node test/harness/inspect3d.mjs",
     "check:coda": "npx --yes @coda-console/plugin-check@0.5.31 . --manifest"
   },
   "main": "main.mjs",
