@@ -91,7 +91,9 @@ try {
   };
   preview.close();
 
-  // 2) 线框深度偏移：near = 0.01r 透视相机，15.0r 前景不透明表面完全遮挡 15.01r 后层细分平面（零穿透）+ 倾斜共面线框连续性
+  // 2) 同一模型内双层 45° 倾斜遮挡（near = 0.01r，前层 15.0r 与后层 15.01r 同在 modelRoot 内）：
+  // 前层为 2x2 红色不透明平面，后层为 16x16 密集细分平面；在避开前层自身边线的格子内部采样验证零穿透，
+  // 同时验证前层自身 45° 倾斜边线与密集细分倾斜平面边线均连续可见。
   const W = 200, H = 200;
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
@@ -105,40 +107,56 @@ try {
   occCam.position.set(0, 0, 0);
   occCam.lookAt(0, 0, -15);
 
-  const backGroup = new THREE.Group();
+  const modelRoot = new THREE.Group();
   const backPlane = new THREE.Mesh(
-    new THREE.PlaneGeometry(8.0, 8.0, 12, 12),
+    new THREE.PlaneGeometry(10.0, 10.0, 16, 16),
     new THREE.MeshBasicMaterial({ color: 0xe8e8e8, side: THREE.DoubleSide })
   );
   backPlane.position.set(0, 0, -15.01);
-  backGroup.add(backPlane);
+  backPlane.rotation.x = -Math.PI / 4;
 
-  const frontOccluder = new THREE.Mesh(
-    new THREE.PlaneGeometry(10.0, 10.0),
-    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+  const frontPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(24.0, 24.0, 1, 1),
+    new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide })
   );
-  frontOccluder.position.set(0, 0, -15.0);
-  occScene.add(backGroup, frontOccluder);
+  frontPlane.position.set(0, 0, -15.0);
+  frontPlane.rotation.x = -Math.PI / 4;
 
-  const occInspector = createInspector(THREE, backGroup, 'glb');
+  // 前后两层放在同一个检视根节点内！
+  modelRoot.add(backPlane, frontPlane);
+  occScene.add(modelRoot);
+
+  const occInspector = createInspector(THREE, modelRoot, 'glb');
   occInspector.apply({ mode: 'wireframe' });
   renderer.render(occScene, occCam);
   gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
-  let bleedPixels = 0;
-  for (let y = 50; y < 150; y++) for (let x = 50; x < 150; x++) {
+  // 前层 24x24 1x1 平面完全覆盖整个视口且只有一条主对角线；在中心左右两块避开对角线的象限采样（x:[50..85], y:[115..145] 与 x:[115..150], y:[115..145]），
+  // 避开对角线的那一块内前层无内部边线，而后层 16x16 密集网格在此处布满边线。
+  const countNonRed = (x0, x1, y0, y1) => {
+    let n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      if (!(px[i] > 240 && px[i + 1] < 15 && px[i + 2] < 15)) n++;
+    }
+    return n;
+  };
+  const patchA = countNonRed(50, 85, 115, 145);
+  const patchB = countNonRed(115, 150, 115, 145);
+  const bleedPixels = Math.min(patchA, patchB); // 避开前层单条对角线的那个象限块必须 0 穿透
+  // 统计前层自身对角线线框像素（在整张图内红底叠加深色线框的像素）
+  let frontWirePixels = 0;
+  for (let y = 30; y < 170; y++) for (let x = 30; x < 170; x++) {
     const i = (y * W + x) * 4;
-    if (!(px[i] > 240 && px[i + 1] < 15 && px[i + 2] < 15)) bleedPixels++;
+    if (px[i] < 230 && px[i] > 40 && px[i + 1] < 100 && px[i + 2] < 100) frontWirePixels++;
   }
 
-  // 移除遮挡并将细分平面倾斜，核对共面边线连续绘制（对比开启 polygonOffset 后的覆盖率）
-  occScene.remove(frontOccluder);
-  backPlane.position.set(0, 0, -10.0);
-  backPlane.rotation.x = -Math.PI / 2.6;
+  // 移走前层，验证倾斜 45° 密集细分平面的线框连续绘制
+  frontPlane.visible = false;
   renderer.render(occScene, occCam);
   gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
   let tiltedWirePixels = 0;
   for (let i = 0; i < px.length; i += 4) {
-    if (px[i] < 180 && px[i + 1] < 180 && px[i + 2] < 190) tiltedWirePixels++;
+    if (px[i] < 190 && px[i + 1] < 190 && px[i + 2] < 200) tiltedWirePixels++;
   }
   occInspector.dispose();
 
@@ -191,7 +209,7 @@ try {
   rigInspector.dispose();
   renderer.dispose();
 
-  window.__RESULT__ = { layoutCheck, bleedPixels, tiltedWirePixels, animResults, errors };
+  window.__RESULT__ = { layoutCheck, bleedPixels, frontWirePixels, tiltedWirePixels, animResults, errors };
 } catch (err) {
   window.__RESULT__ = { fatal: String(err?.stack ?? err), errors };
 }
@@ -268,9 +286,10 @@ try {
   assert.ok(result.layoutCheck.scrollWidth <= result.layoutCheck.clientWidth + 1, '360px 宽度下 UV 范围不水平溢出截断');
   assert.ok(result.layoutCheck.height > 10);
 
-  // 2) 15.0r 前景不透明完全遮挡 15.01r 后层线框（零穿透），倾斜共面细分平面线框连续可见
-  assert.equal(result.bleedPixels, 0, '15.0r 前景不透明表面完全遮挡 15.01r 后层线框，零穿透');
-  assert.ok(result.tiltedWirePixels > 1000, `倾斜细分平面线框连续可见（实际 ${result.tiltedWirePixels} 像素）`);
+  // 2) 同一模型内 15.0r 前层 45° 斜面完全遮挡 15.01r 后层 45° 斜面线框（零穿透），前层与倾斜细分平面边线均连续可见
+  assert.equal(result.bleedPixels, 0, '同一模型内 15.0r 前层 45° 斜面完全遮挡 15.01r 后层线框，零穿透');
+  assert.ok(result.frontWirePixels > 100, `前层 45° 斜面自身边线连续可见（实际 ${result.frontWirePixels} 像素）`);
+  assert.ok(result.tiltedWirePixels > 1000, `倾斜 45° 密集细分平面线框连续可见（实际 ${result.tiltedWirePixels} 像素）`);
 
   // 3) 真实 WebGL2 渲染的蒙皮表面与线框随骨骼动画真实位移并保持同步
   const wf = result.animResults.wireframe;
@@ -289,6 +308,7 @@ try {
   console.log('inspect3d WebGL2 验收通过:', JSON.stringify({
     layoutCheck: result.layoutCheck,
     bleedPixels: result.bleedPixels,
+    frontWirePixels: result.frontWirePixels,
     tiltedWirePixels: result.tiltedWirePixels,
     wireframeSync: {
       surfaceShift: Number((wf.t1.surface.cx - wf.t0.surface.cx).toFixed(2)),

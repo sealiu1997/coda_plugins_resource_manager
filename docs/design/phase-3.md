@@ -1644,7 +1644,7 @@ Coda 给 worktree 会话建的工作目录以一串 UUID 命名（如 `c0377d40-
 ### 22.2 实现与资源边界（`view/inspect3d.mjs`）
 
 - **形体**：
-  - **线框**：保持原材质不动，给原填充材质临时开启正向 `polygonOffset`（`factor = 1, units = 1`）按硬件斜率微推共面底面（退出线框或释放时恢复原值），同时为每个原网格创建共享 `geometry`（以及 `skeleton`、`morphTargetInfluences`、`instanceMatrix`）的 `wireframe: true` 叠加网格以真实深度绘制，既保证斜看共面边线连续，又不穿透近贴合的前景不透明表面。
+  - **线框**：保持原材质与遮挡深度不动，为每个原网格创建带重心坐标 `aBary` 的非索引几何体副本（共享 `skeleton`、`morphTargetInfluences`、`instanceMatrix`）和 `ShaderMaterial`（`LessEqualDepth`、`depthWrite: false`，片元按 `fwidth(vBary)` 画屏幕空间抗锯齿边线，非边线 `discard`）。因与原面同走三角形光栅化且零深度偏移，斜看共面边线连续不断线，同一模型内近贴合的双层斜面也不会穿透前景。退出线框或释放时一并释放检视几何体与材质。
   - **法线**：`DoubleSide` 的 `ShaderMaterial`，按世界空间法线 `n * 0.5 + 0.5` 上色；`!gl_FrontFacing` 背面用洋红斜条纹标识翻面。
 - **材质单通道**：平涂无光照 `ShaderMaterial`，按通道读取原材质的标量、贴图（遵循 glTF 通道约定：粗糙度 `.g`、金属度 `.b`、AO `.r`、透明度 `map.a * alphaMap.g`，并尊重贴图的 `channel` 与 `matrix`）和顶点色；颜色通道（基色、自发光）经 `colorspace_fragment` 输出。
 - **UV 通道着色**：`analyzeModel` 扫描整个模型在各通道上的实际 `minU/maxU/minV/maxV`。棋盘格按 `floor(uv * density)` 着色；数值模式按全模型最小最大值归一化，正值暖色（红/绿/黄），U 或 V 为负值时切到蓝/紫/青冷色调以区分；方向条纹按 `fract(v * density)` 抗锯齿画细线。UV 模式下元信息行追加 `<通道> U[min, max] V[min, max]`，同时在画布上方独立的可换行信息条（`.muvrange`）完整展示，确保 iPhone 窄屏下两轴范围不被单行省略截断。

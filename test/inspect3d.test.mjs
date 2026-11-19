@@ -63,24 +63,30 @@ test('STL：材质通道和 UV 通道不可用，线框和法线可用', () => {
   inspector.apply({ mode: 'uv:uv' });
   assert.equal(inspector.state.mode, 'material');
 
-  // 线框：原填充材质开启正向 polygonOffset（factor=1, units=1），叠加真实深度的 wireframe 子网格；退出时恢复原值
+  // 线框：原材质与深度不改动，叠加重心坐标三角形 ShaderMaterial（LessEqualDepth），退出时释放检视几何体且不动原几何体
+  let origGeoDisposed = 0;
+  const realGeoDispose = geometry.dispose.bind(geometry);
+  geometry.dispose = () => { origGeoDisposed++; realGeoDispose(); };
   inspector.apply({ mode: 'wireframe' });
   assert.equal(inspector.state.mode, 'wireframe');
   assert.equal(mesh.material, neutral);
-  assert.equal(neutral.polygonOffset, true);
-  assert.equal(neutral.polygonOffsetFactor, 1);
-  assert.equal(neutral.polygonOffsetUnits, 1);
+  assert.equal(neutral.polygonOffset, false);
   assert.equal(mesh.children.length, 1);
-  assert.equal(mesh.children[0].material.wireframe, true);
-  assert.equal(mesh.children[0].material.depthTest, true);
-  assert.equal(mesh.children[0].material.depthWrite, false);
+  const wireOverlay = mesh.children[0];
+  let wireGeoDisposed = 0;
+  const realWireGeoDispose = wireOverlay.geometry.dispose.bind(wireOverlay.geometry);
+  wireOverlay.geometry.dispose = () => { wireGeoDisposed++; realWireGeoDispose(); };
+  assert.ok(wireOverlay.geometry.getAttribute('aBary'), '线框几何体带重心坐标 aBary');
+  assert.equal(wireOverlay.material.isShaderMaterial, true);
+  assert.equal(wireOverlay.material.depthTest, true);
+  assert.equal(wireOverlay.material.depthWrite, false);
+  assert.equal(wireOverlay.material.depthFunc, THREE.LessEqualDepth);
 
-  // 法线：替换成 ShaderMaterial，清除线框叠加层并恢复原材质 polygonOffset
+  // 法线：替换成 ShaderMaterial，清除线框叠加层并释放检视几何体（原几何体不释放）
   inspector.apply({ mode: 'normal' });
   assert.equal(inspector.state.mode, 'normal');
-  assert.equal(neutral.polygonOffset, false);
-  assert.equal(neutral.polygonOffsetFactor, 0);
-  assert.equal(neutral.polygonOffsetUnits, 0);
+  assert.equal(wireGeoDisposed, 1, '退出线框释放检视几何体');
+  assert.equal(origGeoDisposed, 0, '不释放原几何体');
   assert.equal(mesh.children.length, 0);
   assert.equal(mesh.material.isShaderMaterial, true);
   assert.equal(mesh.material.side, THREE.DoubleSide);

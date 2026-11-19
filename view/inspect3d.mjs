@@ -374,31 +374,67 @@ void main() {
   });
 }
 
-// 线框叠加材质：用真实深度绘制线段（不施加人工深度偏移，避免远距离穿透前景），
-// 由原不透明填充网格临时开启正向 polygonOffset（factor=1, units=1）按硬件斜率后推共面底面。
-function makeWireframeMaterial(THREE) {
-  return new THREE.MeshBasicMaterial({
-    color: 0x111827,
-    wireframe: true,
+// 线框叠加材质：与原网格同走 GL_TRIANGLES 光栅化，按重心坐标 + fwidth 绘制屏幕空间 1px 抗锯齿边线，
+// 配合 LessEqualDepth、零深度偏移：共面片元深度与原面逐 bit 一致（倾斜共面连续不断线），
+// 且保留原面未偏移的遮挡深度，同一模型内近贴合的双层斜面也绝不穿透前景。
+function makeWireframeMaterial(THREE, side) {
+  return new THREE.ShaderMaterial({
+    side,
     transparent: true,
-    opacity: 0.55,
     depthTest: true,
     depthWrite: false,
+    depthFunc: THREE.LessEqualDepth,
+    uniforms: {
+      uColor: { value: new THREE.Color(0x111827) },
+      uOpacity: { value: 0.6 },
+    },
+    vertexShader: `${SKINNED_VERTEX_HEAD}
+attribute vec3 aBary;
+varying vec3 vBary;
+void main() {
+  vBary = aBary;
+  #include <skinbase_vertex>
+  ${SKINNED_POSITION_BODY}
+}`,
+    fragmentShader: `
+uniform vec3 uColor;
+uniform float uOpacity;
+varying vec3 vBary;
+void main() {
+  vec3 d = fwidth(vBary);
+  vec3 a3 = smoothstep(vec3(0.0), d * 1.25, vBary);
+  float edge = 1.0 - min(min(a3.x, a3.y), a3.z);
+  if (edge < 0.05) discard;
+  gl_FragColor = vec4(uColor, uOpacity * edge);
+}`,
   });
 }
 
-// 为一个网格创建与原网格同步变形的线框叠加对象（共享 geometry / skeleton / morph / instanceMatrix）。
-function makeWireOverlay(THREE, mesh, wireMat) {
+// 构造带重心坐标 aBary 的非索引几何体副本（不改动原 geometry，退出线框或 dispose 时由检视器释放）。
+function makeBarycentricGeometry(THREE, geometry) {
+  const wireGeo = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+  const count = wireGeo.attributes.position?.count ?? 0;
+  const bary = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const corner = i % 3;
+    bary[i * 3 + corner] = 1;
+  }
+  wireGeo.setAttribute('aBary', new THREE.BufferAttribute(bary, 3));
+  return wireGeo;
+}
+
+// 为一个网格创建与原网格同步变形的线框叠加对象（共享 skeleton / morph / instanceMatrix，使用独立重心几何体）。
+function makeWireOverlay(THREE, mesh, wireGeo, wireMat) {
   let overlay;
   if (mesh.isSkinnedMesh) {
-    overlay = new THREE.SkinnedMesh(mesh.geometry, wireMat);
+    overlay = new THREE.SkinnedMesh(wireGeo, wireMat);
     overlay.bindMode = mesh.bindMode;
     overlay.bind(mesh.skeleton, mesh.bindMatrix);
   } else if (mesh.isInstancedMesh) {
-    overlay = new THREE.InstancedMesh(mesh.geometry, wireMat, mesh.count);
+    overlay = new THREE.InstancedMesh(wireGeo, wireMat, mesh.count);
     overlay.instanceMatrix = mesh.instanceMatrix;
   } else {
-    overlay = new THREE.Mesh(mesh.geometry, wireMat);
+    overlay = new THREE.Mesh(wireGeo, wireMat);
   }
   if (mesh.morphTargetInfluences) {
     overlay.morphTargetInfluences = mesh.morphTargetInfluences;
@@ -420,25 +456,22 @@ export function createInspector(THREE, root, ext) {
   });
 
   const ownedMaterials = new Set();
+  const ownedGeometries = new Set();
   const overlays = [];
-  const savedOffsets = new Map();
   let state = { mode: 'material', uvMode: 'checker', uvDensity: 16 };
   let disposed = false;
 
   const track = mat => { ownedMaterials.add(mat); return mat; };
+  const trackGeo = geo => { ownedGeometries.add(geo); return geo; };
 
   function clearInspect() {
     for (const { parent, overlay } of overlays) parent.remove(overlay);
     overlays.length = 0;
-    for (const [mat, saved] of savedOffsets) {
-      mat.polygonOffset = saved.polygonOffset;
-      mat.polygonOffsetFactor = saved.polygonOffsetFactor;
-      mat.polygonOffsetUnits = saved.polygonOffsetUnits;
-    }
-    savedOffsets.clear();
     for (const [mesh, material] of originals) mesh.material = material;
     for (const mat of ownedMaterials) mat.dispose();
     ownedMaterials.clear();
+    for (const geo of ownedGeometries) geo.dispose();
+    ownedGeometries.clear();
   }
 
   function apply(next = {}) {
@@ -458,21 +491,17 @@ export function createInspector(THREE, root, ext) {
     if (resolved === 'material') return { meta: '' };
 
     if (resolved === 'wireframe') {
-      const wireMat = track(makeWireframeMaterial(THREE));
+      const matBySide = new Map();
+      const wireMatFor = orig => {
+        const list = [orig].flat().filter(Boolean);
+        const side = list.length === 1 ? (list[0].side ?? THREE.FrontSide) : THREE.DoubleSide;
+        if (!matBySide.has(side)) matBySide.set(side, track(makeWireframeMaterial(THREE, side)));
+        return matBySide.get(side);
+      };
       for (const [mesh, orig] of originals) {
-        for (const mat of [orig].flat()) {
-          if (mat && !savedOffsets.has(mat)) {
-            savedOffsets.set(mat, {
-              polygonOffset: mat.polygonOffset,
-              polygonOffsetFactor: mat.polygonOffsetFactor,
-              polygonOffsetUnits: mat.polygonOffsetUnits,
-            });
-            mat.polygonOffset = true;
-            mat.polygonOffsetFactor = 1;
-            mat.polygonOffsetUnits = 1;
-          }
-        }
-        const overlay = makeWireOverlay(THREE, mesh, wireMat);
+        if (!mesh.geometry?.attributes?.position) continue;
+        const wireGeo = trackGeo(makeBarycentricGeometry(THREE, mesh.geometry));
+        const overlay = makeWireOverlay(THREE, mesh, wireGeo, wireMatFor(orig));
         mesh.add(overlay);
         overlays.push({ parent: mesh, overlay });
       }
