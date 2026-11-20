@@ -208,34 +208,46 @@ try {
   }
   rigInspector.dispose();
 
-  // 4) 点云 PLY（带法线与 UV）在 WebGL2 中编译并渲染 normal 与 uv 三种显示方式，确认零报错且画出点像素
+  // 4) 点云 PLY（带已知法线与 UV）在 WebGL2 中逐模式即时采样三个分离点的 RGB，验证着色结果有区分度且符合预期
   const ptGeo = new THREE.BufferGeometry();
-  ptGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0.5, 0.2, 0, -0.5, -0.2, 0], 3));
-  ptGeo.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 0, 1, 0, 0], 3));
-  ptGeo.setAttribute('uv', new THREE.Float32BufferAttribute([-0.5, 0.2, 0.5, 0.8, 1.2, -0.3], 2));
+  ptGeo.setAttribute('position', new THREE.Float32BufferAttribute([-0.7, 0, 0, 0, 0, 0, 0.7, 0, 0], 3));
+  ptGeo.setAttribute('normal', new THREE.Float32BufferAttribute([1, 0, 0, 0, 1, 0, 0, 0, 1], 3));
+  ptGeo.setAttribute('uv', new THREE.Float32BufferAttribute([-0.25, 0.01, 0.05, 0.05, 0.15, 0.05], 2));
   const ptGroup = new THREE.Group();
-  ptGroup.add(new THREE.Points(ptGeo, new THREE.PointsMaterial({ size: 6, sizeAttenuation: false })));
+  ptGroup.add(new THREE.Points(ptGeo, new THREE.PointsMaterial({ size: 16, sizeAttenuation: false })));
   const ptScene = new THREE.Scene();
   ptScene.background = new THREE.Color(0xffffff);
   ptScene.add(ptGroup);
   const ptCam = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
   ptCam.position.set(0, 0, 3);
   ptCam.lookAt(0, 0, 0);
+  const samplePointPixels = () => {
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return [-0.7, 0, 0.7].map(worldX => {
+      const p = new THREE.Vector3(worldX, 0, 0).project(ptCam);
+      const sx = Math.round((p.x * 0.5 + 0.5) * W);
+      const sy = Math.round((p.y * 0.5 + 0.5) * H);
+      const i = (sy * W + sx) * 4;
+      return [px[i], px[i + 1], px[i + 2]];
+    });
+  };
   const ptInspector = createInspector(THREE, ptGroup, 'ply');
   ptInspector.apply({ mode: 'normal' });
   renderer.render(ptScene, ptCam);
-  const ptNormalPixels = measureCentroid(isNonBg).count;
+  const ptNormalRgb = samplePointPixels();
+
+  const ptUvRgb = {};
   for (const uvMode of ['checker', 'value', 'stripes']) {
-    ptInspector.apply({ mode: 'uv:uv', uvMode });
+    ptInspector.apply({ mode: 'uv:uv', uvMode, uvDensity: 8 });
     renderer.render(ptScene, ptCam);
+    ptUvRgb[uvMode] = samplePointPixels();
   }
-  const ptUvPixels = measureCentroid(isNonBg).count;
   ptInspector.dispose();
   ptGeo.dispose();
 
   renderer.dispose();
 
-  window.__RESULT__ = { layoutCheck, bleedPixels, frontWirePixels, tiltedWirePixels, animResults, ptNormalPixels, ptUvPixels, errors };
+  window.__RESULT__ = { layoutCheck, bleedPixels, frontWirePixels, tiltedWirePixels, animResults, ptNormalRgb, ptUvRgb, errors };
 } catch (err) {
   window.__RESULT__ = { fatal: String(err?.stack ?? err), errors };
 }
@@ -330,8 +342,22 @@ try {
     assert.ok(r.t0.count > 100 && r.t1.count > 100, `${mode} 正常渲染`);
     assert.ok(r.t1.cx - r.t0.cx > 8, `${mode} 渲染质心随骨骼动画右移（${r.t0.cx.toFixed(1)} -> ${r.t1.cx.toFixed(1)}）`);
   }
-  assert.ok(result.ptNormalPixels > 0, '点云 PLY 法线模式在 WebGL2 中正常渲染');
-  assert.ok(result.ptUvPixels > 0, '点云 PLY UV 模式在 WebGL2 中正常渲染');
+  // 4) 点云 PLY：法线三轴方向颜色准确；UV 三种模式各自即时采样且颜色区分明显
+  const [nX, nY, nZ] = result.ptNormalRgb;
+  assert.ok(nX[0] > 230 && Math.abs(nX[1] - 128) < 15 && Math.abs(nX[2] - 128) < 15, `法线 +X 着色准确（实际 ${nX}）`);
+  assert.ok(nY[1] > 230 && Math.abs(nY[0] - 128) < 15 && Math.abs(nY[2] - 128) < 15, `法线 +Y 着色准确（实际 ${nY}）`);
+  assert.ok(nZ[2] > 230 && Math.abs(nZ[0] - 128) < 15 && Math.abs(nZ[1] - 128) < 15, `法线 +Z 着色准确（实际 ${nZ}）`);
+
+  const [, chkDark, chkLight] = result.ptUvRgb.checker;
+  assert.ok(chkDark[0] < 90 && chkLight[0] > 200, `点云 UV 棋盘格区分深浅格（dark=${chkDark}, light=${chkLight}）`);
+
+  const [valNeg, , valPos] = result.ptUvRgb.value;
+  assert.ok(valNeg[2] > valNeg[0] + 80, `点云 UV 数值模式负值为冷蓝色相（实际 ${valNeg}）`);
+  assert.ok(valPos[0] > 220 && valPos[2] < 50, `点云 UV 数值模式最大正值为高红暖色（实际 ${valPos}）`);
+
+  const [strLine, strBase] = result.ptUvRgb.stripes;
+  assert.ok(strLine[0] > 220 && strLine[1] > 180 && strLine[2] < 80, `点云 UV 方向条纹命中亮黄条纹（实际 ${strLine}）`);
+  assert.ok(strBase[0] < 70 && strBase[1] < 80 && strBase[2] < 90, `点云 UV 方向条纹非条纹处为深灰底色（实际 ${strBase}）`);
 
   console.log('inspect3d WebGL2 验收通过:', JSON.stringify({
     layoutCheck: result.layoutCheck,
