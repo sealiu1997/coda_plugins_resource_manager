@@ -207,9 +207,35 @@ try {
     animResults[mode] = { t0, t1 };
   }
   rigInspector.dispose();
+
+  // 4) 点云 PLY（带法线与 UV）在 WebGL2 中编译并渲染 normal 与 uv 三种显示方式，确认零报错且画出点像素
+  const ptGeo = new THREE.BufferGeometry();
+  ptGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0.5, 0.2, 0, -0.5, -0.2, 0], 3));
+  ptGeo.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 0, 1, 0, 0], 3));
+  ptGeo.setAttribute('uv', new THREE.Float32BufferAttribute([-0.5, 0.2, 0.5, 0.8, 1.2, -0.3], 2));
+  const ptGroup = new THREE.Group();
+  ptGroup.add(new THREE.Points(ptGeo, new THREE.PointsMaterial({ size: 6, sizeAttenuation: false })));
+  const ptScene = new THREE.Scene();
+  ptScene.background = new THREE.Color(0xffffff);
+  ptScene.add(ptGroup);
+  const ptCam = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  ptCam.position.set(0, 0, 3);
+  ptCam.lookAt(0, 0, 0);
+  const ptInspector = createInspector(THREE, ptGroup, 'ply');
+  ptInspector.apply({ mode: 'normal' });
+  renderer.render(ptScene, ptCam);
+  const ptNormalPixels = measureCentroid(isNonBg).count;
+  for (const uvMode of ['checker', 'value', 'stripes']) {
+    ptInspector.apply({ mode: 'uv:uv', uvMode });
+    renderer.render(ptScene, ptCam);
+  }
+  const ptUvPixels = measureCentroid(isNonBg).count;
+  ptInspector.dispose();
+  ptGeo.dispose();
+
   renderer.dispose();
 
-  window.__RESULT__ = { layoutCheck, bleedPixels, frontWirePixels, tiltedWirePixels, animResults, errors };
+  window.__RESULT__ = { layoutCheck, bleedPixels, frontWirePixels, tiltedWirePixels, animResults, ptNormalPixels, ptUvPixels, errors };
 } catch (err) {
   window.__RESULT__ = { fatal: String(err?.stack ?? err), errors };
 }
@@ -304,6 +330,8 @@ try {
     assert.ok(r.t0.count > 100 && r.t1.count > 100, `${mode} 正常渲染`);
     assert.ok(r.t1.cx - r.t0.cx > 8, `${mode} 渲染质心随骨骼动画右移（${r.t0.cx.toFixed(1)} -> ${r.t1.cx.toFixed(1)}）`);
   }
+  assert.ok(result.ptNormalPixels > 0, '点云 PLY 法线模式在 WebGL2 中正常渲染');
+  assert.ok(result.ptUvPixels > 0, '点云 PLY UV 模式在 WebGL2 中正常渲染');
 
   console.log('inspect3d WebGL2 验收通过:', JSON.stringify({
     layoutCheck: result.layoutCheck,

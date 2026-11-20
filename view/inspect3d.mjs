@@ -36,18 +36,27 @@ const fmtNum = n => {
 // UV 检视模式追加到元信息行的文本：通道名、U 和 V 的实际范围。
 export const formatUvMeta = info => `${info.name} U[${fmtNum(info.minU)}, ${fmtNum(info.maxU)}] V[${fmtNum(info.minV)}, ${fmtNum(info.maxV)}]`;
 
-// 扫描模型能力：是否有 PBR 材质、有哪些 UV 通道及各通道在全模型上的实际 min/max。
+// 扫描模型能力：是否有网格（线框）、是否有法线、是否有 PBR 材质、有哪些 UV 通道及各通道在全模型上的实际 min/max。
+// 同时支持 Mesh 与 Points（如点云 PLY）。
 export function analyzeModel(root, ext) {
+  let hasWireframe = false;
+  let hasNormal = false;
   let hasPBR = false;
   const stats = new Map();
   const isPbrFormat = PBR_FORMATS.has(ext);
 
   root.traverse(o => {
-    if (!o.isMesh || o.userData?.[OVERLAY_FLAG]) return;
-    if (isPbrFormat) {
-      for (const m of [o.material].flat()) {
-        if (m && !m.userData?.__neutral) { hasPBR = true; break; }
+    if ((!o.isMesh && !o.isPoints) || o.userData?.[OVERLAY_FLAG]) return;
+    if (o.isMesh) {
+      hasWireframe = true;
+      hasNormal = true;
+      if (isPbrFormat) {
+        for (const m of [o.material].flat()) {
+          if (m && !m.userData?.__neutral) { hasPBR = true; break; }
+        }
       }
+    } else if (o.isPoints && o.geometry?.getAttribute?.('normal')) {
+      hasNormal = true;
     }
     const geometry = o.geometry;
     if (!geometry?.getAttribute) return;
@@ -76,7 +85,7 @@ export function analyzeModel(root, ext) {
     .filter(entry => entry && entry.count > 0)
     .map(({ name, minU, maxU, minV, maxV }) => ({ name, minU, maxU, minV, maxV }));
 
-  return { hasPBR, uvChannels };
+  return { hasWireframe, hasNormal, hasPBR, uvChannels };
 }
 
 // 顶点变换公共片段：支持静态网格、SkinnedMesh 蒙皮、MorphTarget 变形、InstancedMesh 实例化。
@@ -446,13 +455,93 @@ function makeWireOverlay(THREE, mesh, wireGeo, wireMat) {
   return overlay;
 }
 
-// 创建模型检视控制器：记住原始材质，管理检视材质与叠加对象的生命周期。
+// 点云法线检视材质（Points）：按世界空间点法线 normal * 0.5 + 0.5 上色。
+function makePointsNormalMaterial(THREE, pointSize = 2) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uPointSize: { value: Math.max(2, pointSize) } },
+    vertexShader: `
+uniform float uPointSize;
+varying vec3 vWorldNormal;
+void main() {
+  mat3 mm = mat3(modelMatrix);
+  vec3 worldN = normal / max(vec3(dot(mm[0], mm[0]), dot(mm[1], mm[1]), dot(mm[2], mm[2])), vec3(1e-12));
+  vWorldNormal = mm * worldN;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  gl_PointSize = uPointSize;
+}`,
+    fragmentShader: `
+varying vec3 vWorldNormal;
+void main() {
+  float len = length(vWorldNormal);
+  vec3 n = len > 1e-5 ? vWorldNormal / len : vec3(0.0, 1.0, 0.0);
+  gl_FragColor = vec4(n * 0.5 + 0.5, 1.0);
+}`,
+  });
+}
+
+// 点云 UV 检视材质（Points）：棋盘格、数值归一化（区分正负色相）、方向条纹（点元无屏幕导数，按固定带宽度取线）。
+function makePointsUvMaterial(THREE, channelInfo, uvMode, density, pointSize = 2) {
+  const modeIndex = uvMode === 'value' ? 1 : uvMode === 'stripes' ? 2 : 0;
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uMode: { value: modeIndex },
+      uDensity: { value: density },
+      uPointSize: { value: Math.max(2, pointSize) },
+      uMin: { value: new THREE.Vector2(channelInfo.minU, channelInfo.minV) },
+      uMax: { value: new THREE.Vector2(channelInfo.maxU, channelInfo.maxV) },
+    },
+    vertexShader: `
+${uvAttrDecl(channelInfo.name)}
+uniform float uPointSize;
+varying vec2 vUvVal;
+void main() {
+  vUvVal = ${channelInfo.name};
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  gl_PointSize = uPointSize;
+}`,
+    fragmentShader: `
+uniform int uMode;
+uniform float uDensity;
+uniform vec2 uMin;
+uniform vec2 uMax;
+varying vec2 vUvVal;
+void main() {
+  if (uMode == 0) {
+    vec2 cell = floor(vUvVal * uDensity);
+    float parity = mod(cell.x + cell.y, 2.0);
+    gl_FragColor = vec4(mix(vec3(0.22, 0.24, 0.28), vec3(0.86, 0.88, 0.90), parity), 1.0);
+    return;
+  }
+  if (uMode == 1) {
+    vec2 span = max(uMax - uMin, vec2(1e-6));
+    vec2 norm = clamp((vUvVal - uMin) / span, 0.0, 1.0);
+    vec3 col;
+    if (vUvVal.x < 0.0 && vUvVal.y < 0.0) {
+      col = vec3(0.14, 0.52 + 0.38 * norm.y, 0.72 + 0.28 * norm.x);
+    } else if (vUvVal.x < 0.0) {
+      col = vec3(0.12, 0.26 + 0.54 * norm.y, 0.65 + 0.35 * norm.x);
+    } else if (vUvVal.y < 0.0) {
+      col = vec3(0.55 + 0.45 * norm.x, 0.14, 0.65 + 0.35 * norm.y);
+    } else {
+      col = vec3(norm.x, norm.y, 0.12);
+    }
+    gl_FragColor = vec4(col, 1.0);
+    return;
+  }
+  float fv = fract(vUvVal.y * uDensity);
+  float line = step(min(fv, 1.0 - fv), 0.12);
+  gl_FragColor = vec4(mix(vec3(0.18, 0.22, 0.28), vec3(0.95, 0.78, 0.22), line), 1.0);
+}`,
+  });
+}
+
+// 创建模型检视控制器：记住原始材质（同时支持 Mesh 与 Points），管理检视材质与叠加对象的生命周期。
 export function createInspector(THREE, root, ext) {
   const caps = analyzeModel(root, ext);
   const uvMap = new Map(caps.uvChannels.map(info => [info.name, info]));
   const originals = new Map();
   root.traverse(o => {
-    if (o.isMesh && !o.userData?.[OVERLAY_FLAG]) originals.set(o, o.material);
+    if ((o.isMesh || o.isPoints) && !o.userData?.[OVERLAY_FLAG]) originals.set(o, o.material);
   });
 
   const ownedMaterials = new Set();
@@ -467,7 +556,7 @@ export function createInspector(THREE, root, ext) {
   function clearInspect() {
     for (const { parent, overlay } of overlays) parent.remove(overlay);
     overlays.length = 0;
-    for (const [mesh, material] of originals) mesh.material = material;
+    for (const [obj, material] of originals) obj.material = material;
     for (const mat of ownedMaterials) mat.dispose();
     ownedMaterials.clear();
     for (const geo of ownedGeometries) geo.dispose();
@@ -480,8 +569,10 @@ export function createInspector(THREE, root, ext) {
     const uvMode = next.uvMode ?? state.uvMode;
     const uvDensity = next.uvDensity ?? state.uvDensity;
 
-    // 校验不可用选项：无 PBR 或无对应 UV 通道时保持或回退到材质。
+    // 校验不可用选项：无网格、无法线、无 PBR 或无对应 UV 通道时回退到材质。
     let resolved = mode;
+    if (resolved === 'wireframe' && !caps.hasWireframe) resolved = 'material';
+    if (resolved === 'normal' && !caps.hasNormal) resolved = 'material';
     if (resolved.startsWith('pbr:') && !caps.hasPBR) resolved = 'material';
     if (resolved.startsWith('uv:') && !uvMap.has(resolved.slice(3))) resolved = 'material';
 
@@ -498,29 +589,42 @@ export function createInspector(THREE, root, ext) {
         if (!matBySide.has(side)) matBySide.set(side, track(makeWireframeMaterial(THREE, side)));
         return matBySide.get(side);
       };
-      for (const [mesh, orig] of originals) {
-        if (!mesh.geometry?.attributes?.position) continue;
-        const wireGeo = trackGeo(makeBarycentricGeometry(THREE, mesh.geometry));
-        const overlay = makeWireOverlay(THREE, mesh, wireGeo, wireMatFor(orig));
-        mesh.add(overlay);
-        overlays.push({ parent: mesh, overlay });
+      for (const [obj, orig] of originals) {
+        if (!obj.isMesh || !obj.geometry?.attributes?.position) continue;
+        const wireGeo = trackGeo(makeBarycentricGeometry(THREE, obj.geometry));
+        const overlay = makeWireOverlay(THREE, obj, wireGeo, wireMatFor(orig));
+        obj.add(overlay);
+        overlays.push({ parent: obj, overlay });
       }
       return { meta: '' };
     }
 
     if (resolved === 'normal') {
-      const normalMat = track(makeNormalMaterial(THREE));
-      for (const mesh of originals.keys()) mesh.material = normalMat;
+      let meshMat = null, pointsFallback = null;
+      for (const [obj, orig] of originals) {
+        if (obj.isMesh) {
+          if (!meshMat) meshMat = track(makeNormalMaterial(THREE));
+          obj.material = meshMat;
+        } else if (obj.isPoints) {
+          if (obj.geometry?.getAttribute?.('normal')) {
+            obj.material = track(makePointsNormalMaterial(THREE, orig?.size));
+          } else {
+            if (!pointsFallback) pointsFallback = track(new THREE.PointsMaterial({ size: Math.max(1, orig?.size ?? 1), sizeAttenuation: false, color: 0x666666 }));
+            obj.material = pointsFallback;
+          }
+        }
+      }
       return { meta: '' };
     }
 
     if (resolved.startsWith('pbr:')) {
       const channel = resolved.slice(4);
-      for (const [mesh, orig] of originals) {
+      for (const [obj, orig] of originals) {
+        if (!obj.isMesh) continue;
         if (Array.isArray(orig)) {
-          mesh.material = orig.map(m => track(makePbrChannelMaterial(THREE, channel, m, mesh.geometry)));
+          obj.material = orig.map(m => track(makePbrChannelMaterial(THREE, channel, m, obj.geometry)));
         } else {
-          mesh.material = track(makePbrChannelMaterial(THREE, channel, orig, mesh.geometry));
+          obj.material = track(makePbrChannelMaterial(THREE, channel, orig, obj.geometry));
         }
       }
       return { meta: '' };
@@ -529,14 +633,24 @@ export function createInspector(THREE, root, ext) {
     if (resolved.startsWith('uv:')) {
       const channelName = resolved.slice(3);
       const info = uvMap.get(channelName);
-      const uvMat = track(makeUvMaterial(THREE, info, uvMode, uvDensity));
-      let fallbackMat = null;
-      for (const mesh of originals.keys()) {
-        if (mesh.geometry?.getAttribute?.(channelName)) {
-          mesh.material = uvMat;
-        } else {
-          if (!fallbackMat) fallbackMat = track(new THREE.MeshBasicMaterial({ color: 0x666666, side: THREE.DoubleSide }));
-          mesh.material = fallbackMat;
+      let meshUvMat = null, meshFallback = null, pointsFallback = null;
+      for (const [obj, orig] of originals) {
+        const hasAttr = Boolean(obj.geometry?.getAttribute?.(channelName));
+        if (obj.isMesh) {
+          if (hasAttr) {
+            if (!meshUvMat) meshUvMat = track(makeUvMaterial(THREE, info, uvMode, uvDensity));
+            obj.material = meshUvMat;
+          } else {
+            if (!meshFallback) meshFallback = track(new THREE.MeshBasicMaterial({ color: 0x666666, side: THREE.DoubleSide }));
+            obj.material = meshFallback;
+          }
+        } else if (obj.isPoints) {
+          if (hasAttr) {
+            obj.material = track(makePointsUvMaterial(THREE, info, uvMode, uvDensity, orig?.size));
+          } else {
+            if (!pointsFallback) pointsFallback = track(new THREE.PointsMaterial({ size: Math.max(1, orig?.size ?? 1), sizeAttenuation: false, color: 0x666666 }));
+            obj.material = pointsFallback;
+          }
         }
       }
       return { meta: formatUvMeta(info) };
