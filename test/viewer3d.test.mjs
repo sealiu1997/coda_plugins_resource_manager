@@ -621,3 +621,31 @@ test('检视模式：STL 材质通道置灰且无 UV 选项；WebGL 不可用时
   assert.equal(noGl.head.hidden, true);
   assert.equal(noGl.head.children.length, 0);
 });
+
+test('检视模式：点云 PLY 线框置灰；带法线/UV 时可选，纯坐标点云法线也置灰', async t => {
+  const { PLYLoader } = await import('../view/vendor/three/jsm/loaders/PLYLoader.mjs');
+  const plyBuf = text => new TextEncoder().encode(text).buffer;
+  const withAttr = 'ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\nproperty float u\nproperty float v\nend_header\n0 0 0 0 0 1 0 0\n1 0 0 0 1 0 1 0\n0 1 0 1 0 0 0 1\n';
+  const rich = setup(t, {
+    path: 'cloud.ply',
+    extraModules: { 'loaders/PLYLoader': { PLYLoader } },
+    fetchResult: () => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => plyBuf(withAttr) }),
+  });
+  await flush();
+  const richOpts = rich.inspect().find(n => n.tagName === 'OPTION');
+  assert.notEqual(richOpts.find(o => o.getAttribute('value') === 'wireframe').getAttribute('disabled'), null, '点云线框置灰');
+  assert.equal(richOpts.find(o => o.getAttribute('value') === 'normal').getAttribute('disabled'), null, '带法线的点云法线可用');
+  assert.ok(richOpts.find(o => o.getAttribute('value') === 'uv:uv'), '带 UV 的点云列出 uv 选项');
+
+  const bareText = 'ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nend_header\n0 0 0\n1 0 0\n0 1 0\n';
+  const bare = setup(t, {
+    path: 'bare.ply',
+    extraModules: { 'loaders/PLYLoader': { PLYLoader } },
+    fetchResult: () => ({ ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => plyBuf(bareText) }),
+  });
+  await flush();
+  const bareOpts = bare.inspect().find(n => n.tagName === 'OPTION');
+  assert.notEqual(bareOpts.find(o => o.getAttribute('value') === 'wireframe').getAttribute('disabled'), null);
+  assert.notEqual(bareOpts.find(o => o.getAttribute('value') === 'normal').getAttribute('disabled'), null);
+  assert.equal(bareOpts.filter(o => o.getAttribute('value')?.startsWith('uv:')).length, 0);
+});

@@ -264,14 +264,14 @@ export function mountViewer({ body, head = null, token, path, size, version, onM
     manager.onLoad = () => requestRender(); // 贴图晚到（obj 的 mtl 里的贴图）：到了就重画
 
     const baseMeta = [stats.triangles > 0 || stats.points === 0 ? `${count(stats.triangles)} 面` : `${count(stats.points)} 个点`, clips.length ? `${clips.length} 段动画` : ''];
-    // 检视模式：按模型能力填充选项（无 PBR 时材质通道置灰；只列出模型里实际存在的 UV 通道）。
+    // 检视模式：按模型能力填充选项（无网格时线框置灰；无法线时法线置灰；无 PBR 时材质通道置灰；只列出模型里实际存在的 UV 通道）。
     const inspector = held.inspector = createInspector(THREE, wrapper, ext);
-    const { hasPBR, uvChannels } = inspector.caps;
+    const { hasWireframe, hasNormal, hasPBR, uvChannels } = inspector.caps;
     inspectSelect.replaceChildren(
       h('option', { value: 'material' }, '材质'),
       h('optgroup', { label: '形体' },
-        h('option', { value: 'wireframe' }, '线框'),
-        h('option', { value: 'normal' }, '法线')),
+        h('option', { value: 'wireframe', disabled: !hasWireframe && '' }, '线框'),
+        h('option', { value: 'normal', disabled: !hasNormal && '' }, '法线')),
       h('optgroup', { label: '材质通道' },
         ...PBR_CHANNELS.map(({ id, label }) => h('option', { value: `pbr:${id}`, disabled: !hasPBR && '' }, label))),
       ...(uvChannels.length ? [h('optgroup', { label: 'UV 通道' },

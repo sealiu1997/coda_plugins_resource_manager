@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as THREE from '../view/vendor/three/build/three.module.mjs';
 import { GLTFLoader } from '../view/vendor/three/jsm/loaders/GLTFLoader.mjs';
+import { PLYLoader } from '../view/vendor/three/jsm/loaders/PLYLoader.mjs';
 import { STLLoader } from '../view/vendor/three/jsm/loaders/STLLoader.mjs';
 import { PBR_CHANNELS, analyzeModel, createInspector, formatUvMeta } from '../view/inspect3d.mjs';
 import { buildGlbWithUvs, buildSkinnedAnimatedGlb } from './support/glb.mjs';
@@ -219,4 +220,57 @@ test('带骨骼动画的真实 glb：各检视模式下姿势随动画持续变�
     prevX = pos.x;
   }
   inspector.dispose();
+});
+
+test('PLY 点云与网格：点云无面时线框不可用，带法线和 UV 时法线/UV 可用；网格 PLY 支持线框、法线与 UV', () => {
+  const bufOf = text => { const b = Buffer.from(text); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); };
+
+  // 1) 带法线和 UV 的点云 PLY
+  const cloudWithAttr = 'ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nproperty float nx\nproperty float ny\nproperty float nz\nproperty float s\nproperty float t\nend_header\n0 0 0 0 0 1 -1 0.5\n1 0 0 0 1 0 2 1.5\n0 1 0 1 0 0 0.5 -0.25\n';
+  const cloudGeo = new PLYLoader().parse(bufOf(cloudWithAttr));
+  const cloudMat = new THREE.PointsMaterial({ size: 1, sizeAttenuation: false });
+  const points = new THREE.Points(cloudGeo, cloudMat);
+  const root1 = new THREE.Group();
+  root1.add(points);
+
+  const ins1 = createInspector(THREE, root1, 'ply');
+  assert.equal(ins1.caps.hasWireframe, false);
+  assert.equal(ins1.caps.hasNormal, true);
+  assert.equal(ins1.caps.hasPBR, false);
+  assert.deepEqual(ins1.caps.uvChannels, [{ name: 'uv', minU: -1, maxU: 2, minV: -0.25, maxV: 1.5 }]);
+
+  ins1.apply({ mode: 'wireframe' });
+  assert.equal(ins1.state.mode, 'material', '点云切线框回退到材质');
+
+  ins1.apply({ mode: 'normal' });
+  assert.equal(ins1.state.mode, 'normal');
+  assert.equal(points.material.isShaderMaterial, true);
+
+  const uvRes = ins1.apply({ mode: 'uv:uv', uvMode: 'value' });
+  assert.equal(uvRes.meta, 'uv U[-1, 2] V[-0.25, 1.5]');
+  assert.equal(points.material.isShaderMaterial, true);
+
+  ins1.dispose();
+  assert.equal(points.material, cloudMat);
+
+  // 2) 纯坐标点云 PLY（无面、无法线、无 UV）
+  const bareCloud = 'ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nend_header\n0 0 0\n1 0 0\n0 1 0\n';
+  const bareRoot = new THREE.Group();
+  bareRoot.add(new THREE.Points(new PLYLoader().parse(bufOf(bareCloud)), new THREE.PointsMaterial()));
+  const bareCaps = analyzeModel(bareRoot, 'ply');
+  assert.deepEqual(bareCaps, { hasWireframe: false, hasNormal: false, hasPBR: false, uvChannels: [] });
+
+  // 3) 带面与面级 texcoord 的网格 PLY
+  const meshPly = 'ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_indices\nproperty list uchar float texcoord\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2 6 0 0 1 0 0 1\n';
+  const meshGeo = new PLYLoader().parse(bufOf(meshPly));
+  meshGeo.computeVertexNormals();
+  const neutral = new THREE.MeshStandardMaterial({ color: 0xb8bcc4 });
+  neutral.userData.__neutral = true;
+  const meshRoot = new THREE.Group();
+  meshRoot.add(new THREE.Mesh(meshGeo, neutral));
+  const meshCaps = analyzeModel(meshRoot, 'ply');
+  assert.equal(meshCaps.hasWireframe, true);
+  assert.equal(meshCaps.hasNormal, true);
+  assert.equal(meshCaps.hasPBR, false);
+  assert.deepEqual(meshCaps.uvChannels, [{ name: 'uv', minU: 0, maxU: 1, minV: 0, maxV: 1 }]);
 });
