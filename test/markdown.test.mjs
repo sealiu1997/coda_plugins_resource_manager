@@ -253,6 +253,39 @@ test('Setext 标题、有序列表任务清单与引用式相对图片/链接回
   assert.equal(md.textContent.includes('[logo]:'), false, '引用定义行不应显示在正文中');
 });
 
+test('引用定义块级语义回归：保留列表内围栏代码与段落续行，并支持引用块内图片与定义', async t => {
+  await withDom(t);
+  const src = [
+    '- ```text',
+    '  [example]: example.txt',
+    '  ```',
+    '',
+    'See the following',
+    '[example]: example.txt',
+    '',
+    '> ![Quoted][q]',
+    '>',
+    '> [q]: assets/quoted.png',
+  ].join('\n');
+
+  const md = renderMarkdown(src, {
+    basePath: 'README.md',
+    resolveImage: rel => `coda-view://service/media/tok1/${rel}`,
+  });
+
+  const code = byClass(md, 'md-code')[0];
+  assert.equal(code?.textContent, '[example]: example.txt', '列表内围栏代码块不得被引用定义吞掉');
+
+  const para = byTag(md, 'p').find(p => p.textContent.includes('See the following'));
+  assert.equal(para?.textContent, 'See the following\n[example]: example.txt', '段落续行不得被引用定义吞掉');
+
+  const bq = byTag(md, 'blockquote')[0];
+  const img = byTag(bq, 'img')[0];
+  assert.equal(img?.getAttribute('src'), 'coda-view://service/media/tok1/assets/quoted.png', '引用块内定义与图片应正常渲染');
+  assert.equal(img?.getAttribute('alt'), 'Quoted');
+  assert.equal(bq.textContent.includes('[q]:'), false, '引用块内的定义行不显示为字面文本');
+});
+
 test('读取失败/换根后清除 Markdown 缓存并隐藏切换栏，不会恢复旧正文', async t => {
   const roots = {
     '/A': { 'README.md': '# 根A正文\n' },

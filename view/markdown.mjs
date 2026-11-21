@@ -353,15 +353,16 @@ function isBlockStart(lines, i) {
   return false;
 }
 
-function parseBlocks(lines, ctx, depth = 0) {
-  if (depth > MAX_DEPTH) return [h('p', {}, lines.join('\n'))];
-  const nodes = [];
+// 第一阶段：块级解析生成 AST，仅在合法块起始位置（含顶层、引用块、列表项内，排除代码块与段落续行）收集引用定义。
+function parseBlockAst(lines, defs, depth = 0) {
+  if (depth > MAX_DEPTH) return [{ type: 'paragraph', text: lines.join('\n') }];
+  const blocks = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     if (line.trim() === '') { i++; continue; }
 
-    // 围栏代码块
+    // 围栏代码块（内部内容原样保留，绝不提取引用定义）
     const fence = FENCE_RE.exec(line);
     if (fence) {
       const markerChar = fence[1][0], markerLen = fence[1].length, info = fence[2];
@@ -370,28 +371,26 @@ function parseBlocks(lines, ctx, depth = 0) {
       const closeRe = new RegExp(`^ {0,3}${markerChar}{${markerLen},}[ \\t]*$`);
       while (i < lines.length && !closeRe.test(lines[i])) { codeLines.push(lines[i]); i++; }
       if (i < lines.length) i++;
-      nodes.push(renderCodeBlock(codeLines.join('\n'), info));
+      blocks.push({ type: 'code', code: codeLines.join('\n'), info });
       continue;
     }
 
-    // 标题
+    // ATX 标题
     const heading = HEADING_RE.exec(line);
     if (heading) {
-      const level = heading[1].length;
-      const content = (heading[2] ?? '').replace(/[ \t]+#+[ \t]*$/, '');
-      nodes.push(h(`h${level}`, {}, ...parseInline(content, ctx)));
+      blocks.push({ type: 'heading', level: heading[1].length, text: (heading[2] ?? '').replace(/[ \t]+#+[ \t]*$/, '') });
       i++;
       continue;
     }
 
     // 分隔线
     if (HR_RE.test(line)) {
-      nodes.push(h('hr'));
+      blocks.push({ type: 'hr' });
       i++;
       continue;
     }
 
-    // 引用块
+    // 引用块（递归解析内部块，合法引用定义会自然收集到共享 defs）
     if (QUOTE_RE.test(line)) {
       const inner = [];
       while (i < lines.length) {
@@ -399,7 +398,7 @@ function parseBlocks(lines, ctx, depth = 0) {
         if (m) { inner.push(m[1]); i++; }
         else break;
       }
-      nodes.push(h('blockquote', {}, ...parseBlocks(inner, ctx, depth + 1)));
+      blocks.push({ type: 'blockquote', children: parseBlockAst(inner, defs, depth + 1) });
       continue;
     }
 
@@ -408,15 +407,12 @@ function parseBlocks(lines, ctx, depth = 0) {
       const headers = splitTableRow(line);
       const aligns = parseAligns(lines[i + 1].trim());
       i += 2;
-      const bodyRows = [];
+      const rows = [];
       while (i < lines.length && lines[i].trim() !== '' && lines[i].includes('|') && !FENCE_RE.test(lines[i])) {
-        bodyRows.push(splitTableRow(lines[i]));
+        rows.push(splitTableRow(lines[i]));
         i++;
       }
-      const alignAttr = idx => (aligns[idx] ? { style: `text-align:${aligns[idx]}` } : {});
-      const thead = h('thead', {}, h('tr', {}, ...headers.map((cell, idx) => h('th', alignAttr(idx), ...parseInline(cell, ctx)))));
-      const tbody = h('tbody', {}, ...bodyRows.map(cells => h('tr', {}, ...headers.map((_, idx) => h('td', alignAttr(idx), ...parseInline(cells[idx] ?? '', ctx))))));
-      nodes.push(h('div', { class: 'md-table-wrap' }, h('table', {}, thead, tbody)));
+      blocks.push({ type: 'table', headers, aligns, rows });
       continue;
     }
 
@@ -430,6 +426,7 @@ function parseBlocks(lines, ctx, depth = 0) {
       while (i < lines.length) {
         const m = LIST_RE.exec(lines[i]);
         if (!m || m[1].length !== baseIndent || (m[3] !== undefined) !== ordered) break;
+        const contentIndent = m[1].length + m[2].length + 1;
         const itemLines = [m[4]];
         i++;
         while (i < lines.length) {
@@ -440,7 +437,7 @@ function parseBlocks(lines, ctx, depth = 0) {
           const nextList = LIST_RE.exec(lines[i]);
           if (nextList && nextList[1].length <= baseIndent) break;
           if (/^ +/.test(lines[i])) {
-            const strip = Math.min(lines[i].match(/^ */)[0].length, baseIndent + 2);
+            const strip = Math.min(lines[i].match(/^ */)[0].length, contentIndent);
             itemLines.push(lines[i].slice(strip));
             i++;
           } else if (!isBlockStart(lines, i)) {
@@ -454,22 +451,38 @@ function parseBlocks(lines, ctx, depth = 0) {
         if (task) {
           itemLines[0] = task[2];
           const checked = task[1].toLowerCase() === 'x';
-          const content = itemLines.length === 1
-            ? parseInline(itemLines[0], ctx)
-            : parseBlocks(itemLines, ctx, depth + 1);
-          items.push(h('li', { class: 'md-task' }, h('input', { type: 'checkbox', disabled: '', checked: checked ? '' : null }), h('span', {}, ...content)));
+          const hasSubBlock = itemLines.some(l => l.trim() === '' || FENCE_RE.test(l) || QUOTE_RE.test(l) || LIST_RE.test(l));
+          items.push({
+            task: { checked },
+            blocks: hasSubBlock ? parseBlockAst(itemLines, defs, depth + 1) : null,
+            text: hasSubBlock ? null : itemLines.join('\n'),
+          });
         } else {
-          const hasSubBlock = itemLines.slice(1).some(l => l.trim() === '' || LIST_RE.test(l) || FENCE_RE.test(l) || QUOTE_RE.test(l));
-          const content = hasSubBlock ? parseBlocks(itemLines, ctx, depth + 1) : parseInline(itemLines.join('\n'), ctx);
-          items.push(h('li', {}, ...content));
+          const hasSubBlock = itemLines.some(l => l.trim() === '' || FENCE_RE.test(l) || QUOTE_RE.test(l) || LIST_RE.test(l))
+            || LINK_DEF_RE.test(itemLines[0]);
+          items.push({
+            task: null,
+            blocks: hasSubBlock ? parseBlockAst(itemLines, defs, depth + 1) : null,
+            text: hasSubBlock ? null : itemLines.join('\n'),
+          });
         }
       }
-      const attrs = ordered && startNum !== 1 ? { start: String(startNum) } : {};
-      nodes.push(h(ordered ? 'ol' : 'ul', attrs, ...items));
+      blocks.push({ type: 'list', ordered, startNum, items });
       continue;
     }
 
-    // Setext 标题或普通段落（紧跟普通行后的 === / --- 下划线解析为 h1 / h2）
+    // 独立引用定义（CommonMark：只能在块起始位置出现，不能打断段落）
+    const def = LINK_DEF_RE.exec(line);
+    if (def) {
+      const key = normalizeLabel(def[1]);
+      if (key && !defs.has(key)) {
+        defs.set(key, { dest: def[2] ?? def[3], title: def[4] ?? def[5] ?? def[6] ?? '' });
+      }
+      i++;
+      continue;
+    }
+
+    // Setext 标题或普通段落（紧跟普通行后的 === / --- 下划线解析为 h1 / h2；引用定义不能打断段落）
     const para = [line];
     i++;
     let setextLevel = 0;
@@ -480,46 +493,46 @@ function parseBlocks(lines, ctx, depth = 0) {
       para.push(lines[i]);
       i++;
     }
-    if (setextLevel) nodes.push(h(`h${setextLevel}`, {}, ...parseInline(para.join('\n').trim(), ctx)));
-    else nodes.push(h('p', {}, ...parseInline(para.join('\n'), ctx)));
+    if (setextLevel) blocks.push({ type: 'heading', level: setextLevel, text: para.join('\n').trim() });
+    else blocks.push({ type: 'paragraph', text: para.join('\n') });
   }
-  return nodes;
+  return blocks;
 }
 
-// 预扫描提取引用式链接/图片定义（跳过围栏代码块），返回过滤后的正文行与定义表。
-function extractLinkDefs(lines) {
-  const defs = new Map();
-  const kept = [];
-  let fenceClose = null;
-  for (const line of lines) {
-    if (fenceClose) {
-      kept.push(line);
-      if (fenceClose.test(line)) fenceClose = null;
-      continue;
-    }
-    const fence = FENCE_RE.exec(line);
-    if (fence) {
-      fenceClose = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}[ \\t]*$`);
-      kept.push(line);
-      continue;
-    }
-    const def = LINK_DEF_RE.exec(line);
-    if (def) {
-      const key = normalizeLabel(def[1]);
-      if (key && !defs.has(key)) {
-        defs.set(key, { dest: def[2] ?? def[3], title: def[4] ?? def[5] ?? def[6] ?? '' });
+// 第二阶段：使用完整收集好的 defs 将块级 AST 渲染为安全 DOM 节点。
+function renderBlockAst(blocks, ctx) {
+  return blocks.map(block => {
+    switch (block.type) {
+      case 'code': return renderCodeBlock(block.code, block.info);
+      case 'heading': return h(`h${block.level}`, {}, ...parseInline(block.text, ctx));
+      case 'hr': return h('hr');
+      case 'blockquote': return h('blockquote', {}, ...renderBlockAst(block.children, ctx));
+      case 'table': {
+        const alignAttr = idx => (block.aligns[idx] ? { style: `text-align:${block.aligns[idx]}` } : {});
+        const thead = h('thead', {}, h('tr', {}, ...block.headers.map((cell, idx) => h('th', alignAttr(idx), ...parseInline(cell, ctx)))));
+        const tbody = h('tbody', {}, ...block.rows.map(cells => h('tr', {}, ...block.headers.map((_, idx) => h('td', alignAttr(idx), ...parseInline(cells[idx] ?? '', ctx))))));
+        return h('div', { class: 'md-table-wrap' }, h('table', {}, thead, tbody));
       }
-      continue;
+      case 'list': {
+        const attrs = block.ordered && block.startNum !== 1 ? { start: String(block.startNum) } : {};
+        return h(block.ordered ? 'ol' : 'ul', attrs, ...block.items.map(item => {
+          const content = item.blocks ? renderBlockAst(item.blocks, ctx) : parseInline(item.text, ctx);
+          if (item.task) {
+            return h('li', { class: 'md-task' }, h('input', { type: 'checkbox', disabled: '', checked: item.task.checked ? '' : null }), h('span', {}, ...content));
+          }
+          return h('li', {}, ...content);
+        }));
+      }
+      default: return h('p', {}, ...parseInline(block.text, ctx));
     }
-    kept.push(line);
-  }
-  return { lines: kept, defs };
+  });
 }
 
 // 渲染 Markdown 文本为 .md 容器节点；绝不解析原始 HTML。
 export function renderMarkdown(text, { basePath = '', resolveImage = null } = {}) {
   const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
-  const { lines, defs } = extractLinkDefs(normalized.split('\n'));
+  const defs = new Map();
+  const ast = parseBlockAst(normalized.split('\n'), defs);
   const ctx = { basePath, resolveImage, defs };
-  return h('div', { class: 'md selectable' }, ...parseBlocks(lines, ctx));
+  return h('div', { class: 'md selectable' }, ...renderBlockAst(ast, ctx));
 }
