@@ -78,10 +78,23 @@ const MEDIA_TYPES = {
 };
 // 模型的伴随文件：服务要供应（gltf 的 .bin、obj 的 .mtl），但页面不把它们当媒体预览（.mtl 仍是文本，.bin 仍是二进制）。
 const COMPANION_TYPES = { bin: 'application/octet-stream', mtl: 'text/plain; charset=utf-8' };
+// 文件打开偏好的类别（按类别记忆默认打开方式，初始全部走资源管理器页内预览）。
+export const OpenCategory = Object.freeze({
+  MARKDOWN: 'markdown',
+  DOCUMENT: 'document', // PDF / Office / iWork
+  IMAGE: 'image',
+  AUDIO: 'audio',
+  VIDEO: 'video',
+  MODEL: 'model',
+  TEXT: 'text', // 代码、纯文本及其他文件
+});
+export const OpenWith = Object.freeze({ INLINE: 'inline', CODA: 'coda' });
 // 经 Coda 的 coda.open 预览的文档类型：统一经插件本机流式服务供应，复用 resolveInRoot 与 O_NOFOLLOW 校验，防止越出工作目录。
-const DOCUMENT_TYPES = {
+const MARKDOWN_TYPES = {
   md: 'text/markdown; charset=utf-8',
   markdown: 'text/markdown; charset=utf-8',
+};
+const DOCUMENT_TYPES = {
   pdf: 'application/pdf',
   doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -94,30 +107,73 @@ const DOCUMENT_TYPES = {
   numbers: 'application/vnd.apple.numbers',
   key: 'application/vnd.apple.keynote',
 };
-// Markdown 相对链接可能指向的常见目录内文本/代码文件：只供流式服务响应相对链接，直接点击时仍走页内预览。
-const LINK_TARGET_TYPES = {
+// 常见目录内文本/代码文件：供流式服务响应 Markdown 相对链接以及用户手动选「在 Coda 中打开」；不改变媒体预览判定。
+const TEXT_SERVED_TYPES = {
   txt: 'text/plain; charset=utf-8',
   csv: 'text/csv; charset=utf-8',
   tsv: 'text/tab-separated-values; charset=utf-8',
   json: 'application/json; charset=utf-8',
+  jsonc: 'application/json; charset=utf-8',
+  json5: 'application/json; charset=utf-8',
   yaml: 'text/yaml; charset=utf-8',
   yml: 'text/yaml; charset=utf-8',
   xml: 'application/xml; charset=utf-8',
+  xhtml: 'application/xhtml+xml; charset=utf-8',
+  plist: 'application/xml; charset=utf-8',
   html: 'text/html; charset=utf-8',
   htm: 'text/html; charset=utf-8',
   css: 'text/css; charset=utf-8',
+  scss: 'text/plain; charset=utf-8',
+  less: 'text/plain; charset=utf-8',
   js: 'text/javascript; charset=utf-8',
   mjs: 'text/javascript; charset=utf-8',
+  cjs: 'text/javascript; charset=utf-8',
+  jsx: 'text/plain; charset=utf-8',
   ts: 'text/plain; charset=utf-8',
   tsx: 'text/plain; charset=utf-8',
-  jsx: 'text/plain; charset=utf-8',
+  mts: 'text/plain; charset=utf-8',
+  cts: 'text/plain; charset=utf-8',
   py: 'text/plain; charset=utf-8',
+  pyw: 'text/plain; charset=utf-8',
+  pyi: 'text/plain; charset=utf-8',
   go: 'text/plain; charset=utf-8',
   rs: 'text/plain; charset=utf-8',
+  swift: 'text/plain; charset=utf-8',
+  java: 'text/plain; charset=utf-8',
+  kt: 'text/plain; charset=utf-8',
+  kts: 'text/plain; charset=utf-8',
+  c: 'text/plain; charset=utf-8',
+  h: 'text/plain; charset=utf-8',
+  cc: 'text/plain; charset=utf-8',
+  cpp: 'text/plain; charset=utf-8',
+  cxx: 'text/plain; charset=utf-8',
+  hpp: 'text/plain; charset=utf-8',
+  hh: 'text/plain; charset=utf-8',
+  m: 'text/plain; charset=utf-8',
+  mm: 'text/plain; charset=utf-8',
+  cs: 'text/plain; charset=utf-8',
+  php: 'text/plain; charset=utf-8',
+  rb: 'text/plain; charset=utf-8',
+  lua: 'text/plain; charset=utf-8',
+  r: 'text/plain; charset=utf-8',
+  pl: 'text/plain; charset=utf-8',
+  pm: 'text/plain; charset=utf-8',
+  dart: 'text/plain; charset=utf-8',
+  scala: 'text/plain; charset=utf-8',
+  vue: 'text/plain; charset=utf-8',
   sh: 'text/plain; charset=utf-8',
+  bash: 'text/plain; charset=utf-8',
+  zsh: 'text/plain; charset=utf-8',
+  mk: 'text/plain; charset=utf-8',
+  dockerfile: 'text/plain; charset=utf-8',
+  diff: 'text/plain; charset=utf-8',
+  patch: 'text/plain; charset=utf-8',
+  graphql: 'text/plain; charset=utf-8',
+  gql: 'text/plain; charset=utf-8',
   sql: 'text/plain; charset=utf-8',
   toml: 'text/plain; charset=utf-8',
   ini: 'text/plain; charset=utf-8',
+  cfg: 'text/plain; charset=utf-8',
   log: 'text/plain; charset=utf-8',
 };
 // 查证过 Coda 播放器不支持的视频：按扩展名直接不预览，不读字节（mkv 容器不支持，avi 的 canPlayType 说 maybe 但实际报错）。
@@ -139,22 +195,28 @@ export function mediaOf(name) {
   return entry ? { kind: entry[0], type: entry[1], preview: true } : null;
 }
 
-// 按扩展名判断是否优先经本机流式服务走 coda.open（PDF / Office / iWork / Markdown 返回 'media'，其余返回 null 保持页内预览）。
-export function externalPreviewOf(name) {
+// 按扩展名归类用于记忆打开方式（OpenCategory 之一）。
+export function openCategoryOf(name) {
   const ext = extensionOf(name);
-  if (!ext) return null;
-  return Object.hasOwn(DOCUMENT_TYPES, ext) ? 'media' : null;
+  if (ext) {
+    if (Object.hasOwn(MARKDOWN_TYPES, ext)) return OpenCategory.MARKDOWN;
+    if (Object.hasOwn(DOCUMENT_TYPES, ext)) return OpenCategory.DOCUMENT;
+  }
+  const media = mediaOf(name);
+  if (media) return media.kind; // 'image' | 'audio' | 'video' | 'model' 与 OpenCategory 一致
+  return OpenCategory.TEXT;
 }
 
-// 流式服务肯供应的文件的 MIME 类型：能预览的媒体、模型的伴随文件、经 coda.open 预览的文档和 Markdown 相对链接目标；其余返回 null（服务回 415）。
+// 流式服务肯供应的文件的 MIME 类型：能预览的媒体、模型的伴随文件、文档、Markdown 和常见文本/代码；其余返回 null（服务回 415）。
 export function servedType(name) {
   const media = mediaOf(name);
   if (media) return media.preview ? media.type : null;
   const ext = extensionOf(name);
   if (!ext) return null;
   if (Object.hasOwn(COMPANION_TYPES, ext)) return COMPANION_TYPES[ext];
+  if (Object.hasOwn(MARKDOWN_TYPES, ext)) return MARKDOWN_TYPES[ext];
   if (Object.hasOwn(DOCUMENT_TYPES, ext)) return DOCUMENT_TYPES[ext];
-  if (Object.hasOwn(LINK_TARGET_TYPES, ext)) return LINK_TARGET_TYPES[ext];
+  if (Object.hasOwn(TEXT_SERVED_TYPES, ext)) return TEXT_SERVED_TYPES[ext];
   return null;
 }
 

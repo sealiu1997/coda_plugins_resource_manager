@@ -187,7 +187,7 @@ test('行菜单（Mac 右键）：打开、添加到聊天、复制路径、在�
   await search(ctx, 'x', [hit('dir/x.txt'), hit('to', 'link')]);
   hitNamed(ctx.page, 'dir/x.txt').dispatch('contextmenu', { clientX: 5, clientY: 5 });
   const labels = () => ctx.page.menu.find(node => node.tagName === 'BUTTON').map(node => node.textContent);
-  assert.deepEqual(labels(), ['打开', '添加到聊天', '复制相对路径', '复制绝对路径', '在目录中显示', '属性']);
+  assert.deepEqual(labels(), ['打开', '在 Coda 中打开', '添加到聊天', '复制相对路径', '复制绝对路径', '在目录中显示', '属性']);
   assert.equal(ctx.page.menu.find(node => node.classList.contains('menu-path'))[0].textContent, 'dir/x.txt');
   hitNamed(ctx.page, 'to').dispatch('contextmenu', { clientX: 5, clientY: 5 });
   assert.deepEqual(labels(), ['复制相对路径', '复制绝对路径', '在目录中显示', '属性']);

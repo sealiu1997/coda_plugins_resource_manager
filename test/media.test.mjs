@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import { createMedia } from '../lib/media.mjs';
-import { externalPreviewOf, mediaOf, servedType } from '../view/protocol.mjs';
+import { OpenCategory, mediaOf, openCategoryOf, servedType } from '../view/protocol.mjs';
 import { tempDir } from './support/fake.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -192,16 +192,27 @@ test('跨源：所有响应（含 304、416 和各种错误）带 Access-Control
   assert.equal((await get('a.mp3', { method: 'POST' })).res.status, 405);
 });
 
-test('coda.open 文档类型与嵌套 Markdown 相对链接：统一经流式服务供应并受工作目录校验约束', async t => {
-  for (const ext of ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf', 'pages', 'numbers', 'key', 'md', 'markdown']) {
-    assert.equal(externalPreviewOf(`docs/file.${ext}`), 'media', ext);
-    assert.equal(externalPreviewOf(`docs/FILE.${ext.toUpperCase()}`), 'media', ext.toUpperCase());
+test('打开偏好类别归类与嵌套 Markdown 相对链接：统一经流式服务供应并受工作目录校验约束', async t => {
+  for (const ext of ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf', 'pages', 'numbers', 'key']) {
+    assert.equal(openCategoryOf(`docs/file.${ext}`), OpenCategory.DOCUMENT, ext);
+    assert.equal(openCategoryOf(`docs/FILE.${ext.toUpperCase()}`), OpenCategory.DOCUMENT, ext.toUpperCase());
     assert.equal(mediaOf(`docs/file.${ext}`), null, `${ext} 不当页内媒体预览`);
     assert.ok(servedType(`docs/file.${ext}`), `${ext} 流式服务放行`);
   }
-  for (const name of ['a.txt', 'a.js', 'a.json', 'a.png', 'a.mp3', 'a.mp4', 'a.glb', 'README', '.md', '.pdf', 'dir.pdf/README', 'a.toString', '']) {
-    assert.equal(externalPreviewOf(name), null, name);
+  for (const ext of ['md', 'markdown']) {
+    assert.equal(openCategoryOf(`docs/file.${ext}`), OpenCategory.MARKDOWN, ext);
+    assert.equal(openCategoryOf(`docs/FILE.${ext.toUpperCase()}`), OpenCategory.MARKDOWN, ext.toUpperCase());
+    assert.equal(mediaOf(`docs/file.${ext}`), null, `${ext} 不当页内媒体预览`);
+    assert.equal(servedType(`docs/file.${ext}`), 'text/markdown; charset=utf-8', ext);
   }
+  assert.equal(openCategoryOf('a.png'), OpenCategory.IMAGE);
+  assert.equal(openCategoryOf('a.mp3'), OpenCategory.AUDIO);
+  assert.equal(openCategoryOf('a.mp4'), OpenCategory.VIDEO);
+  assert.equal(openCategoryOf('a.glb'), OpenCategory.MODEL);
+  for (const name of ['a.txt', 'a.js', 'a.swift', 'a.json', 'README', '.md', '.pdf', 'dir.pdf/README', 'a.toString', '']) {
+    assert.equal(openCategoryOf(name), OpenCategory.TEXT, name);
+  }
+  assert.equal(servedType('a.swift'), 'text/plain; charset=utf-8');
   const { root, base, url } = await serving(t);
   await mkdir(join(root, 'docs'), { recursive: true });
   await mkdir(join(root, 'assets'), { recursive: true });

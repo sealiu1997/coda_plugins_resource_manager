@@ -28,7 +28,7 @@ test('长按：按住 500 毫秒打开菜单，写完整相对路径，复制按
   assert.ok(visible(page.menu));
   assert.equal(page.menu.find(node => node.classList.contains('menu-path'))[0].textContent, LONG, '长文件名在菜单里看全');
   const buttons = page.menu.find(node => node.tagName === 'BUTTON').map(node => node.textContent);
-  assert.deepEqual(buttons, ['添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
+  assert.deepEqual(buttons, ['在 Coda 中打开', '添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
   assert.match(page.menu.style.left, /var\(--safe-left\)/);
   assert.match(page.menu.style.top, /var\(--safe-bottom\)/);
   page.menu.find(node => node.textContent === '复制相对路径')[0].dispatch('click');

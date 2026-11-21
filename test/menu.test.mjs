@@ -149,7 +149,7 @@ test('切会话时清掉 ⋯ 菜单；长按的路径菜单和 ⋯ 共用同一�
   row.dispatch('pointerdown', { pointerId: 1, isPrimary: true, clientX: 50, clientY: 60 });
   tick(500);
   assert.ok(visible(page.menu));
-  assert.deepEqual(items(page).map(node => node.textContent), ['添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
+  assert.deepEqual(items(page).map(node => node.textContent), ['在 Coda 中打开', '添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
   assert.ok(items(page).every(node => node.getAttribute('role') === 'menuitem'));
   assert.equal(parts(page).more.getAttribute('aria-expanded'), 'false', '点位置打开的菜单不属于 ⋯');
   pointerClick(parts(page).more);

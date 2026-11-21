@@ -36,7 +36,7 @@ const choose = (page, label) => buttons(page).find(node => node.textContent === 
 test('右键添加：页面右键 → add_text → 模块调 append-draft（保留附件）→ 回答 → 提示「已添加到输入框」', async t => {
   const { page, fake, draft, copied } = await setup(t, { draft: { text: '看看', attachments: [{ id: 'f1' }] } });
   rowNamed(page, 'a.txt').dispatch('contextmenu', { clientX: 5, clientY: 6 });
-  assert.deepEqual(buttons(page).map(node => node.textContent), ['打开', '添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
+  assert.deepEqual(buttons(page).map(node => node.textContent), ['打开', '在 Coda 中打开', '添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
   choose(page, '添加到聊天');
   await waitFor(() => page.hint.textContent === '已添加到输入框', '成功提示');
   assert.deepEqual(fake.calls.map(entry => ({ resource: entry.resource, name: entry.name, input: entry.input })), [
