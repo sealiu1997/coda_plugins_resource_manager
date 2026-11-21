@@ -40,7 +40,7 @@ test('右键添加：页面右键 → add_text → 模块调 append-draft（保�
   choose(page, '添加到聊天');
   await waitFor(() => page.hint.textContent === '已添加到输入框', '成功提示');
   assert.deepEqual(fake.calls.map(entry => ({ resource: entry.resource, name: entry.name, input: entry.input })), [
-    { resource: { kind: 'coda/thread@1', id: 'A' }, name: 'append-draft', input: { text: 'a.txt', line: false } },
+    { resource: { kind: 'coda/thread@1', id: 'A' }, name: 'append-draft', input: { text: 'a.txt ', line: false } },
   ]);
   assert.equal(draft.text, '看看 a.txt ');
   assert.deepEqual(draft.attachments, [{ id: 'f1' }]);

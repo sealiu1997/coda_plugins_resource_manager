@@ -40,10 +40,14 @@ export const workspaceOf = (path, state = 'ready', project = null) => ({
 });
 export const checkoutOf = workspaceOf;
 
-// 模拟 Coda 服务端 append-draft 的拼接规则：line 为 true 另起一行并结尾换行，false 前后留空格。
+// 模拟真实 Coda 宿主 append-draft 的拼接规则：只在非空原草稿和新文字之间插入分隔符，不加末尾分隔符。
 export function appendDraftText(current, text, line) {
-  if (line) return `${current}${current === '' || current.endsWith('\n') ? '' : '\n'}${text}${text.endsWith('\n') ? '' : '\n'}`;
-  return `${current}${current === '' || /\s$/.test(current) ? '' : ' '}${text} `;
+  if (line) return `${current}${current === '' || current.endsWith('\n') ? '' : '\n'}${text}`;
+  return `${current}${current === '' || /\s$/.test(current) ? '' : ' '}${text}`;
+}
+
+function abortedError() {
+  return Object.assign(new Error('操作已取消'), { name: 'AbortError' });
 }
 
 // threads[id] 可以是 workspace 回答对象、返回对象或 Promise 的函数、或 Error。
@@ -65,11 +69,13 @@ export function fakeCoda(threads = {}, { drafts = {}, onCall = null } = {}) {
       async call(resource, name, input, options) {
         if (resource?.kind !== 'coda/thread@1' || name !== 'append-draft') throw new Error(`不认识的操作：${resource?.kind} ${name}`);
         calls.push({ resource, name, input: structuredClone(input), options });
+        if (options?.signal?.aborted) throw abortedError();
         if (fake.onCall) return fake.onCall(resource, name, input, options);
         const current = fake.drafts[resource.id];
         if (current instanceof Error) throw current;
         if (typeof current === 'function') return current(input, options);
         if (current === undefined) throw new Error(`未知会话草稿：${resource.id}`);
+        if (options?.signal?.aborted) throw abortedError();
         const next = appendDraftText(current.text, input.text, Boolean(input.line));
         if (next.length > DRAFT_LIMIT) throw Object.assign(new Error('草稿超过 10 万字上限'), { code: 'too_long' });
         current.text = next;

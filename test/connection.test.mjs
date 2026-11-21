@@ -220,7 +220,7 @@ test('connect 接真实模块：stat、dir_size、add_text 的往返；取消真
   const added = await page.link.call('add_text', { text: 'a.txt', block: false });
   assert.equal(added.type, 'added');
   assert.deepEqual(fake.calls.map(entry => ({ id: entry.resource.id, name: entry.name, input: entry.input })), [
-    { id: 'A', name: 'append-draft', input: { text: 'a.txt', line: false } },
+    { id: 'A', name: 'append-draft', input: { text: 'a.txt ', line: false } },
   ]);
   assert.equal(fake.drafts.A.text, 'a.txt ');
 

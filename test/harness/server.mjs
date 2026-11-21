@@ -35,8 +35,9 @@ activate({
     if (resource?.kind === 'coda/thread@1' && name === 'workspace') return threads[resource.id];
     throw new Error(`不认识的查询：${resource?.kind} ${name}`);
   },
-  call: async (resource, name, input) => {
+  call: async (resource, name, input, options) => {
     if (resource?.kind !== 'coda/thread@1' || name !== 'append-draft') throw new Error(`不认识的操作：${resource?.kind} ${name}`);
+    if (options?.signal?.aborted) throw Object.assign(new Error('操作已取消'), { name: 'AbortError' });
     const current = drafts[resource.id];
     if (!current) throw new Error(`未知会话：${resource.id}`);
     current.text = appendDraftText(current.text, input.text, Boolean(input.line));
