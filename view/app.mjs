@@ -172,40 +172,28 @@ function openInView(path) {
 // 独立自增序号（不复用 epoch）：每次打开文件、换会话、根目录变化、切目录或打开属性页递增，避免前一次 coda.open 异步回退覆盖新操作。
 let openSeq = 0;
 const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
-const fileUrl = (rootPath, path) => {
-  const full = `${rootPath.replace(/\/+$/, '')}/${path}`;
-  return `file://${full.startsWith('/') ? '' : '/'}${encodePath(full)}`;
-};
 function openInline(path, { select = true } = {}) {
   openPressed = !isIOS; // 用户在 Mac 上打开的：render 把焦点交给预览面板
   note({ kind: 'push', from: mode(), to: 'preview' });
   model.openFile(path, { select });
 }
-async function openExternal(path, via, { select, seq }) {
+async function openExternal(path, { select, seq }) {
   try {
-    const rootPath = model.root?.path;
-    if (!rootPath) throw new Error('no root');
-    let url;
-    if (via === 'file') {
-      url = fileUrl(rootPath, path);
-    } else {
-      const granted = await conn.link.call(Type.MEDIA, { path });
-      if (seq !== openSeq) return;
-      if (!granted?.token) throw new Error('no media service');
-      url = `coda-view://service/media/${granted.token}/${encodePath(path)}`;
-    }
-    await coda.open(url);
+    const granted = await conn.link.call(Type.MEDIA, { path });
+    if (seq !== openSeq) return;
+    if (!granted?.token) throw new Error('no media service');
+    await coda.open(`coda-view://service/media/${granted.token}/${encodePath(path)}`);
   } catch {
     if (seq !== openSeq || !model.ready) return;
     openInline(path, { select });
   }
 }
-// 打开文件的统一入口（目录树、图标视图和搜索结果）：PDF/Office/iWork 与 Markdown 优先走 coda.open，失败静默退回页内预览；其余保持页内预览。
+// 打开文件的统一入口（目录树、图标视图和搜索结果）：PDF/Office/iWork 与 Markdown 优先经本机流式服务走 coda.open，失败静默退回页内预览；其余保持页内预览。
 // 走 coda.open 成功时不设 model.opened（因此不记入 setState 的 opened）。select 为假（搜索结果）时回退页内预览只设预览，不改 model.selected。
 function openFile(path, { select = true } = {}) {
   const seq = ++openSeq;
   const via = typeof coda.open === 'function' && model.ready && model.root?.path ? externalPreviewOf(path) : null;
-  if (via) { openExternal(path, via, { select, seq }); return; }
+  if (via) { openExternal(path, { select, seq }); return; }
   openInline(path, { select });
 }
 

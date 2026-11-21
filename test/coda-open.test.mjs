@@ -1,14 +1,13 @@
-// coda.open 文件预览分流、异常回退、防竞态与状态保护（Issue #21 第二部分）。
+// coda.open 文件预览分流、异常回退、防竞态、状态保护与越界外链拦截（Issue #21 第二部分）。
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdir, symlink, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import test from 'node:test';
+import { activate } from '../main.mjs';
 import { loadApp, loadFileApp, visible } from './support/dom.mjs';
-import { flush } from './support/fake.mjs';
-
-const deferred = () => {
-  let resolve, reject;
-  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
-};
+import { checkoutOf, deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
+import { rowNamed } from './support/treehost.mjs';
 
 const timersOn = new WeakSet();
 
@@ -83,60 +82,42 @@ const row = (page, name) => page.tree.find(node => node.classList.contains('row'
 const dbl = async (page, name) => { row(page, name).dispatch('click'); row(page, name).dispatch('dblclick'); await flush(); };
 const text = page => page.preview.find(node => node.classList.contains('text'))[0]?.textContent;
 
-test('PDF、Office、iWork 经 file:///<绝对路径> 调 coda.open，路径逐段编码，不进页内预览、不记入 setState.opened', async t => {
+test('PDF、Office、iWork 与 Markdown 统一经本机流式服务调 coda.open（逐段编码、不带 ?v=），不进页内预览、不记入 setState.opened', async t => {
   const roots = {
     '/work/my repo': {
       'report #1.pdf': { text: '%PDF', kind: 'binary' },
       'spec 中文.docx': { text: 'PK', kind: 'binary' },
       'deck.key': { text: 'PK', kind: 'binary' },
+      'README.md': { text: '# hi\n' },
+      'notes #2.markdown': { text: '## two\n' },
     },
   };
-  const { page, host, tick } = await open(t, { roots });
+  const { page, host, tick } = await open(t, { roots, mediaToken: 'abc999' });
   host.session('s1', { state: 'ready', path: '/work/my repo' });
   await flush();
 
   await dbl(page, 'report #1.pdf');
   await dbl(page, 'spec 中文.docx');
   await dbl(page, 'deck.key');
-  tick(300);
-
-  assert.deepEqual(host.opened, [
-    'file:///work/my%20repo/report%20%231.pdf',
-    'file:///work/my%20repo/spec%20%E4%B8%AD%E6%96%87.docx',
-    'file:///work/my%20repo/deck.key',
-  ]);
-  assert.equal(visible(page.preview), false, '不切到页内预览');
-  assert.equal(host.sent.filter(m => m.type === 'read').length, 0, '不读块');
-  assert.equal(host.state.at(-1)?.sessions?.s1?.opened ?? null, null, '不把文件记入 setState 的 opened');
-});
-
-test('Markdown 经本机流式服务调 coda.open（不带 ?v=），不进页内预览、不记入 setState.opened', async t => {
-  const roots = {
-    '/A': {
-      'README.md': { text: '# hi\n' },
-      'notes #2.markdown': { text: '## two\n' },
-    },
-  };
-  const { page, host, tick } = await open(t, { roots, mediaToken: 'abc999' });
-  host.session('s1');
-  await flush();
-
   await dbl(page, 'README.md');
   await dbl(page, 'notes #2.markdown');
   tick(300);
 
   assert.deepEqual(host.opened, [
+    'coda-view://service/media/abc999/report%20%231.pdf',
+    'coda-view://service/media/abc999/spec%20%E4%B8%AD%E6%96%87.docx',
+    'coda-view://service/media/abc999/deck.key',
     'coda-view://service/media/abc999/README.md',
     'coda-view://service/media/abc999/notes%20%232.markdown',
   ]);
   for (const url of host.opened) assert.equal(url.includes('?'), false, '地址不能带查询参数');
-  assert.equal(visible(page.preview), false);
-  assert.equal(host.sent.filter(m => m.type === 'read').length, 0);
-  assert.equal(host.state.at(-1)?.sessions?.s1?.opened ?? null, null);
+  assert.equal(visible(page.preview), false, '不切到页内预览');
+  assert.equal(host.sent.filter(m => m.type === 'read').length, 0, '不读块');
+  assert.equal(host.state.at(-1)?.sessions?.s1?.opened ?? null, null, '不把文件记入 setState 的 opened');
 });
 
 test('代码/文本保持页内预览，不调 coda.open', async t => {
-  const roots = { '/A': { 'app.js': { text: 'const x = 1;\n' } } };
+  const roots = { '/A': { 'app.js': { text: 'const x = 1;\n' }, 'notes.txt': { text: 'plain\n' } } };
   const { page, host } = await open(t, { roots });
   host.session('s1');
   await flush();
@@ -175,7 +156,7 @@ test('coda.open 抛错（异步 reject 或同步 throw）与无流式服务时�
     assert.equal(visible(page.preview), true);
     assert.equal(page.hint.textContent, '');
   }
-  // Markdown 无流式服务（token: null）
+  // 无流式服务（token: null）
   {
     const roots = { '/A': { 'README.md': { text: '# no-service\n' } } };
     const calls = [];
@@ -215,7 +196,7 @@ test('防竞态：连续点两个文件时，前一个 coda.open 晚到失败不
   await flush();
 
   await dbl(page, 'a.pdf');
-  assert.deepEqual(calls, ['file:///A/a.pdf']);
+  assert.deepEqual(calls, ['coda-view://service/media/tok123/a.pdf']);
   await dbl(page, 'b.txt');
   assert.equal(visible(page.preview), true);
   assert.equal(text(page), 'txt-b');
@@ -248,7 +229,10 @@ test('防竞态：连续点两个 PDF，前一个失败不覆盖后一个成功�
 
   await dbl(page, 'a.pdf');
   await dbl(page, 'b.pdf');
-  assert.deepEqual(calls, ['file:///A/a.pdf', 'file:///A/b.pdf']);
+  assert.deepEqual(calls, [
+    'coda-view://service/media/tok123/a.pdf',
+    'coda-view://service/media/tok123/b.pdf',
+  ]);
 
   second.resolve();
   first.reject(new Error('too big'));
@@ -256,7 +240,7 @@ test('防竞态：连续点两个 PDF，前一个失败不覆盖后一个成功�
   assert.equal(visible(page.preview), false, '前一个失败不能把后一个顶成页内预览');
 });
 
-test('防竞态：Markdown 等口令期间换会话或点别的文件，旧请求回来不再调 coda.open', async t => {
+test('防竞态：等口令期间换会话，旧口令回来不再调 coda.open', async t => {
   const calls = [];
   const roots = {
     '/A': { 'a.md': { text: '# a' }, 'b.txt': { text: 'b' } },
@@ -315,11 +299,66 @@ test('iPhone 轻点 PDF / Markdown 走 coda.open，不进页内预览、不记�
   tick(300);
 
   assert.deepEqual(host.opened, [
-    'file:///A/a.pdf',
+    'coda-view://service/media/iostok/a.pdf',
     'coda-view://service/media/iostok/b.md',
   ]);
   assert.equal(visible(page.preview), false);
   assert.equal(host.state.at(-1)?.sessions?.s1?.opened ?? null, null);
+});
+
+test('真实链路回归：旧条目在点击前被替换为指向目录外的符号链接时，拒绝 coda.open 且流式服务返回 403', async t => {
+  const base = await tempDir(t), root = join(base, 'repo');
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, 'ok.pdf'), '%PDF-ok');
+  await writeFile(join(root, 'report.pdf'), '%PDF-inner');
+  await writeFile(join(base, 'secret.pdf'), '%PDF-OUTSIDE-SECRET');
+
+  const fake = fakeCoda({ A: checkoutOf(root) });
+  activate(fake.coda);
+  const view = fake.open('A');
+  const loaded = deferred();
+  view.listen(message => loaded.promise.then(() => queueMicrotask(() => page.post(message))));
+  const opened = [];
+  const page = await loadApp(t, {
+    platform: 'mac',
+    postMessage: message => view.send(message),
+    on: () => {},
+    copy: () => {},
+    getState: () => undefined,
+    setState: () => {},
+    open: target => { opened.push(target); return Promise.resolve(); },
+    close: () => {},
+  });
+  loaded.resolve();
+  await waitFor(() => rowNamed(page, 'report.pdf'), '目录树列出旧条目');
+
+  // 先正常点一个目录内 PDF 拿到这个视图的流式服务口令
+  rowNamed(page, 'ok.pdf').dispatch('click');
+  rowNamed(page, 'ok.pdf').dispatch('dblclick');
+  await waitFor(() => opened.length === 1, '目录内 PDF 经流式服务打开');
+  const match = /^coda-view:\/\/service\/media\/([0-9a-f]+)\/ok\.pdf$/.exec(opened[0]);
+  assert.ok(match, `应为流式服务地址，实际为 ${opened[0]}`);
+  const token = match[1];
+
+  // 点击前把已列出的 report.pdf 替换为指向目录外的符号链接（不刷新目录树）
+  await unlink(join(root, 'report.pdf'));
+  await symlink(join(base, 'secret.pdf'), join(root, 'report.pdf'));
+
+  // 点击旧条目：模块 Type.MEDIA 经 resolveInRoot 拒绝，不调 coda.open，回退读块同样被拒
+  rowNamed(page, 'report.pdf').dispatch('click');
+  rowNamed(page, 'report.pdf').dispatch('dblclick');
+  await waitFor(() => visible(page.preview) && page.preview.textContent.includes('读不到这个文件'), '外链被拒绝，页面显示读不到');
+  assert.equal(opened.length, 1, '绝不把外链交给 coda.open');
+  assert.equal(page.preview.textContent.includes('OUTSIDE-SECRET'), false, '绝不泄露外部内容');
+
+  // 即使直接拿合法口令请求流式服务上的该外链路径，也必须返回 403 且不泄露内容
+  const server = createServer(fake.services.get('media'));
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  t.after(() => new Promise(done => { server.closeAllConnections(); server.close(done); }));
+  const res = await fetch(`http://127.0.0.1:${server.address().port}/${token}/report.pdf`);
+  const body = await res.text();
+  assert.equal(res.status, 403);
+  assert.equal(body.includes('OUTSIDE-SECRET'), false);
 });
 
 test('独立 file 视图不调 coda.open，打开 Markdown/PDF 仍走页内预览', async t => {
