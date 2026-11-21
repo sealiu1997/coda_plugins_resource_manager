@@ -40,10 +40,10 @@ export const workspaceOf = (path, state = 'ready', project = null) => ({
 });
 export const checkoutOf = workspaceOf;
 
-// 模拟真实 Coda 宿主 append-draft 的拼接规则：只在非空原草稿和新文字之间插入分隔符，不加末尾分隔符。
+// 模拟真实 Coda 宿主 append-draft 的拼接规则：原草稿非空时无条件插入分隔符（line 为真插换行，否则插空格），不检查已有空白、不加末尾分隔符。
 export function appendDraftText(current, text, line) {
-  if (line) return `${current}${current === '' || current.endsWith('\n') ? '' : '\n'}${text}`;
-  return `${current}${current === '' || /\s$/.test(current) ? '' : ' '}${text}`;
+  if (current === '') return text;
+  return `${current}${line ? '\n' : ' '}${text}`;
 }
 
 function abortedError() {

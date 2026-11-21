@@ -37,18 +37,22 @@ const draftOf = (text = '', attachments = []) => ({ text, attachments });
 
 // ---- addText 本身 ----
 
-test('addText：调用 coda/thread@1 的 append-draft，路径补末尾空格并传 line: false，内容补末尾换行（已有换行不重复加）并传 line: true，附件原样保留', async () => {
-  const api = withDraft({ A: draftOf('', [{ id: 'att-1' }]) });
-  assert.equal(await addText(api.coda, 'A', { text: 'src/a.ts', block: false }), true);
-  assert.equal(api.drafts.A.text, 'src/a.ts ', '空草稿追加路径后带末尾空格，后续输入不粘连');
-  assert.equal(await addText(api.coda, 'A', { text: 'const x = 1;', block: true }), true);
-  assert.equal(await addText(api.coda, 'A', { text: 'const y = 2;\n', block: true }), true);
+test('addText：原样传给 coda/thread@1 的 append-draft，路径传 line: false、内容传 line: true；连续追加不多出空格或空行，附件原样保留', async () => {
+  const api = withDraft({ A: draftOf('', [{ id: 'att-1' }]), B: draftOf('') });
+  assert.equal(await addText(api.coda, 'A', { text: 'a.txt', block: false }), true);
+  assert.equal(await addText(api.coda, 'A', { text: 'b.txt', block: false }), true);
+  assert.equal(api.drafts.A.text, 'a.txt b.txt', '连续追加路径：仅单个空格分隔，无双空格');
+
+  assert.equal(await addText(api.coda, 'B', { text: '第一段', block: true }), true);
+  assert.equal(await addText(api.coda, 'B', { text: '第二段', block: true }), true);
+  assert.equal(api.drafts.B.text, '第一段\n第二段', '连续追加选区：仅单个换行分隔，无多余空行');
+
   assert.deepEqual(api.log.map(entry => ({ session: entry.session, input: entry.input })), [
-    { session: 'A', input: { text: 'src/a.ts ', line: false } },
-    { session: 'A', input: { text: 'const x = 1;\n', line: true } },
-    { session: 'A', input: { text: 'const y = 2;\n', line: true } },
+    { session: 'A', input: { text: 'a.txt', line: false } },
+    { session: 'A', input: { text: 'b.txt', line: false } },
+    { session: 'B', input: { text: '第一段', line: true } },
+    { session: 'B', input: { text: '第二段', line: true } },
   ]);
-  assert.equal(api.drafts.A.text, 'src/a.ts \nconst x = 1;\nconst y = 2;\n');
   assert.deepEqual(api.drafts.A.attachments, [{ id: 'att-1' }]);
 });
 
@@ -56,17 +60,16 @@ test('addText：传原样会话 ID，只写传进来的会话', async () => {
   const api = withDraft({ 'a/b': draftOf() });
   await addText(api.coda, 'a/b', { text: 'x', block: true });
   assert.deepEqual(api.log.map(entry => entry.session), ['a/b']);
-  assert.equal(api.drafts['a/b'].text, 'x\n');
+  assert.equal(api.drafts['a/b'].text, 'x');
 });
 
-test('addText：超过上限回 draft_too_long（末尾分隔符计入长度校验，本地超限不调接口，服务端拒绝也能映射）', async () => {
+test('addText：超过上限回 draft_too_long（本地超限不调接口，服务端拒绝也能映射）', async () => {
   const local = withDraft({ A: draftOf() });
-  assert.equal((await caught(addText(local.coda, 'A', { text: 'x'.repeat(DRAFT_LIMIT), block: false }))).code, 'draft_too_long', '补末尾空格后超过上限');
-  assert.equal((await caught(addText(local.coda, 'A', { text: 'x'.repeat(DRAFT_LIMIT), block: true }))).code, 'draft_too_long', '补末尾换行后超过上限');
-  assert.equal(local.log.length, 0, '单段含末尾分隔符就超上限：不碰接口');
+  assert.equal((await caught(addText(local.coda, 'A', { text: 'x'.repeat(DRAFT_LIMIT + 1), block: false }))).code, 'draft_too_long');
+  assert.equal(local.log.length, 0, '单段就超上限：不碰接口');
 
   const exact = withDraft({ A: draftOf() });
-  assert.equal(await addText(exact.coda, 'A', { text: `${'x'.repeat(DRAFT_LIMIT - 1)}\n`, block: true }), true, '已有末尾换行正好满上限：放得下');
+  assert.equal(await addText(exact.coda, 'A', { text: 'x'.repeat(DRAFT_LIMIT), block: true }), true, '正好满上限：放得下');
   assert.equal(exact.log.length, 1);
 
   const server = withDraft({ A: draftOf('x'.repeat(DRAFT_LIMIT - 2)) });
@@ -142,19 +145,25 @@ async function opened(fake, session, options) {
 }
 const add = (view, requestId, body, generation = 1) => view.send({ type: 'add_text', generation, requestId, ...body });
 
-test('经 activate：add_text 写进当前会话的草稿，成功回只有信封的 added；两种拼法均保留末尾分隔符', async t => {
+test('经 activate：add_text 写进当前会话的草稿，成功回只有信封的 added；连续追加不多出空格或空行', async t => {
   const root = await repo(t);
   const { fake } = appFor(root, { A: draftOf('看看', [{ id: 'f1' }]) });
   const view = await opened(fake, 'A');
   add(view, 'r1', { text: 'src/a.ts', block: false });
   assert.deepEqual(await view.answer('r1'), { type: 'added', generation: 1, requestId: 'r1' });
-  add(view, 'r2', { text: 'const a = 1;', block: true });
+  add(view, 'r2', { text: 'src/b.ts', block: false });
   assert.deepEqual(await view.answer('r2'), { type: 'added', generation: 1, requestId: 'r2' });
-  assert.equal(fake.drafts.A.text, '看看 src/a.ts \nconst a = 1;\n');
+  add(view, 'r3', { text: 'const a = 1;', block: true });
+  assert.deepEqual(await view.answer('r3'), { type: 'added', generation: 1, requestId: 'r3' });
+  add(view, 'r4', { text: 'const b = 2;', block: true });
+  assert.deepEqual(await view.answer('r4'), { type: 'added', generation: 1, requestId: 'r4' });
+  assert.equal(fake.drafts.A.text, '看看 src/a.ts src/b.ts\nconst a = 1;\nconst b = 2;');
   assert.deepEqual(fake.drafts.A.attachments, [{ id: 'f1' }]);
   assert.deepEqual(fake.calls.map(entry => ({ id: entry.resource.id, input: entry.input })), [
-    { id: 'A', input: { text: 'src/a.ts ', line: false } },
-    { id: 'A', input: { text: 'const a = 1;\n', line: true } },
+    { id: 'A', input: { text: 'src/a.ts', line: false } },
+    { id: 'A', input: { text: 'src/b.ts', line: false } },
+    { id: 'A', input: { text: 'const a = 1;', line: true } },
+    { id: 'A', input: { text: 'const b = 2;', line: true } },
   ]);
 });
 
@@ -164,7 +173,7 @@ test('经 activate：文件视图的会话取 args.session', async t => {
   const view = await opened(fake, null, { view: 'file', args: { session: 'A', path: 'x' } });
   add(view, 'r', { text: 'p', block: false });
   assert.equal((await view.answer('r')).error, undefined);
-  assert.equal(fake.drafts.A.text, 'p ');
+  assert.equal(fake.drafts.A.text, 'p');
 });
 
 test('经 activate：草稿失败、太长、文字无效都回对应的错误码', async t => {
@@ -208,7 +217,7 @@ test('经 activate：调用途中切换会话 → 中止旧信号、旧草稿不
 
   add(view, 'r2', { text: 'b.txt', block: false }, 2);
   assert.deepEqual(await view.answer('r2'), { type: 'added', generation: 2, requestId: 'r2' });
-  assert.equal(fake.drafts.B.text, 'b.txt ', '切到 B 后用新信号正常写入');
+  assert.equal(fake.drafts.B.text, 'b.txt', '切到 B 后用新信号正常写入');
 });
 
 test('经 activate：调用途中关闭视图 → 中止信号、旧草稿不被修改、不回执', async t => {
