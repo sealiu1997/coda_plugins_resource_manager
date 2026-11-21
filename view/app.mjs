@@ -14,7 +14,7 @@ import { Model, STATE_LIMIT, View, noticeText, parseState, putSession, trimState
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
 import { mountPress, onMotionChange, reducedMotion } from './press.mjs';
-import { EntryKind, RootState, SortKey, Type, externalPreviewOf } from './protocol.mjs';
+import { EntryKind, OpenWith, RootState, SortKey, Type, openCategoryOf, servedType } from './protocol.mjs';
 import { createRestore, createTrail } from './restore.mjs';
 import { createSearch } from './search.mjs';
 import { mountSearchbar } from './searchbar.mjs';
@@ -209,19 +209,29 @@ async function drainExternal(first) {
     openingExternal = false;
   }
 }
-// 打开文件的统一入口（目录树、图标视图和搜索结果）：PDF/Office/iWork 与 Markdown 优先经本机流式服务走 coda.open，失败静默退回页内预览；其余保持页内预览。
-// 走 coda.open 成功时不设 model.opened（因此不记入 setState 的 opened）。select 为假（搜索结果）时回退页内预览只设预览，不改 model.selected。
-function openFile(path, { select = true } = {}) {
+// 按类别读取当前默认打开方式（初始默认全部走资源管理器页内预览）。
+const openModeOf = path => (persisted.openWith[openCategoryOf(path)] === OpenWith.CODA ? OpenWith.CODA : OpenWith.INLINE);
+const canOpenExternal = path => typeof coda.open === 'function' && model.ready && Boolean(model.root?.path) && servedType(path) !== null;
+// 打开文件的统一入口（目录树、图标视图和搜索结果）：按该类别当前默认习惯决定走 Coda 还是页内预览；
+// 走 coda.open 时复用单在途串行队列与本机流式服务，失败静默退回页内预览，成功时不设 model.opened（不记入 setState.opened）。
+// select 为假（搜索结果）时走页内预览只设预览，不改 model.selected。
+function openFile(path, { select = true, via = null } = {}) {
   cancelExternal();
   const seq = openSeq;
-  const via = typeof coda.open === 'function' && model.ready && model.root?.path ? externalPreviewOf(path) : null;
-  if (via) {
+  const target = via ?? openModeOf(path);
+  if (target === OpenWith.CODA && canOpenExternal(path)) {
     const task = { path, select, seq };
     if (openingExternal) queuedExternal = task;
     else drainExternal(task);
     return;
   }
   openInline(path, { select });
+}
+// 经行菜单显式切换打开方式：立即用所选方式打开，并记住该类别的默认打开习惯（持久化保存，后续双击/轻点自动跟随）。
+function openFileAs(path, mode, { select = true } = {}) {
+  persisted.openWith[openCategoryOf(path)] = mode;
+  queueSave();
+  openFile(path, { select, via: mode });
 }
 
 // ---- 渲染：同一批变化合并成一次 ----
@@ -547,12 +557,24 @@ preview.onScroll(menu.hide);
 // ---- 行菜单：Mac 右键、iPhone 长按；iPhone 的 ⋯ 和 Mac 的原生「更多」出刷新、显示隐藏文件和「显示」（视图、排序）（菜单本身在 menu.mjs）----
 // 行菜单顶上是路径，下面一行 大小 · 完整修改时间（文件夹只有修改时间，读不到就没有这一行）；指向外面的链接和不能打开的条目没有元数据，不显示这一行。
 // 不能打开的条目（指向外面或失效的链接、other）没有「添加到聊天」，和不能拖动一致；它们仍有复制路径和属性。
+// 行菜单里的打开方式切换项（目录树、图标视图、搜索结果共用）：仅对可经流式服务交给 Coda 的普通文件显示。
+function altOpenItem(row, { select = true } = {}) {
+  if (row.kind !== EntryKind.FILE || !canOpenExternal(row.path)) return [];
+  const next = openModeOf(row.path) === OpenWith.CODA ? OpenWith.INLINE : OpenWith.CODA;
+  const label = next === OpenWith.CODA ? '在 Coda 中打开' : '在资源管理器中打开';
+  return [{ label, run: taken(() => {
+    if (!select && search.select(row.path)) hits.select();
+    openFileAs(row.path, next, { select });
+  }) }];
+}
 function pathMenu(event, row) {
   press.reset(); // 长按弹出菜单：按下反馈立即去掉
   const dead = row.kind === EntryKind.LINK || row.kind === EntryKind.OTHER;
-  // Mac 的第一项和双击是同一个动作（右键不改选中）；文件夹在列表里写展开或收起，别的写打开。iPhone 轻点就是打开，菜单不变。
+  // Mac 的第一项和双击是同一个动作（右键不改选中）；文件夹在列表里写展开或收起，别的写打开。iPhone 轻点就是打开，不放默认打开项，仅文件提供切换打开方式。
   const folder = row.kind === EntryKind.DIR, listed = model.view !== View.ICONS;
-  const open = isIOS || dead ? [] : [{ label: folder && listed ? (row.open ? '收起' : '展开') : '打开', run: taken(() => browser().activate(row)) }, { separator: true }];
+  const primary = isIOS || dead ? [] : [{ label: folder && listed ? (row.open ? '收起' : '展开') : '打开', run: taken(() => browser().activate(row)) }];
+  const openItems = [...primary, ...altOpenItem(row, { select: true })];
+  const open = openItems.length > 0 ? [...openItems, { separator: true }] : [];
   menuFrom = 'browse';
   menu.open(event, { title: row.path, detail: dead ? undefined : infoText(row) || undefined, items: [
     ...open,
@@ -564,15 +586,18 @@ function pathMenu(event, row) {
   ] });
 }
 
-// 结果的行菜单：同目录树（打开、添加到聊天、复制路径、属性），另加「在目录中显示」。
+// 结果的行菜单：同目录树（打开、切换打开方式、添加到聊天、复制路径、属性），另加「在目录中显示」。
 // 菜单是按打开菜单时那一行的路径和来源（结果）做的：菜单开着时结果被换掉，执行的操作仍按那时的路径，来源仍算结果。
-// iPhone 轻点就是打开，菜单里不放「打开」。
+// iPhone 轻点就是打开，菜单里不放「打开」，仅文件提供切换打开方式。
 function resultMenu(event, row) {
   press.reset();
   const dead = row.kind === EntryKind.LINK || row.kind === EntryKind.OTHER, { path } = row;
+  const primary = isIOS || dead ? [] : [{ label: '打开', run: taken(() => (row.kind === EntryKind.DIR ? revealResult(path, true) : openResult(path))) }];
+  const openItems = [...primary, ...altOpenItem(row, { select: false })];
+  const open = openItems.length > 0 ? [...openItems, { separator: true }] : [];
   menuFrom = 'result';
   menu.open(event, { title: path, items: [
-    ...(isIOS || dead ? [] : [{ label: '打开', run: taken(() => (row.kind === EntryKind.DIR ? revealResult(path, true) : openResult(path))) }, { separator: true }]),
+    ...open,
     ...(dead ? [] : [{ label: '添加到聊天', run: taken(() => chat.add(path)) }]),
     { label: '复制相对路径', run: taken(() => coda.copy(path)) },
     { label: '复制绝对路径', run: taken(() => coda.copy(`${model.root.path}/${path}`)) },

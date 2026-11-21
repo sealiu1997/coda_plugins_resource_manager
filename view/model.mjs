@@ -1,5 +1,5 @@
 // 页面的纯状态：目录树、状态保留。不碰 DOM，请求与代次在 connection.mjs，设计见 docs/design/phase-1.md 第 6、7 节。
-import { DEFAULT_SORT, ErrorCode, RootState, Type, parseSort, splitRelative } from './protocol.mjs';
+import { DEFAULT_SORT, ErrorCode, OpenCategory, OpenWith, RootState, Type, parseSort, splitRelative } from './protocol.mjs';
 
 export const STATE_LIMIT = 96 * 1024;
 export const MAX_PARALLEL = 8;
@@ -361,13 +361,24 @@ const parseLoaded = raw => Object.fromEntries(Object.entries(raw && typeof raw =
 // cwd 要是后端认的相对路径（规则同 lib/paths.mjs），而且写法规整：model 里的路径都是 joinPath 拼出来的，不带空段和 `.`。
 const cleanRelative = path => { const { segments } = splitRelative(path); return segments !== undefined && segments.join('/') === path; };
 
+const OPEN_CATEGORIES = new Set(Object.values(OpenCategory));
+const parseOpenWith = raw => {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [category, mode] of Object.entries(raw)) {
+    if (OPEN_CATEGORIES.has(category) && (mode === OpenWith.CODA || mode === OpenWith.INLINE)) out[category] = mode;
+  }
+  return out;
+};
+
 // 读回来的值可能是别的版本或坏的，只认自己的形状。
 export function parseState(raw) {
-  const state = { v: 1, seq: 0, hidden: false, sort: DEFAULT_SORT, view: View.LIST, sessions: {} };
+  const state = { v: 1, seq: 0, hidden: false, sort: DEFAULT_SORT, view: View.LIST, openWith: {}, sessions: {} };
   if (!raw || typeof raw !== 'object' || raw.v !== 1) return state;
   state.hidden = raw.hidden === true;
   state.sort = parseSort(raw.sort) ?? DEFAULT_SORT;
   state.view = parseView(raw.view);
+  state.openWith = parseOpenWith(raw.openWith);
   state.seq = Number.isSafeInteger(raw.seq) ? raw.seq : 0;
   for (const [id, item] of Object.entries(raw.sessions ?? {})) {
     if (!item || typeof item !== 'object') continue;

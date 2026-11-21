@@ -1,17 +1,18 @@
-// coda.open 文件预览分流、异常回退、防竞态、状态保护与越界外链拦截（Issue #21 第二部分）。
+// coda.open 按类别记忆打开方式、右键/长按切换、异常回退、单在途防竞态与越界外链拦截。
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { activate } from '../main.mjs';
+import { parseState } from '../view/model.mjs';
 import { loadApp, loadFileApp, visible } from './support/dom.mjs';
 import { checkoutOf, deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
 import { rowNamed } from './support/treehost.mjs';
 
 const timersOn = new WeakSet();
 
-async function open(t, { roots = {}, coda = {}, mediaToken = 'tok123', holdMedia = false, failMedia = null, platform = 'mac' } = {}) {
+async function open(t, { roots = {}, coda = {}, state: initialState = undefined, mediaToken = 'tok123', holdMedia = false, failMedia = null, platform = 'mac' } = {}) {
   if (!timersOn.has(t)) { timersOn.add(t); t.mock.timers.enable({ apis: ['setTimeout'] }); }
   const sent = [], opened = [], heldMedia = [], state = [];
   const host = { sent, opened, heldMedia, state, generation: 0, root: null, roots, mediaToken, holdMedia, failMedia };
@@ -25,7 +26,7 @@ async function open(t, { roots = {}, coda = {}, mediaToken = 'tok123', holdMedia
     },
     on: () => {},
     copy: () => {},
-    getState: () => undefined,
+    getState: () => initialState,
     setState: value => state.push(JSON.parse(JSON.stringify(value))),
     open: target => { opened.push(target); return Promise.resolve(); },
     close: () => {},
@@ -81,51 +82,173 @@ async function open(t, { roots = {}, coda = {}, mediaToken = 'tok123', holdMedia
 const row = (page, name) => page.tree.find(node => node.classList.contains('row') && node.textContent.includes(name))[0];
 const dbl = async (page, name) => { row(page, name).dispatch('click'); row(page, name).dispatch('dblclick'); await flush(); };
 const text = page => page.preview.find(node => node.classList.contains('text'))[0]?.textContent;
+const menuButtons = page => page.menu.find(node => node.tagName === 'BUTTON');
+const rightClick = (page, name) => row(page, name).dispatch('contextmenu', { clientX: 5, clientY: 6 });
+const choose = async (page, label) => { menuButtons(page).find(node => node.textContent === label).dispatch('click'); await flush(); };
 
-test('PDF、Office、iWork 与 Markdown 统一经本机流式服务调 coda.open（逐段编码、不带 ?v=），不进页内预览、不记入 setState.opened', async t => {
+const savedCoda = (...categories) => ({
+  v: 1, seq: 1, hidden: false, sort: 'name', view: 'list',
+  openWith: Object.fromEntries(categories.map(c => [c, 'coda'])),
+  sessions: {},
+});
+
+test('初始默认全部走资源管理器页内预览，不调 coda.open', async t => {
+  const roots = {
+    '/A': {
+      'README.md': { text: '# hi\n' },
+      'report.pdf': { text: '%PDF', kind: 'binary' },
+      'app.js': { text: 'const x = 1;\n' },
+    },
+  };
+  const { page, host } = await open(t, { roots });
+  host.session('s1');
+  await flush();
+
+  await dbl(page, 'README.md');
+  assert.deepEqual(host.opened, []);
+  assert.equal(visible(page.preview), true);
+  assert.equal(text(page), '# hi\n');
+
+  // 返回目录树后打开 PDF，初始也默认走页内预览
+  page.preview.find(node => node.tagName === 'BUTTON' && node.getAttribute('aria-label') === '返回')[0].dispatch('click');
+  await flush();
+  await dbl(page, 'report.pdf');
+  assert.deepEqual(host.opened, []);
+  assert.equal(visible(page.preview), true);
+});
+
+test('右键「在 Coda 中打开」立即用 Coda 打开并按类别记住默认习惯，反向选「在资源管理器中打开」可切回', async t => {
   const roots = {
     '/work/my repo': {
       'report #1.pdf': { text: '%PDF', kind: 'binary' },
       'spec 中文.docx': { text: 'PK', kind: 'binary' },
       'deck.key': { text: 'PK', kind: 'binary' },
       'README.md': { text: '# hi\n' },
-      'notes #2.markdown': { text: '## two\n' },
     },
   };
   const { page, host, tick } = await open(t, { roots, mediaToken: 'abc999' });
   host.session('s1', { state: 'ready', path: '/work/my repo' });
   await flush();
 
-  await dbl(page, 'report #1.pdf');
-  await dbl(page, 'spec 中文.docx');
-  await dbl(page, 'deck.key');
-  await dbl(page, 'README.md');
-  await dbl(page, 'notes #2.markdown');
+  // 初始默认走资源管理器：右键菜单显示「在 Coda 中打开」
+  rightClick(page, 'report #1.pdf');
+  assert.ok(menuButtons(page).some(b => b.textContent === '在 Coda 中打开'));
+  await choose(page, '在 Coda 中打开');
   tick(300);
 
+  assert.deepEqual(host.opened, ['coda-view://service/media/abc999/report%20%231.pdf']);
+  assert.equal(visible(page.preview), false, '不切到页内预览');
+  assert.equal(host.state.at(-1)?.openWith?.document, 'coda', '按类别记住 document=coda');
+  assert.equal(host.state.at(-1)?.sessions?.s1?.opened ?? null, null, '不记入 setState.opened');
+
+  // 同类别（document）的 .docx 和 .key 双击自动跟随走 Coda
+  await dbl(page, 'spec 中文.docx');
+  await dbl(page, 'deck.key');
   assert.deepEqual(host.opened, [
     'coda-view://service/media/abc999/report%20%231.pdf',
     'coda-view://service/media/abc999/spec%20%E4%B8%AD%E6%96%87.docx',
     'coda-view://service/media/abc999/deck.key',
-    'coda-view://service/media/abc999/README.md',
-    'coda-view://service/media/abc999/notes%20%232.markdown',
   ]);
   for (const url of host.opened) assert.equal(url.includes('?'), false, '地址不能带查询参数');
-  assert.equal(visible(page.preview), false, '不切到页内预览');
-  assert.equal(host.sent.filter(m => m.type === 'read').length, 0, '不读块');
-  assert.equal(host.state.at(-1)?.sessions?.s1?.opened ?? null, null, '不把文件记入 setState 的 opened');
+
+  // 不同类别（markdown）不受影响，仍默认走资源管理器页内预览
+  await dbl(page, 'README.md');
+  assert.equal(visible(page.preview), true);
+  assert.equal(text(page), '# hi\n');
+  page.preview.find(node => node.tagName === 'BUTTON' && node.getAttribute('aria-label') === '返回')[0].dispatch('click');
+  await flush();
+
+  // 反向切换：此时右键 .docx 应显示「在资源管理器中打开」
+  rightClick(page, 'spec 中文.docx');
+  assert.ok(menuButtons(page).some(b => b.textContent === '在资源管理器中打开'));
+  await choose(page, '在资源管理器中打开');
+  tick(300);
+  assert.equal(visible(page.preview), true);
+  assert.equal(host.state.at(-1)?.openWith?.document, 'inline', '按类别切回 document=inline');
 });
 
-test('代码/文本保持页内预览，不调 coda.open', async t => {
-  const roots = { '/A': { 'app.js': { text: 'const x = 1;\n' }, 'notes.txt': { text: 'plain\n' } } };
-  const { page, host } = await open(t, { roots });
+test('同类别连续打开回归：README、Dockerfile、Makefile、.gitignore 跟随 text 偏好，article.mdx 跟随 markdown 偏好且均有切换项', async t => {
+  const roots = {
+    '/A': {
+      'example.txt': { text: 'ex' },
+      'README': { text: 'readme' },
+      'Dockerfile': { text: 'FROM node' },
+      'Makefile': { text: 'all:' },
+      '.gitignore': { text: 'node_modules' },
+      'README.md': { text: '# md' },
+      'article.mdx': { text: '# mdx' },
+    },
+  };
+  const { page, host } = await open(t, { roots, mediaToken: 't999' });
   host.session('s1');
   await flush();
 
-  await dbl(page, 'app.js');
-  assert.deepEqual(host.opened, []);
-  assert.equal(visible(page.preview), true);
-  assert.equal(text(page), 'const x = 1;\n');
+  // 对 example.txt 选「在 Coda 中打开」→ 同属 text 的无后缀/点文件均自动跟随且菜单有「在资源管理器中打开」
+  rightClick(page, 'example.txt');
+  await choose(page, '在 Coda 中打开');
+  for (const name of ['README', 'Dockerfile', 'Makefile', '.gitignore']) {
+    rightClick(page, name);
+    assert.ok(menuButtons(page).some(b => b.textContent === '在资源管理器中打开'), `${name} 应有切换项`);
+    await dbl(page, name);
+  }
+  assert.deepEqual(host.opened, [
+    'coda-view://service/media/t999/example.txt',
+    'coda-view://service/media/t999/README',
+    'coda-view://service/media/t999/Dockerfile',
+    'coda-view://service/media/t999/Makefile',
+    'coda-view://service/media/t999/.gitignore',
+  ]);
+
+  // 对 README.md 选「在 Coda 中打开」→ 同属 markdown 的 article.mdx 自动跟随且有切换项
+  rightClick(page, 'README.md');
+  await choose(page, '在 Coda 中打开');
+  rightClick(page, 'article.mdx');
+  assert.ok(menuButtons(page).some(b => b.textContent === '在资源管理器中打开'), 'article.mdx 应归为 markdown 且有切换项');
+  await dbl(page, 'article.mdx');
+  assert.equal(host.opened.at(-1), 'coda-view://service/media/t999/article.mdx');
+});
+
+test('跨会话与重建页面连贯回归：会话 A 经菜单设定偏好后，用实际 setState 保存值重建页面，会话 B 首次打开同类别文件沿用该偏好', async t => {
+  const roots = {
+    '/A': { 'report.pdf': { text: '%PDF', kind: 'binary' } },
+    '/B': { 'slides.pptx': { text: 'PK', kind: 'binary' }, 'notes.md': { text: '# b' } },
+  };
+  const first = await open(t, { roots, mediaToken: 'tokA' });
+  first.host.session('sA', { state: 'ready', path: '/A' });
+  await flush();
+  rightClick(first.page, 'report.pdf');
+  await choose(first.page, '在 Coda 中打开');
+  first.tick(300);
+  const persisted = first.host.state.at(-1);
+  assert.ok(persisted, '会话 A 应写出持久化状态');
+
+  // 用会话 A 实际 setState 的值重建页面，在会话 B 首次双击同类别（document）文件
+  const second = await open(t, { roots, state: persisted, mediaToken: 'tokB' });
+  second.host.session('sB', { state: 'ready', path: '/B' });
+  await flush();
+  await dbl(second.page, 'slides.pptx');
+  assert.deepEqual(second.host.opened, ['coda-view://service/media/tokB/slides.pptx'], '会话 B 应沿用会话 A 存下的 document=coda 偏好');
+  assert.equal(visible(second.page.preview), false);
+
+  // 未设定偏好的 markdown 在会话 B 仍默认走资源管理器页内预览
+  await dbl(second.page, 'notes.md');
+  assert.equal(visible(second.page.preview), true);
+  assert.equal(text(second.page), '# b');
+});
+
+test('parseState 校验 openWith：只保留合法类别与 coda/inline，坏值被忽略', () => {
+  const parsed = parseState({
+    v: 1,
+    openWith: {
+      markdown: 'coda',
+      document: 'inline',
+      text: 'coda',
+      unknown: 'coda',
+      image: 'invalid',
+    },
+    sessions: {},
+  });
+  assert.deepEqual(parsed.openWith, { markdown: 'coda', document: 'inline', text: 'coda' });
 });
 
 test('coda.open 抛错（异步 reject 或同步 throw）与无流式服务时静默回退到页内预览', async t => {
@@ -134,6 +257,7 @@ test('coda.open 抛错（异步 reject 或同步 throw）与无流式服务时�
     const roots = { '/A': { 'README.md': { text: '# fallback\n' } } };
     const { page, host } = await open(t, {
       roots,
+      state: savedCoda('markdown'),
       coda: { open: () => Promise.reject(new Error('文件超过 20 MiB')) },
     });
     host.session('s1');
@@ -148,6 +272,7 @@ test('coda.open 抛错（异步 reject 或同步 throw）与无流式服务时�
     const roots = { '/A': { 'doc.pdf': { text: '%PDF' } } };
     const { page, host } = await open(t, {
       roots,
+      state: savedCoda('document'),
       coda: { open: () => { throw new Error('打不开'); } },
     });
     host.session('s1');
@@ -162,6 +287,7 @@ test('coda.open 抛错（异步 reject 或同步 throw）与无流式服务时�
     const calls = [];
     const { page, host } = await open(t, {
       roots,
+      state: savedCoda('markdown'),
       mediaToken: null,
       coda: { open: target => { calls.push(target); return Promise.resolve(); } },
     });
@@ -185,6 +311,7 @@ test('防竞态：连续点两个文件时，前一个 coda.open 晚到失败不
   };
   const { page, host } = await open(t, {
     roots,
+    state: savedCoda('document'),
     coda: {
       open: target => {
         calls.push(target);
@@ -218,6 +345,7 @@ test('防竞态：同一页面只允许一个 coda.open 在途，在途期间的
   };
   const { page, host } = await open(t, {
     roots,
+    state: savedCoda('document'),
     coda: {
       open: target => {
         calls.push(target);
@@ -234,7 +362,6 @@ test('防竞态：同一页面只允许一个 coda.open 在途，在途期间的
   await dbl(page, 'c.pdf');
   assert.deepEqual(calls, ['coda-view://service/media/tok123/a.pdf'], 'a.pdf 在途期间不并发调 b.pdf / c.pdf');
 
-  // a.pdf 晚到成功：随后只执行合并后的最后一个 c.pdf，b.pdf 被跳过
   first.resolve();
   await flush();
   assert.deepEqual(calls, [
@@ -261,6 +388,7 @@ test('防竞态：前一个 PDF 在途失败时，不回退页内预览并继续
   };
   const { page, host } = await open(t, {
     roots,
+    state: savedCoda('document'),
     coda: {
       open: target => {
         calls.push(target);
@@ -295,6 +423,7 @@ test('防竞态：等口令期间换会话，旧口令回来不再调 coda.open'
   };
   const { page, host } = await open(t, {
     roots,
+    state: savedCoda('markdown'),
     holdMedia: true,
     coda: { open: target => { calls.push(target); return Promise.resolve(); } },
   });
@@ -320,6 +449,7 @@ test('防竞态：coda.open 期间根目录变更，晚到失败不回退到页�
   };
   const { page, host } = await open(t, {
     roots,
+    state: savedCoda('document'),
     coda: { open: () => first.promise },
   });
   host.session('s1');
@@ -333,9 +463,40 @@ test('防竞态：coda.open 期间根目录变更，晚到失败不回退到页�
   assert.equal(visible(page.preview), false, '根目录切换后旧失败不回退');
 });
 
-test('iPhone 轻点 PDF / Markdown 走 coda.open，不进页内预览、不记入 setState.opened', async t => {
-  const roots = { '/A': { 'a.pdf': { text: '%PDF' }, 'b.md': { text: '# md' } } };
+test('iPhone 长按「在 Coda 中打开」立即打开并记住偏好，后续轻点同类别文件自动跟随', async t => {
+  const roots = { '/A': { 'a.pdf': { text: '%PDF' }, 'b.docx': { text: 'PK' }, 'c.md': { text: '# md' } } };
   const { page, host, tick } = await open(t, { roots, platform: 'ios', mediaToken: 'iostok' });
+  host.session('s1');
+  await flush();
+
+  row(page, 'a.pdf').dispatch('pointerdown', { pointerId: 1, isPrimary: true, clientX: 5, clientY: 6 });
+  tick(500);
+  row(page, 'a.pdf').dispatch('pointerup', { pointerId: 1, isPrimary: true, clientX: 5, clientY: 6 });
+  row(page, 'a.pdf').dispatch('click');
+  assert.ok(menuButtons(page).some(b => b.textContent === '在 Coda 中打开'));
+  await choose(page, '在 Coda 中打开');
+  tick(300);
+
+  // 同类别 b.docx 轻点自动走 Coda，不同类别 c.md 仍走页内预览
+  row(page, 'b.docx').dispatch('click');
+  await flush();
+  assert.deepEqual(host.opened, [
+    'coda-view://service/media/iostok/a.pdf',
+    'coda-view://service/media/iostok/b.docx',
+  ]);
+  assert.equal(visible(page.preview), false);
+  assert.equal(host.state.at(-1)?.openWith?.document, 'coda');
+  assert.equal(host.state.at(-1)?.sessions?.s1?.opened ?? null, null);
+
+  row(page, 'c.md').dispatch('click');
+  await flush();
+  assert.equal(visible(page.preview), true);
+  assert.equal(text(page), '# md');
+});
+
+test('iPhone：恢复偏好后轻点 PDF / Markdown 走 coda.open，不进页内预览、不记入 setState.opened', async t => {
+  const roots = { '/A': { 'a.pdf': { text: '%PDF' }, 'b.md': { text: '# md' } } };
+  const { page, host, tick } = await open(t, { roots, state: savedCoda('document', 'markdown'), platform: 'ios', mediaToken: 'iostok' });
   host.session('s1');
   await flush();
 
@@ -371,7 +532,7 @@ test('真实链路回归：旧条目在点击前被替换为指向目录外的�
     postMessage: message => view.send(message),
     on: () => {},
     copy: () => {},
-    getState: () => undefined,
+    getState: () => savedCoda('document'),
     setState: () => {},
     open: target => { opened.push(target); return Promise.resolve(); },
     close: () => {},
@@ -379,7 +540,6 @@ test('真实链路回归：旧条目在点击前被替换为指向目录外的�
   loaded.resolve();
   await waitFor(() => rowNamed(page, 'report.pdf'), '目录树列出旧条目');
 
-  // 先正常点一个目录内 PDF 拿到这个视图的流式服务口令
   rowNamed(page, 'ok.pdf').dispatch('click');
   rowNamed(page, 'ok.pdf').dispatch('dblclick');
   await waitFor(() => opened.length === 1, '目录内 PDF 经流式服务打开');
@@ -387,18 +547,15 @@ test('真实链路回归：旧条目在点击前被替换为指向目录外的�
   assert.ok(match, `应为流式服务地址，实际为 ${opened[0]}`);
   const token = match[1];
 
-  // 点击前把已列出的 report.pdf 替换为指向目录外的符号链接（不刷新目录树）
   await unlink(join(root, 'report.pdf'));
   await symlink(join(base, 'secret.pdf'), join(root, 'report.pdf'));
 
-  // 点击旧条目：模块 Type.MEDIA 经 resolveInRoot 拒绝，不调 coda.open，回退读块同样被拒
   rowNamed(page, 'report.pdf').dispatch('click');
   rowNamed(page, 'report.pdf').dispatch('dblclick');
   await waitFor(() => visible(page.preview) && page.preview.textContent.includes('读不到这个文件'), '外链被拒绝，页面显示读不到');
   assert.equal(opened.length, 1, '绝不把外链交给 coda.open');
   assert.equal(page.preview.textContent.includes('OUTSIDE-SECRET'), false, '绝不泄露外部内容');
 
-  // 即使直接拿合法口令请求流式服务上的该外链路径，也必须返回 403 且不泄露内容
   const server = createServer(fake.services.get('media'));
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   t.after(() => new Promise(done => { server.closeAllConnections(); server.close(done); }));
@@ -424,7 +581,7 @@ test('独立 file 视图不调 coda.open，打开 Markdown/PDF 仍走页内预�
     },
     on: () => {},
     copy: () => {},
-    getState: () => undefined,
+    getState: () => savedCoda('markdown'),
     setState: () => {},
     open: target => { calls.push(target); return Promise.resolve(); },
   });

@@ -1,6 +1,6 @@
 // 图标：页面里自己画的 SVG，形状近似 SF Symbol，不打包 Apple 的符号，也不用任何第三方素材。颜色都是 currentColor，由 CSS 定：
 // 种类图标带 tone-* 类（颜色见 style.css 的 --tone-*），没有色调的（工具条、菜单的图标）跟随所在位置的文字色。
-import { invert, lookupByName } from './lookup.mjs';
+import { ENV_NAMES, GIT_NAMES, LICENSE_NAMES, MARKDOWN_EXTS, invert, isEnvName, lookupByName } from './lookup.mjs';
 import { EntryKind } from './protocol.mjs';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -102,15 +102,15 @@ const KINDS = {
 
 // 文件名（小写）优先，再按扩展名（小写）；都不在表里的是「其他文件」。
 const NAMES = {
-  git: ['.gitignore', '.gitattributes', '.gitmodules', '.gitconfig', '.gitkeep', '.mailmap'],
-  env: ['.env', '.envrc'],
+  git: GIT_NAMES,
+  env: ENV_NAMES,
   manifest: ['package.json', 'cargo.toml', 'go.mod', 'pyproject.toml', 'requirements.txt', 'gemfile', 'package.swift', 'pom.xml', 'build.gradle', 'composer.json', 'setup.py'],
   lock: ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'cargo.lock', 'gemfile.lock', 'poetry.lock', 'go.sum', 'composer.lock', 'bun.lockb', 'podfile.lock'],
-  license: ['license', 'licence', 'copying', 'unlicense', 'license.md', 'license.txt', 'licence.md', 'licence.txt', 'copying.md', 'copying.txt'],
+  license: [...LICENSE_NAMES, 'license.md', 'license.txt', 'licence.md', 'licence.txt', 'copying.md', 'copying.txt'],
 };
 const EXTENSIONS = {
   text: ['txt', 'text', 'log', 'rtf'],
-  markdown: ['md', 'markdown', 'mdx'],
+  markdown: MARKDOWN_EXTS,
   typescript: ['ts', 'tsx', 'mts', 'cts'],
   javascript: ['js', 'mjs', 'cjs', 'jsx'],
   python: ['py', 'pyw', 'pyi'],
@@ -143,7 +143,7 @@ export function kindOf({ kind, name }) {
   if (kind === EntryKind.DIR) return KINDS.dir;
   if (kind === EntryKind.LINK) return KINDS.link;
   if (kind === EntryKind.OTHER) return KINDS.other;
-  return KINDS[lookupByName(name, BY_NAME, BY_EXT, lower => (lower.startsWith('.env.') ? 'env' : undefined)) ?? 'file'];
+  return KINDS[lookupByName(name, BY_NAME, BY_EXT, lower => (isEnvName(lower) ? 'env' : undefined)) ?? 'file'];
 }
 
 // 图标名：种类表里的 glyph。

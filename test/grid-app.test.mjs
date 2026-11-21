@@ -83,7 +83,7 @@ test('Mac 右键弹行菜单（和列表一样的项：复制路径、属性）�
   cellNamed(page, 'x.txt').dispatch('contextmenu', { clientX: 10, clientY: 10 });
   assert.equal(visible(page.menu), true);
   const items = page.menu.find(node => node.tagName === 'BUTTON').map(node => node.textContent);
-  assert.deepEqual(items, ['打开', '添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
+  assert.deepEqual(items, ['打开', '在 Coda 中打开', '添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
   page.menu.find(node => node.tagName === 'BUTTON').at(-1).dispatch('click');
   await flush();
   assert.equal(visible(page.info), true, '属性页叠在图标视图上');

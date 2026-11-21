@@ -25,13 +25,17 @@ const b64 = text => Buffer.from(text).toString('base64');
 
 // ---- 行菜单 ----
 
-test('行菜单（Mac）：打开（文件夹写展开）、分隔线、添加到聊天、复制相对路径、复制绝对路径、分隔线、属性，顺序固定', async t => {
+test('行菜单（Mac）：打开（文件夹写展开；文件另有「在 Coda 中打开」）、分隔线、添加到聊天、复制相对路径、复制绝对路径、分隔线、属性，顺序固定', async t => {
   const { page } = await start(t, { platform: 'mac' });
-  for (const [name, first] of [['a.txt', '打开'], ['src', '展开'], ['in.txt', '打开']]) {
+  for (const [name, head, headShape] of [
+    ['a.txt', ['打开', '在 Coda 中打开'], ['BUTTON', 'BUTTON']],
+    ['src', ['展开'], ['BUTTON']],
+    ['in.txt', ['打开', '在 Coda 中打开'], ['BUTTON', 'BUTTON']],
+  ]) {
     rightClick(page, name);
-    assert.deepEqual(labels(page), [first, '添加到聊天', '复制相对路径', '复制绝对路径', '属性'], name);
+    assert.deepEqual(labels(page), [...head, '添加到聊天', '复制相对路径', '复制绝对路径', '属性'], name);
     const shape = page.menu.children.map(node => node.tagName);
-    assert.deepEqual(shape.slice(shape.indexOf('BUTTON')), ['BUTTON', 'HR', 'BUTTON', 'BUTTON', 'BUTTON', 'HR', 'BUTTON'], '打开、分隔线、三项、分隔线、属性');
+    assert.deepEqual(shape.slice(shape.indexOf('BUTTON')), [...headShape, 'HR', 'BUTTON', 'BUTTON', 'BUTTON', 'HR', 'BUTTON'], '打开区、分隔线、三项、分隔线、属性');
   }
 });
 
@@ -43,11 +47,11 @@ test('行菜单：link、other（不能打开的）没有「添加到聊天」�
   }
 });
 
-test('iPhone 长按出同样的菜单', async t => {
+test('iPhone 长按出同样的菜单（文件带切换打开方式）', async t => {
   const { page, tick } = await start(t);
   rowNamed(page, 'a.txt').dispatch('pointerdown', { pointerId: 1, isPrimary: true, clientX: 5, clientY: 6 });
   tick(500);
-  assert.deepEqual(labels(page), ['添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
+  assert.deepEqual(labels(page), ['在 Coda 中打开', '添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
 });
 
 test('添加到聊天：发 add_text，路径是相对路径、block 为 false；成功提示「已添加到输入框」约 2 秒，普通样式', async t => {
