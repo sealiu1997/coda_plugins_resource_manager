@@ -7,7 +7,7 @@ import { icon, iconFor } from './icons.mjs';
 import { languageOf } from './languages.mjs';
 import { renderMarkdown } from './markdown.mjs';
 import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, OpenCategory, TEXT_LIMIT, imageType, mediaOf, openCategoryOf } from './protocol.mjs';
-import { clippedSelection, linesOf } from './selection.mjs';
+import { clippedRichSelection, clippedSelection, linesOf } from './selection.mjs';
 import { mayBeText, offersTextView } from './model3d.mjs';
 import { mountViewer } from './viewer3d.mjs';
 
@@ -212,7 +212,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   }
 
   function onSelect(event, text, withLines = true) {
-    const picked = clippedSelection(text);
+    const picked = withLines ? clippedSelection(text) : clippedRichSelection(text);
     if (!picked) return;
     event.preventDefault();
     selectionMenu(event, withLines
@@ -220,11 +220,18 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       : { path, text: picked.text });
   }
 
+  function clearMarkdownState() {
+    lastResult = null;
+    mdToken = null;
+    if (modeGroup === 'markdown') { modeGroup = null; paintMode(); }
+  }
+
   function failure(error, silent, retry) {
     if (error.stale) return;
     // 文件没了（后台刷新发现）：先释放，正文被换掉后，播放中的音视频和 3D 的画布不能继续占着。
-    if (error.code === ErrorCode.NOT_FOUND) { revoke(); shown = null; textShown = false; find.clearContent(); setMeta(' '); return notice('文件已不存在', path); }
+    if (error.code === ErrorCode.NOT_FOUND) { revoke(); shown = null; clearMarkdownState(); textShown = false; find.clearContent(); setMeta(' '); return notice('文件已不存在', path); }
     if (silent && shown) return setStale(error.message); // 后台刷新失败：保留正文，提示原因
+    clearMarkdownState();
     textShown = false;
     find.clearContent(); // 整页重读失败：标记清掉，计数写「—」，之后再读成功就重新找
     notice('读不到这个文件', error.message, { label: '重试', run: retry });
@@ -301,7 +308,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   // silent：刷新。没变化不重画；变了就换内容，并尽量留在原来的滚动位置；有待恢复的位置时用它。
   async function load(silent) {
     const mine = ++token, mark = () => mine === token;
-    if (!silent) { shown = null; textShown = false; find.clearContent(); setMeta('读取中…'); revoke(); body.replaceChildren(); }
+    if (!silent) { shown = null; clearMarkdownState(); textShown = false; find.clearContent(); setMeta('读取中…'); revoke(); body.replaceChildren(); }
     try {
       const kind = media && mediaOf(path);
       if (kind && await loadMedia(kind, silent, mark)) return;
@@ -314,15 +321,15 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       // 刷新留在原位；整页重读（打开、重载、重试）没有要恢复的位置就明确从头开始，不靠清空正文后滚动条自己归零。
       const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });
       const isMarkdown = result.kind === ContentKind.TEXT && openCategoryOf(path) === OpenCategory.MARKDOWN;
+      let nextToken = null;
+      if (isMarkdown && media && result.text.includes('![')) {
+        try { nextToken = (await media(path))?.token ?? null; } catch { nextToken = null; }
+        if (!mark()) return;
+      }
       if (isMarkdown) {
         if (modeGroup !== 'markdown') { modeGroup = 'markdown'; mode = 'preview'; }
+        mdToken = nextToken;
         paintMode();
-        if (media && result.text.includes('![')) {
-          try { mdToken = (await media(path))?.token ?? null; } catch { mdToken = null; }
-          if (!mark()) return;
-        } else {
-          mdToken = null;
-        }
       } else if (modeGroup === 'markdown') {
         modeGroup = null;
         mdToken = null;

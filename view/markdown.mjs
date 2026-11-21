@@ -116,6 +116,46 @@ function parseDestAndTitle(text, openParen) {
   return { dest, title, end: i + 1 };
 }
 
+// 链接引用标签归一化（CommonMark：去掉首尾空白、合并内部空白、转小写）。
+const normalizeLabel = label => String(label ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+
+// 从文本末尾的 [ref] / [] 或简写 [label] 查找引用定义，返回 { dest, title, end } 或 null。
+function resolveRef(text, closeBracket, fallbackLabel, defs) {
+  if (!defs || defs.size === 0) return null;
+  if (text[closeBracket + 1] === '[') {
+    const closeRef = findMatching(text, closeBracket + 2, '[', ']');
+    if (closeRef >= 0) {
+      const refText = text.slice(closeBracket + 2, closeRef);
+      const key = normalizeLabel(refText || fallbackLabel);
+      const found = defs.get(key);
+      if (found) return { dest: found.dest, title: found.title, end: closeRef + 1 };
+    }
+  }
+  const key = normalizeLabel(fallbackLabel);
+  const found = defs.get(key);
+  return found ? { dest: found.dest, title: found.title, end: closeBracket + 1 } : null;
+}
+
+function renderImageNode(alt, dest, title, ctx) {
+  const src = safeImageSrc(dest, ctx.basePath, ctx.resolveImage);
+  if (src) return h('img', { class: 'md-img', src, alt, title: title || null, draggable: 'false' });
+  return h('span', { class: 'md-img-fallback secondary' }, alt ? `[图片：${alt}]` : '[图片]');
+}
+
+function renderLinkNode(labelNodes, dest, title, ctx) {
+  const target = safeLinkTarget(dest, ctx.basePath);
+  if (target?.kind === 'external') {
+    return [h('a', { href: target.href, title: title || null, target: '_blank', rel: 'noopener noreferrer' }, ...labelNodes)];
+  }
+  if (target?.kind === 'hash') {
+    return [h('a', { href: target.href, title: title || null }, ...labelNodes)];
+  }
+  if (target?.kind === 'relative') {
+    return [h('span', { class: 'md-rel-link', 'data-rel-path': target.path, title: title || target.path }, ...labelNodes)];
+  }
+  return labelNodes;
+}
+
 function parseInline(text, ctx, depth = 0) {
   if (depth > MAX_DEPTH || !text) return text ? [text] : [];
   const out = [];
@@ -162,45 +202,35 @@ function parseInline(text, ctx, depth = 0) {
       }
     }
 
-    // 图片 ![alt](src)
+    // 图片：内联 ![alt](src) 或引用式 ![alt][ref] / ![alt][] / ![alt]
     if (ch === '!' && text[i + 1] === '[') {
       const closeBracket = findMatching(text, i + 2, '[', ']');
-      if (closeBracket >= 0 && text[closeBracket + 1] === '(') {
-        const parsed = parseDestAndTitle(text, closeBracket + 1);
+      if (closeBracket >= 0) {
+        const alt = text.slice(i + 2, closeBracket);
+        const parsed = text[closeBracket + 1] === '('
+          ? parseDestAndTitle(text, closeBracket + 1)
+          : resolveRef(text, closeBracket, alt, ctx.defs);
         if (parsed) {
           flush();
-          const alt = text.slice(i + 2, closeBracket);
-          const src = safeImageSrc(parsed.dest, ctx.basePath, ctx.resolveImage);
-          if (src) {
-            out.push(h('img', { class: 'md-img', src, alt, title: parsed.title || null, draggable: 'false' }));
-          } else {
-            out.push(h('span', { class: 'md-img-fallback secondary' }, alt ? `[图片：${alt}]` : '[图片]'));
-          }
+          out.push(renderImageNode(alt, parsed.dest, parsed.title, ctx));
           i = parsed.end;
           continue;
         }
       }
     }
 
-    // 链接 [label](href)
+    // 链接：内联 [label](href) 或引用式 [label][ref] / [label][] / [label]
     if (ch === '[') {
       const closeBracket = findMatching(text, i + 1, '[', ']');
-      if (closeBracket >= 0 && text[closeBracket + 1] === '(') {
-        const parsed = parseDestAndTitle(text, closeBracket + 1);
+      if (closeBracket >= 0) {
+        const rawLabel = text.slice(i + 1, closeBracket);
+        const parsed = text[closeBracket + 1] === '('
+          ? parseDestAndTitle(text, closeBracket + 1)
+          : resolveRef(text, closeBracket, rawLabel, ctx.defs);
         if (parsed) {
           flush();
-          const label = parseInline(text.slice(i + 1, closeBracket), ctx, depth + 1);
-          const target = safeLinkTarget(parsed.dest, ctx.basePath);
-          if (target?.kind === 'external') {
-            out.push(h('a', { href: target.href, title: parsed.title || null, target: '_blank', rel: 'noopener noreferrer' }, ...label));
-          } else if (target?.kind === 'hash') {
-            out.push(h('a', { href: target.href, title: parsed.title || null }, ...label));
-          } else if (target?.kind === 'relative') {
-            out.push(h('span', { class: 'md-rel-link', 'data-rel-path': target.path, title: parsed.title || target.path }, ...label));
-          } else {
-            // 危险协议（如 javascript: / data:）：按纯文本安全降级
-            out.push(...label);
-          }
+          const label = parseInline(rawLabel, ctx, depth + 1);
+          out.push(...renderLinkNode(label, parsed.dest, parsed.title, ctx));
           i = parsed.end;
           continue;
         }
@@ -270,11 +300,13 @@ function parseInline(text, ctx, depth = 0) {
 
 const FENCE_RE = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/;
 const HEADING_RE = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*#*$/;
+const SETEXT_RE = /^ {0,3}(=+|-+)[ \t]*$/;
 const HR_RE = /^ {0,3}(?:(\*[ \t]*){3,}|(-[ \t]*){3,}|(_[ \t]*){3,})$/;
 const QUOTE_RE = /^ {0,3}> ?(.*)$/;
 const LIST_RE = /^( *)([-*+]|(\d+)[.)])[ \t]+(.*)$/;
 const TASK_RE = /^\[( |x|X)\][ \t]+(.*)$/;
 const TABLE_SEP_RE = /^\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*:?-{3,}:?[ \t]*\|?$|^\|[ \t]*:?-{3,}:?[ \t]*\|$/;
+const LINK_DEF_RE = /^ {0,3}\[([^\]]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"([^"\n]*)"|'([^'\n]*)'|\(([^)\n]*)\)))?[ \t]*$/;
 
 function splitTableRow(line) {
   let s = line.trim();
@@ -418,7 +450,7 @@ function parseBlocks(lines, ctx, depth = 0) {
             break;
           }
         }
-        const task = !ordered ? TASK_RE.exec(itemLines[0]) : null;
+        const task = TASK_RE.exec(itemLines[0]);
         if (task) {
           itemLines[0] = task[2];
           const checked = task[1].toLowerCase() === 'x';
@@ -437,19 +469,57 @@ function parseBlocks(lines, ctx, depth = 0) {
       continue;
     }
 
-    // 普通段落
+    // Setext 标题或普通段落（紧跟普通行后的 === / --- 下划线解析为 h1 / h2）
     const para = [line];
     i++;
-    while (i < lines.length && !isBlockStart(lines, i)) { para.push(lines[i]); i++; }
-    nodes.push(h('p', {}, ...parseInline(para.join('\n'), ctx)));
+    let setextLevel = 0;
+    while (i < lines.length) {
+      const setext = SETEXT_RE.exec(lines[i]);
+      if (setext) { setextLevel = setext[1][0] === '=' ? 1 : 2; i++; break; }
+      if (isBlockStart(lines, i)) break;
+      para.push(lines[i]);
+      i++;
+    }
+    if (setextLevel) nodes.push(h(`h${setextLevel}`, {}, ...parseInline(para.join('\n').trim(), ctx)));
+    else nodes.push(h('p', {}, ...parseInline(para.join('\n'), ctx)));
   }
   return nodes;
+}
+
+// 预扫描提取引用式链接/图片定义（跳过围栏代码块），返回过滤后的正文行与定义表。
+function extractLinkDefs(lines) {
+  const defs = new Map();
+  const kept = [];
+  let fenceClose = null;
+  for (const line of lines) {
+    if (fenceClose) {
+      kept.push(line);
+      if (fenceClose.test(line)) fenceClose = null;
+      continue;
+    }
+    const fence = FENCE_RE.exec(line);
+    if (fence) {
+      fenceClose = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}[ \\t]*$`);
+      kept.push(line);
+      continue;
+    }
+    const def = LINK_DEF_RE.exec(line);
+    if (def) {
+      const key = normalizeLabel(def[1]);
+      if (key && !defs.has(key)) {
+        defs.set(key, { dest: def[2] ?? def[3], title: def[4] ?? def[5] ?? def[6] ?? '' });
+      }
+      continue;
+    }
+    kept.push(line);
+  }
+  return { lines: kept, defs };
 }
 
 // 渲染 Markdown 文本为 .md 容器节点；绝不解析原始 HTML。
 export function renderMarkdown(text, { basePath = '', resolveImage = null } = {}) {
   const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
-  const lines = normalized.split('\n');
-  const ctx = { basePath, resolveImage };
+  const { lines, defs } = extractLinkDefs(normalized.split('\n'));
+  const ctx = { basePath, resolveImage, defs };
   return h('div', { class: 'md selectable' }, ...parseBlocks(lines, ctx));
 }

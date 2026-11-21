@@ -4,9 +4,11 @@ import test from 'node:test';
 import { createChat } from '../view/chat.mjs';
 import { renderMarkdown, resolveRelativePath, safeLinkTarget } from '../view/markdown.mjs';
 import { mountPreview } from '../view/preview.mjs';
+import { clippedRichSelection } from '../view/selection.mjs';
 import { Element, loadFileApp, visible } from './support/dom.mjs';
 import { flush } from './support/fake.mjs';
 import { open } from './support/filepage.mjs';
+import { fakeSelection } from './support/selection.mjs';
 
 async function withDom(t) {
   await open(t, { path: 'x.txt', files: {} });
@@ -205,4 +207,144 @@ test('独立 file 视图打开 Markdown 也默认渲染富文本并支持切换�
   const sourceBtn = byClass(page.preview, 'pmode')[0].find(n => n.tagName === 'BUTTON' && n.textContent === '源码')[0];
   sourceBtn.dispatch('click');
   assert.equal(byClass(page.preview, 'text')[0]?.textContent, '# standalone\n');
+});
+
+test('Setext 标题、有序列表任务清单与引用式相对图片/链接回归', async t => {
+  await withDom(t);
+  const src = [
+    '主标题',
+    '=====',
+    '',
+    '副标题',
+    '-----',
+    '',
+    '1. [x] Done',
+    '2. [ ] Todo',
+    '',
+    '![Logo][logo] ![Bad][bad] [官网][site]',
+    '',
+    '[logo]: assets/logo.png "图标"',
+    '[bad]: ../../secret.png',
+    '[site]: https://example.com',
+  ].join('\n');
+
+  const md = renderMarkdown(src, {
+    basePath: 'README.md',
+    resolveImage: rel => `coda-view://service/media/tok1/${rel}`,
+  });
+
+  assert.equal(byTag(md, 'h1')[0]?.textContent, '主标题');
+  assert.equal(byTag(md, 'h2')[0]?.textContent, '副标题');
+  assert.equal(byTag(md, 'ol').length, 1);
+  const boxes = byTag(md, 'input');
+  assert.equal(boxes.length, 2, '有序列表任务清单应渲染复选框');
+  assert.equal(boxes[0].getAttribute('checked'), '');
+  assert.equal(boxes[1].getAttribute('checked'), null);
+
+  const imgs = byTag(md, 'img');
+  assert.equal(imgs.length, 1, '合法引用式相对图片应生成 img，越界引用图片应降级');
+  assert.equal(imgs[0].getAttribute('src'), 'coda-view://service/media/tok1/assets/logo.png');
+  assert.equal(imgs[0].getAttribute('alt'), 'Logo');
+  assert.equal(byClass(md, 'md-img-fallback').length, 1);
+
+  const link = byTag(md, 'a')[0];
+  assert.equal(link?.getAttribute('href'), 'https://example.com');
+  assert.equal(link?.textContent, '官网');
+  assert.equal(md.textContent.includes('[logo]:'), false, '引用定义行不应显示在正文中');
+});
+
+test('读取失败/换根后清除 Markdown 缓存并隐藏切换栏，不会恢复旧正文', async t => {
+  const roots = {
+    '/A': { 'README.md': '# 根A正文\n' },
+    '/B': {},
+  };
+  let currentRoot = '/A';
+  const page = await loadFileApp(t, {
+    platform: 'mac',
+    args: { session: 's1', path: 'README.md' },
+    postMessage: message => {
+      if (message.type === 'read') {
+        const text = roots[currentRoot]?.[message.path];
+        queueMicrotask(() => {
+          if (text === undefined) {
+            page.post({ type: 'chunk', generation: message.generation, requestId: message.requestId, error: { code: 'not_found', message: '没有这个文件' } });
+          } else {
+            const data = Buffer.from(text);
+            page.post({
+              type: 'chunk', generation: message.generation, requestId: message.requestId,
+              data: data.toString('base64'), offset: 0, size: data.length, mtimeMs: 100, kind: 'text', eof: true,
+            });
+          }
+        });
+      }
+    },
+    on: () => {},
+    copy: () => {},
+    getState: () => undefined,
+    setState: () => {},
+    open: () => {},
+  });
+  page.post({ type: 'session', generation: 1, session: 's1' });
+  page.post({ type: 'root', generation: 1, state: 'ready', path: '/A' });
+  await flush();
+
+  assert.equal(byTag(page.preview, 'h1')[0]?.textContent, '根A正文');
+  const modeBar = byClass(page.preview, 'pmode')[0];
+  assert.equal(modeBar.hidden, false);
+  const sourceBtn = modeBar.find(n => n.tagName === 'BUTTON' && n.textContent === '源码')[0];
+
+  // 切到缺少同名文件的根 B
+  currentRoot = '/B';
+  page.post({ type: 'root', generation: 1, state: 'ready', path: '/B' });
+  await flush();
+
+  assert.match(page.preview.textContent, /文件已不存在/);
+  assert.equal(modeBar.hidden, true, '读取失败后切换栏必须隐藏');
+  // 即使点击之前拿在手里的源码按钮，也绝不能恢复根 A 的旧正文
+  sourceBtn.dispatch('click');
+  await flush();
+  assert.equal(page.preview.textContent.includes('根A正文'), false, '绝不能恢复旧正文');
+  assert.match(page.preview.textContent, /文件已不存在/);
+});
+
+test('富文本右键复制和添加到聊天保留跨块换行与 <br> 换行', async t => {
+  await withDom(t);
+  const el = new Element('div');
+  const content = '# 安装\n\n运行命令\n\n第一行  \n第二行\n';
+  const data = Buffer.from(content).toString('base64');
+  const added = [], copied = [];
+  const chat = createChat({
+    link: { generation: 1, size: () => 10, call: async (_type, fields) => { added.push(fields); return {}; } },
+    copy: text => { copied.push(text); },
+    hint: { show: () => {} },
+  });
+  let menuItems = null;
+  const preview = mountPreview(el, {
+    read: async () => ({ kind: 'text', data, offset: 0, size: Buffer.byteLength(content), mtimeMs: 100, eof: true }),
+    copy: () => {},
+    selectionMenu: (_event, selection) => { menuItems = chat.selectionItems(selection); },
+  });
+
+  await preview.open('README.md');
+  await flush();
+
+  const sel = fakeSelection(t, el);
+  const md = byClass(el, 'md')[0];
+  // md.textContent 为 '安装运行命令第一行第二行'：0-6 跨选 h1「安装」与 p「运行命令」
+  sel.select(md, 0, 6);
+
+  // 验证 clippedRichSelection 保留跨块换行
+  assert.equal(clippedRichSelection(md)?.text, '安装\n运行命令');
+
+  // 验证右键菜单的「添加到聊天（内容）」和「复制」都收到带换行的文字
+  md.dispatch('contextmenu', { clientX: 10, clientY: 10 });
+  assert.deepEqual(menuItems?.map(i => i.label), ['添加到聊天（内容）', '复制']);
+  await menuItems[0].run();
+  menuItems[1].run();
+  assert.deepEqual(added, [{ text: '安装\n运行命令', block: true }]);
+  assert.deepEqual(copied, ['安装\n运行命令']);
+
+  // 验证 <br> 硬换行也保留换行（6-12 对应「第一行」<br>「第二行」）
+  sel.select(md, 6, 12);
+  assert.equal(clippedRichSelection(md)?.text, '第一行\n第二行');
 });

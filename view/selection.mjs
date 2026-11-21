@@ -20,6 +20,46 @@ export function clippedSelection(el, selection = globalThis.getSelection?.()) {
   return { text, start: before.toString().length };
 }
 
+const BLOCK_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LI', 'BLOCKQUOTE', 'PRE', 'TR', 'HR', 'DIV']);
+const CELL_TAGS = new Set(['TD', 'TH']);
+
+// 富文本预览（如 Markdown）的选区提取：复用 clippedSelection 的选区裁剪，按可见块级结构与 <br> 保留换行、单元格间保留制表符。
+export function clippedRichSelection(el, selection = globalThis.getSelection?.()) {
+  const picked = clippedSelection(el, selection);
+  if (!picked) return null;
+  const selStart = picked.start, selEnd = picked.start + picked.text.length;
+  let pos = 0, out = '', lastBlock = null, lastCell = null, pendingBreak = false;
+  function walk(node, block, cell) {
+    if (typeof node === 'string' || typeof node.data === 'string' || node.nodeType === 3) {
+      const str = typeof node === 'string' ? node : (node.data ?? node.textContent ?? '');
+      const len = str.length;
+      const lo = Math.max(0, selStart - pos), hi = Math.min(len, selEnd - pos);
+      if (hi > lo) {
+        if (out !== '') {
+          if (pendingBreak || (lastBlock !== null && lastBlock !== block)) out += '\n';
+          else if (lastCell !== null && lastCell !== cell) out += '\t';
+        }
+        out += str.slice(lo, hi);
+        lastBlock = block;
+        lastCell = cell;
+        pendingBreak = false;
+      }
+      pos += len;
+      return;
+    }
+    const tag = node.tagName?.toUpperCase?.() ?? '';
+    if (tag === 'BR') {
+      if (pos > selStart && pos < selEnd) pendingBreak = true;
+      return;
+    }
+    const nextBlock = node !== el && BLOCK_TAGS.has(tag) ? node : block;
+    const nextCell = CELL_TAGS.has(tag) ? node : cell;
+    for (const child of node.childNodes ?? node.children ?? []) walk(child, nextBlock, nextCell);
+  }
+  walk(el, el, null);
+  return out === '' ? null : { text: out, start: selStart };
+}
+
 const lineAt = (text, offset) => {
   let line = 1;
   for (let at = text.indexOf('\n'); at !== -1 && at < offset; at = text.indexOf('\n', at + 1)) line++;
