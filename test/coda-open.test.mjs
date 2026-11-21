@@ -208,6 +208,34 @@ test('同类别连续打开回归：README、Dockerfile、Makefile、.gitignore 
   assert.equal(host.opened.at(-1), 'coda-view://service/media/t999/article.mdx');
 });
 
+test('跨会话与重建页面连贯回归：会话 A 经菜单设定偏好后，用实际 setState 保存值重建页面，会话 B 首次打开同类别文件沿用该偏好', async t => {
+  const roots = {
+    '/A': { 'report.pdf': { text: '%PDF', kind: 'binary' } },
+    '/B': { 'slides.pptx': { text: 'PK', kind: 'binary' }, 'notes.md': { text: '# b' } },
+  };
+  const first = await open(t, { roots, mediaToken: 'tokA' });
+  first.host.session('sA', { state: 'ready', path: '/A' });
+  await flush();
+  rightClick(first.page, 'report.pdf');
+  await choose(first.page, '在 Coda 中打开');
+  first.tick(300);
+  const persisted = first.host.state.at(-1);
+  assert.ok(persisted, '会话 A 应写出持久化状态');
+
+  // 用会话 A 实际 setState 的值重建页面，在会话 B 首次双击同类别（document）文件
+  const second = await open(t, { roots, state: persisted, mediaToken: 'tokB' });
+  second.host.session('sB', { state: 'ready', path: '/B' });
+  await flush();
+  await dbl(second.page, 'slides.pptx');
+  assert.deepEqual(second.host.opened, ['coda-view://service/media/tokB/slides.pptx'], '会话 B 应沿用会话 A 存下的 document=coda 偏好');
+  assert.equal(visible(second.page.preview), false);
+
+  // 未设定偏好的 markdown 在会话 B 仍默认走资源管理器页内预览
+  await dbl(second.page, 'notes.md');
+  assert.equal(visible(second.page.preview), true);
+  assert.equal(text(second.page), '# b');
+});
+
 test('parseState 校验 openWith：只保留合法类别与 coda/inline，坏值被忽略', () => {
   const parsed = parseState({
     v: 1,
