@@ -14,7 +14,7 @@ import { Model, STATE_LIMIT, View, noticeText, parseState, putSession, trimState
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
 import { mountPress, onMotionChange, reducedMotion } from './press.mjs';
-import { EntryKind, RootState, SortKey, Type } from './protocol.mjs';
+import { EntryKind, RootState, SortKey, Type, externalPreviewOf } from './protocol.mjs';
 import { createRestore, createTrail } from './restore.mjs';
 import { createSearch } from './search.mjs';
 import { mountSearchbar } from './searchbar.mjs';
@@ -169,11 +169,59 @@ function openInView(path) {
 }
 // 两端都在页内打开：model.openFile 设 selected 和 opened，经 onChange 切到预览。iPhone 触屏没有键盘焦点，不交焦点；
 // 快速两次轻点：第一次已切到预览，目录树 .off 不接指针事件，第二次落不到条目上。
-// 打开文件的统一入口（目录树、图标视图和搜索结果）：焦点交接和过渡意图在这里记，不随调用方复制。select 为假（搜索结果）时只设预览，不改 model.selected。
-function openFile(path, { select = true } = {}) {
+// 独立自增序号（不复用 epoch）与单在途串行队列：
+// 同一页面同时只允许一个 coda.open 在途，在途期间的新打开意图合并到最新一次；
+// 换会话、根目录变化、切目录、打开属性页或改开页内文件时递增序号并清空待执行队列，防止旧操作晚完成或晚失败覆盖新状态。
+let openSeq = 0;
+let openingExternal = false;
+let queuedExternal = null;
+const cancelExternal = () => { openSeq++; queuedExternal = null; };
+const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
+function openInline(path, { select = true } = {}) {
   openPressed = !isIOS; // 用户在 Mac 上打开的：render 把焦点交给预览面板
   note({ kind: 'push', from: mode(), to: 'preview' });
   model.openFile(path, { select });
+}
+async function drainExternal(first) {
+  openingExternal = true;
+  let current = first;
+  try {
+    while (current) {
+      const { path, select, seq } = current;
+      current = null;
+      if (seq === openSeq) {
+        try {
+          const granted = await conn.link.call(Type.MEDIA, { path });
+          if (seq === openSeq) {
+            if (!granted?.token) throw new Error('no media service');
+            await coda.open(`coda-view://service/media/${granted.token}/${encodePath(path)}`);
+          }
+        } catch {
+          if (seq === openSeq && model.ready) openInline(path, { select });
+        }
+      }
+      if (queuedExternal) {
+        current = queuedExternal;
+        queuedExternal = null;
+      }
+    }
+  } finally {
+    openingExternal = false;
+  }
+}
+// 打开文件的统一入口（目录树、图标视图和搜索结果）：PDF/Office/iWork 与 Markdown 优先经本机流式服务走 coda.open，失败静默退回页内预览；其余保持页内预览。
+// 走 coda.open 成功时不设 model.opened（因此不记入 setState 的 opened）。select 为假（搜索结果）时回退页内预览只设预览，不改 model.selected。
+function openFile(path, { select = true } = {}) {
+  cancelExternal();
+  const seq = openSeq;
+  const via = typeof coda.open === 'function' && model.ready && model.root?.path ? externalPreviewOf(path) : null;
+  if (via) {
+    const task = { path, select, seq };
+    if (openingExternal) queuedExternal = task;
+    else drainExternal(task);
+    return;
+  }
+  openInline(path, { select });
 }
 
 // ---- 渲染：同一批变化合并成一次 ----
@@ -614,6 +662,7 @@ $('preview').addEventListener('keydown', event => {
 let shownCwd = '';
 const enterDir = taken(path => enterInto(path));
 function enterInto(path) {
+  cancelExternal();
   trail.remember(model.cwd, grid.scroll());
   selectEntry(null); // 进入新的一层：选中清空
   model.enter(path);
@@ -627,6 +676,7 @@ function enterInto(path) {
 function leaveDir(levels = 1, record = true) {
   takeover++; // 用户经按钮、键盘、返回退出图标视图的一层
   if (model.cwd === '') return false;
+  cancelExternal();
   const from = model.cwd.split('/');
   model.leave(levels);
   if (record) note({ kind: 'fade', to: model.cwd });
@@ -690,6 +740,7 @@ if (nativeBack) quiet(() => coda.on('back', event => {
 
 // ---- 属性页：所有关闭的路径（原生返回、横屏的返回、换会话、根目录变化）都重新声明回上层 ----
 function openInfo(row) {
+  cancelExternal();
   note({ kind: 'push', from: mode(), to: 'info' });
   infoOpen = true;
   infoStopped = false;
@@ -723,6 +774,7 @@ function onSession(data) {
   locator.cancel();
   clearSearch(); // 换会话：搜索词、结果、结果的选中、定位都清掉
   epoch++;
+  cancelExternal();
   hint.hide();
   const saved = persisted.sessions[data.session] ?? null;
   pending = saved?.opened ? { preview: { top: saved.scroll.top, left: saved.scroll.left }, path: saved.opened } : { preview: null, path: null };
@@ -739,7 +791,7 @@ function onSession(data) {
 function onRoot(data) {
   const before = model.root;
   if (data.state !== before?.state || data.path !== before?.path) { menu.hide(); intent = null; endRunning(); } // 开着的菜单里的路径是旧根目录下的；换根目录不播过渡
-  if (data.state !== RootState.READY || before?.path !== data.path) closeInfo(false, true); // 属性页看的是旧根目录下的路径
+  if (data.state !== RootState.READY || before?.path !== data.path) { cancelExternal(); closeInfo(false, true); } // 属性页看的是旧根目录下的路径
   const scope = model.scope;
   if (data.state !== RootState.READY) { search.suspend(); locator.cancel(); } // 根目录暂不可用：取消在途搜索，丢掉结果，搜索词留着；定位作废（再就绪也不接着做）
   const done = model.receive(data);

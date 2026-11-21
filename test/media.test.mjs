@@ -1,12 +1,16 @@
 // 音视频和图片的本机流式服务（lib/media.mjs，设计见第 20 节）：真实 http 服务器 + 真实临时目录。
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdir, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import test from 'node:test';
 import { createMedia } from '../lib/media.mjs';
-import { mediaOf, servedType } from '../view/protocol.mjs';
+import { externalPreviewOf, mediaOf, servedType } from '../view/protocol.mjs';
 import { tempDir } from './support/fake.mjs';
+
+const execFileAsync = promisify(execFile);
 
 const BODY = Buffer.from('0123456789abcdefghij'); // 20 字节
 
@@ -16,7 +20,7 @@ async function serving(t) {
   await writeFile(join(root, 'a.mp3'), BODY);
   await writeFile(join(root, 'sub', 'v 1.mp4'), BODY);
   await writeFile(join(root, 'empty.wav'), '');
-  await writeFile(join(root, 'notes.txt'), 'x');
+  await writeFile(join(root, 'archive.zip'), 'PK');
   await writeFile(join(root, 'old.mkv'), BODY);
   await writeFile(join(root, 'old.avi'), BODY);
   await writeFile(join(base, 'secret.mp3'), 'SECRET');
@@ -112,9 +116,9 @@ test('口令：不认得和已作废的 404；换成别的视图的口令读不�
   media.revoke(undefined);
 });
 
-test('路径：不是媒体扩展名、mkv、avi 415；越界（..、绝对路径、外链）不给字节；目录、不存在；链接指向里面的可读', async t => {
+test('路径：未放行扩展名、mkv、avi 415；越界（..、绝对路径、外链）不给字节；目录、不存在；链接指向里面的可读', async t => {
   const { get, url } = await serving(t);
-  assert.equal((await get('notes.txt')).res.status, 415);
+  assert.equal((await get('archive.zip')).res.status, 415);
   assert.equal((await get('old.mkv')).res.status, 415, 'mkv 不经服务');
   assert.equal((await get('old.avi')).res.status, 415, 'avi 不经服务');
   assert.equal((await get('..%2Fsecret.mp3')).res.status, 400);
@@ -150,7 +154,7 @@ test('3D 模型（第 21 节）：mediaOf 认 glb、gltf、stl、obj、ply、3mf
   assert.equal(servedType('x.png'), 'image/png');
   assert.equal(servedType('x.stl'), 'model/stl');
   assert.equal(servedType('x.mkv'), null);
-  assert.equal(servedType('x.txt'), null);
+  assert.equal(servedType('x.zip'), null);
   assert.equal(servedType('noext'), null);
   const { root, get } = await serving(t);
   await mkdir(join(root, 'm'), { recursive: true });
@@ -163,7 +167,7 @@ test('3D 模型（第 21 节）：mediaOf 认 glb、gltf、stl、obj、ply、3mf
   assert.deepEqual([mtl.res.status, mtl.res.headers.get('content-type'), mtl.body.toString()], [200, 'text/plain; charset=utf-8', 'newmtl x\n']);
   assert.equal((await get('m/model.glb')).res.headers.get('content-type'), 'model/gltf-binary');
   assert.equal((await get('m/scene.bin', { headers: { range: 'bytes=2-3' } })).body.toString(), '23');
-  assert.equal((await get('notes.txt')).res.status, 415, '文本仍然不供应');
+  assert.equal((await get('archive.zip')).res.status, 415, '未放行扩展名仍然不供应');
 });
 
 test('跨源：所有响应（含 304、416 和各种错误）带 Access-Control-Allow-Origin: *；OPTIONS 回 204 并列出方法和请求头', async t => {
@@ -177,7 +181,7 @@ test('跨源：所有响应（含 304、416 和各种错误）带 Access-Control
   assert.deepEqual([partial.res.status, origin(partial)], [206, '*']);
   const bad = await get('a.mp3', { headers: { range: 'bytes=99-' } });
   assert.deepEqual([bad.res.status, origin(bad)], [416, '*']);
-  for (const [path, status, tok] of [['notes.txt', 415], ['nope.mp3', 404], ['a.mp3', 404, 'wrong'], ['..%2Fx.mp3', 400]]) {
+  for (const [path, status, tok] of [['archive.zip', 415], ['nope.mp3', 404], ['a.mp3', 404, 'wrong'], ['..%2Fx.mp3', 400]]) {
     const res = await get(path, { tok });
     assert.deepEqual([res.res.status, origin(res)], [status, '*'], path);
   }
@@ -186,4 +190,57 @@ test('跨源：所有响应（含 304、416 和各种错误）带 Access-Control
   assert.match(preflight.res.headers.get('access-control-allow-headers'), /range/);
   assert.equal(preflight.body.length, 0);
   assert.equal((await get('a.mp3', { method: 'POST' })).res.status, 405);
+});
+
+test('coda.open 文档类型与嵌套 Markdown 相对链接：统一经流式服务供应并受工作目录校验约束', async t => {
+  for (const ext of ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf', 'pages', 'numbers', 'key', 'md', 'markdown']) {
+    assert.equal(externalPreviewOf(`docs/file.${ext}`), 'media', ext);
+    assert.equal(externalPreviewOf(`docs/FILE.${ext.toUpperCase()}`), 'media', ext.toUpperCase());
+    assert.equal(mediaOf(`docs/file.${ext}`), null, `${ext} 不当页内媒体预览`);
+    assert.ok(servedType(`docs/file.${ext}`), `${ext} 流式服务放行`);
+  }
+  for (const name of ['a.txt', 'a.js', 'a.json', 'a.png', 'a.mp3', 'a.mp4', 'a.glb', 'README', '.md', '.pdf', 'dir.pdf/README', 'a.toString', '']) {
+    assert.equal(externalPreviewOf(name), null, name);
+  }
+  const { root, base, url } = await serving(t);
+  await mkdir(join(root, 'docs'), { recursive: true });
+  await mkdir(join(root, 'assets'), { recursive: true });
+  await writeFile(join(root, 'docs', 'README.md'), '[pdf](./manual.pdf) [txt](./example.txt)\n');
+  await writeFile(join(root, 'docs', 'manual.pdf'), '%PDF-1.7');
+  await writeFile(join(root, 'docs', 'example.txt'), 'hello txt\n');
+  await writeFile(join(root, 'docs', 'guide.md'), '# guide\n');
+  await writeFile(join(root, 'docs', 'spec.docx'), 'PK-docx');
+  await writeFile(join(root, 'assets', 'diagram.png'), 'PNGDATA');
+  await writeFile(join(base, 'outside.pdf'), 'TOP-SECRET-PDF');
+  await symlink(join(base, 'outside.pdf'), join(root, 'docs', 'escape.pdf'));
+
+  const docBase = url('docs/README.md');
+  const fetchRel = async rel => {
+    const res = await fetch(new URL(rel, docBase));
+    return { status: res.status, type: res.headers.get('content-type'), text: await res.text() };
+  };
+
+  assert.deepEqual(await fetchRel('./manual.pdf'), { status: 200, type: 'application/pdf', text: '%PDF-1.7' });
+  assert.deepEqual(await fetchRel('./example.txt'), { status: 200, type: 'text/plain; charset=utf-8', text: 'hello txt\n' });
+  assert.deepEqual(await fetchRel('./guide.md'), { status: 200, type: 'text/markdown; charset=utf-8', text: '# guide\n' });
+  assert.deepEqual(await fetchRel('./spec.docx'), {
+    status: 200,
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    text: 'PK-docx',
+  });
+  assert.deepEqual(await fetchRel('../assets/diagram.png'), { status: 200, type: 'image/png', text: 'PNGDATA' });
+
+  const escapeLink = await fetchRel('./escape.pdf');
+  assert.equal(escapeLink.status, 403, '指向目录外的符号链接必须被拒绝');
+  assert.equal(escapeLink.text.includes('TOP-SECRET-PDF'), false);
+
+  const traverse = await fetchRel('../../outside.pdf');
+  assert.notEqual(traverse.status, 200, '越出根目录的相对路径必须被拒绝');
+  assert.equal(traverse.text.includes('TOP-SECRET-PDF'), false);
+
+  if (process.platform !== 'win32') {
+    await execFileAsync('mkfifo', [join(root, 'docs', 'pipe.txt')]);
+    const fifo = await fetch(new URL('./pipe.txt', docBase), { signal: AbortSignal.timeout(2000) });
+    assert.equal(fifo.status, 404, '命名管道（FIFO）必须以 O_NONBLOCK 及时拒绝，不能阻塞');
+  }
 });
