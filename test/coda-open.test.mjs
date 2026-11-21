@@ -206,7 +206,51 @@ test('防竞态：连续点两个文件时，前一个 coda.open 晚到失败不
   assert.equal(text(page), 'txt-b', '前一个回退不能盖掉 b.txt');
 });
 
-test('防竞态：连续点两个 PDF，前一个失败不覆盖后一个成功的 coda.open', async t => {
+test('防竞态：同一页面只允许一个 coda.open 在途，在途期间的新打开意图合并，首次请求晚成功时最终展示最后点击的文件', async t => {
+  const first = deferred(), last = deferred();
+  const calls = [], shown = [];
+  const roots = {
+    '/A': {
+      'a.pdf': { text: 'pdf-a' },
+      'b.pdf': { text: 'pdf-b' },
+      'c.pdf': { text: 'pdf-c' },
+    },
+  };
+  const { page, host } = await open(t, {
+    roots,
+    coda: {
+      open: target => {
+        calls.push(target);
+        const gate = calls.length === 1 ? first.promise : last.promise;
+        return gate.then(() => { shown.push(target); });
+      },
+    },
+  });
+  host.session('s1');
+  await flush();
+
+  await dbl(page, 'a.pdf');
+  await dbl(page, 'b.pdf');
+  await dbl(page, 'c.pdf');
+  assert.deepEqual(calls, ['coda-view://service/media/tok123/a.pdf'], 'a.pdf 在途期间不并发调 b.pdf / c.pdf');
+
+  // a.pdf 晚到成功：随后只执行合并后的最后一个 c.pdf，b.pdf 被跳过
+  first.resolve();
+  await flush();
+  assert.deepEqual(calls, [
+    'coda-view://service/media/tok123/a.pdf',
+    'coda-view://service/media/tok123/c.pdf',
+  ]);
+  last.resolve();
+  await flush();
+  assert.deepEqual(shown, [
+    'coda-view://service/media/tok123/a.pdf',
+    'coda-view://service/media/tok123/c.pdf',
+  ], '最终展示最后打开的 c.pdf，不会被晚到的 a.pdf 覆盖');
+  assert.equal(visible(page.preview), false);
+});
+
+test('防竞态：前一个 PDF 在途失败时，不回退页内预览并继续打开排队的下一个 PDF', async t => {
   const first = deferred(), second = deferred();
   const calls = [];
   const roots = {
@@ -229,15 +273,18 @@ test('防竞态：连续点两个 PDF，前一个失败不覆盖后一个成功�
 
   await dbl(page, 'a.pdf');
   await dbl(page, 'b.pdf');
+  assert.deepEqual(calls, ['coda-view://service/media/tok123/a.pdf']);
+
+  first.reject(new Error('too big'));
+  await flush();
+  assert.equal(visible(page.preview), false, 'a.pdf 已被 b.pdf 取代，失败不回退页内预览');
   assert.deepEqual(calls, [
     'coda-view://service/media/tok123/a.pdf',
     'coda-view://service/media/tok123/b.pdf',
   ]);
-
   second.resolve();
-  first.reject(new Error('too big'));
   await flush();
-  assert.equal(visible(page.preview), false, '前一个失败不能把后一个顶成页内预览');
+  assert.equal(visible(page.preview), false);
 });
 
 test('防竞态：等口令期间换会话，旧口令回来不再调 coda.open', async t => {
