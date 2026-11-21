@@ -1,10 +1,10 @@
 // 认语言：文件名到 highlight.js 的语言 id，只按文件名和扩展名，不猜内容；不在表里的是 null，显示纯文本。
-import { invert, lookupByName } from './lookup.mjs';
+import { DOCKERFILE_NAMES, MAKEFILE_NAMES, MARKDOWN_EXTS, RUBY_NAMES, invert, lookupByName } from './lookup.mjs';
 
 const NAMES = {
-  ruby: ['gemfile', 'rakefile', 'podfile'],
-  makefile: ['makefile', 'gnumakefile'],
-  dockerfile: ['dockerfile', 'containerfile'],
+  ruby: RUBY_NAMES,
+  makefile: MAKEFILE_NAMES,
+  dockerfile: DOCKERFILE_NAMES,
 };
 const EXTENSIONS = {
   javascript: ['js', 'mjs', 'cjs', 'jsx'],
@@ -34,7 +34,7 @@ const EXTENSIONS = {
   less: ['less'],
   yaml: ['yml', 'yaml'],
   ini: ['toml', 'ini', 'cfg'],
-  markdown: ['md', 'markdown', 'mdx'],
+  markdown: MARKDOWN_EXTS,
   bash: ['sh', 'bash', 'zsh'],
   makefile: ['mk'],
   dockerfile: ['dockerfile'],

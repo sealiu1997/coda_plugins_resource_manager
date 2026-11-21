@@ -1,4 +1,8 @@
 // 模块和页面共用的消息格式与上限。只用浏览器和 Node 都有的东西。
+import {
+  DOCKERFILE_NAMES, ENV_NAMES, GIT_NAMES, LICENSE_NAMES, MAKEFILE_NAMES, MARKDOWN_EXTS, RUBY_NAMES,
+  basenameLower, isEnvName,
+} from './lookup.mjs';
 
 // 宿主按 JSON.stringify({ message }).length 计量，超过的消息会被丢弃。
 export const MESSAGE_LIMIT = 128 * 1024;
@@ -90,11 +94,7 @@ export const OpenCategory = Object.freeze({
 });
 export const OpenWith = Object.freeze({ INLINE: 'inline', CODA: 'coda' });
 // 经 Coda 的 coda.open 预览的文档类型：统一经插件本机流式服务供应，复用 resolveInRoot 与 O_NOFOLLOW 校验，防止越出工作目录。
-const MARKDOWN_TYPES = {
-  md: 'text/markdown; charset=utf-8',
-  markdown: 'text/markdown; charset=utf-8',
-  mdx: 'text/markdown; charset=utf-8',
-};
+const MARKDOWN_TYPES = Object.fromEntries(MARKDOWN_EXTS.map(ext => [ext, 'text/markdown; charset=utf-8']));
 const DOCUMENT_TYPES = {
   pdf: 'application/pdf',
   doc: 'application/msword',
@@ -185,15 +185,11 @@ const TEXT_SERVED_TYPES = {
   lock: 'text/plain; charset=utf-8',
   log: 'text/plain; charset=utf-8',
 };
-// 常见无后缀或点开头的文本/配置文件名（小写，与 icons.mjs / languages.mjs 对齐）。
+// 常见无后缀或点开头的文本/配置文件名（共享部分来自 view/lookup.mjs，与 icons.mjs / languages.mjs 同一事实来源）。
 const TEXT_SERVED_NAMES = new Set([
-  'readme', 'changelog', 'contributing', 'authors',
-  'license', 'licence', 'copying', 'unlicense',
-  'makefile', 'gnumakefile', 'dockerfile', 'containerfile',
-  'gemfile', 'rakefile', 'podfile', 'vagrantfile', 'procfile',
-  '.gitignore', '.gitattributes', '.gitmodules', '.gitconfig', '.gitkeep', '.mailmap',
-  '.env', '.envrc', '.editorconfig', '.npmrc', '.nvmrc', '.dockerignore',
-  '.prettierrc', '.eslintrc', '.babelrc',
+  ...GIT_NAMES, ...ENV_NAMES, ...LICENSE_NAMES, ...RUBY_NAMES, ...MAKEFILE_NAMES, ...DOCKERFILE_NAMES,
+  'readme', 'changelog', 'contributing', 'authors', 'vagrantfile', 'procfile',
+  '.editorconfig', '.npmrc', '.nvmrc', '.dockerignore', '.prettierrc', '.eslintrc', '.babelrc',
 ]);
 // 查证过 Coda 播放器不支持的视频：按扩展名直接不预览，不读字节（mkv 容器不支持，avi 的 canPlayType 说 maybe 但实际报错）。
 const NO_PREVIEW = new Set(['mkv', 'avi']);
@@ -230,9 +226,8 @@ export function openCategoryOf(name) {
 export function servedType(name) {
   const media = mediaOf(name);
   if (media) return media.preview ? media.type : null;
-  const str = String(name);
-  const base = str.slice(str.lastIndexOf('/') + 1).toLowerCase();
-  if (TEXT_SERVED_NAMES.has(base) || base.startsWith('.env.')) return 'text/plain; charset=utf-8';
+  const base = basenameLower(name);
+  if (TEXT_SERVED_NAMES.has(base) || isEnvName(base)) return 'text/plain; charset=utf-8';
   const ext = extensionOf(name);
   if (!ext) return null;
   if (Object.hasOwn(COMPANION_TYPES, ext)) return COMPANION_TYPES[ext];
