@@ -167,6 +167,47 @@ test('右键「在 Coda 中打开」立即用 Coda 打开并按类别记住默�
   assert.equal(host.state.at(-1)?.openWith?.document, 'inline', '按类别切回 document=inline');
 });
 
+test('同类别连续打开回归：README、Dockerfile、Makefile、.gitignore 跟随 text 偏好，article.mdx 跟随 markdown 偏好且均有切换项', async t => {
+  const roots = {
+    '/A': {
+      'example.txt': { text: 'ex' },
+      'README': { text: 'readme' },
+      'Dockerfile': { text: 'FROM node' },
+      'Makefile': { text: 'all:' },
+      '.gitignore': { text: 'node_modules' },
+      'README.md': { text: '# md' },
+      'article.mdx': { text: '# mdx' },
+    },
+  };
+  const { page, host } = await open(t, { roots, mediaToken: 't999' });
+  host.session('s1');
+  await flush();
+
+  // 对 example.txt 选「在 Coda 中打开」→ 同属 text 的无后缀/点文件均自动跟随且菜单有「在资源管理器中打开」
+  rightClick(page, 'example.txt');
+  await choose(page, '在 Coda 中打开');
+  for (const name of ['README', 'Dockerfile', 'Makefile', '.gitignore']) {
+    rightClick(page, name);
+    assert.ok(menuButtons(page).some(b => b.textContent === '在资源管理器中打开'), `${name} 应有切换项`);
+    await dbl(page, name);
+  }
+  assert.deepEqual(host.opened, [
+    'coda-view://service/media/t999/example.txt',
+    'coda-view://service/media/t999/README',
+    'coda-view://service/media/t999/Dockerfile',
+    'coda-view://service/media/t999/Makefile',
+    'coda-view://service/media/t999/.gitignore',
+  ]);
+
+  // 对 README.md 选「在 Coda 中打开」→ 同属 markdown 的 article.mdx 自动跟随且有切换项
+  rightClick(page, 'README.md');
+  await choose(page, '在 Coda 中打开');
+  rightClick(page, 'article.mdx');
+  assert.ok(menuButtons(page).some(b => b.textContent === '在资源管理器中打开'), 'article.mdx 应归为 markdown 且有切换项');
+  await dbl(page, 'article.mdx');
+  assert.equal(host.opened.at(-1), 'coda-view://service/media/t999/article.mdx');
+});
+
 test('parseState 校验 openWith：只保留合法类别与 coda/inline，坏值被忽略', () => {
   const parsed = parseState({
     v: 1,

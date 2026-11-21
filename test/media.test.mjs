@@ -199,7 +199,7 @@ test('打开偏好类别归类与嵌套 Markdown 相对链接：统一经流式�
     assert.equal(mediaOf(`docs/file.${ext}`), null, `${ext} 不当页内媒体预览`);
     assert.ok(servedType(`docs/file.${ext}`), `${ext} 流式服务放行`);
   }
-  for (const ext of ['md', 'markdown']) {
+  for (const ext of ['md', 'markdown', 'mdx']) {
     assert.equal(openCategoryOf(`docs/file.${ext}`), OpenCategory.MARKDOWN, ext);
     assert.equal(openCategoryOf(`docs/FILE.${ext.toUpperCase()}`), OpenCategory.MARKDOWN, ext.toUpperCase());
     assert.equal(mediaOf(`docs/file.${ext}`), null, `${ext} 不当页内媒体预览`);
@@ -209,10 +209,12 @@ test('打开偏好类别归类与嵌套 Markdown 相对链接：统一经流式�
   assert.equal(openCategoryOf('a.mp3'), OpenCategory.AUDIO);
   assert.equal(openCategoryOf('a.mp4'), OpenCategory.VIDEO);
   assert.equal(openCategoryOf('a.glb'), OpenCategory.MODEL);
-  for (const name of ['a.txt', 'a.js', 'a.swift', 'a.json', 'README', '.md', '.pdf', 'dir.pdf/README', 'a.toString', '']) {
+  for (const name of ['a.txt', 'a.js', 'a.swift', 'a.json', 'README', 'Dockerfile', 'Makefile', '.gitignore', '.env.local', '.md', '.pdf', 'dir.pdf/README', 'a.toString', '']) {
     assert.equal(openCategoryOf(name), OpenCategory.TEXT, name);
   }
-  assert.equal(servedType('a.swift'), 'text/plain; charset=utf-8');
+  for (const name of ['a.swift', 'README', 'Dockerfile', 'Makefile', '.gitignore', 'LICENSE', '.env', '.env.local']) {
+    assert.equal(servedType(name), 'text/plain; charset=utf-8', name);
+  }
   const { root, base, url } = await serving(t);
   await mkdir(join(root, 'docs'), { recursive: true });
   await mkdir(join(root, 'assets'), { recursive: true });

@@ -93,6 +93,7 @@ export const OpenWith = Object.freeze({ INLINE: 'inline', CODA: 'coda' });
 const MARKDOWN_TYPES = {
   md: 'text/markdown; charset=utf-8',
   markdown: 'text/markdown; charset=utf-8',
+  mdx: 'text/markdown; charset=utf-8',
 };
 const DOCUMENT_TYPES = {
   pdf: 'application/pdf',
@@ -110,6 +111,7 @@ const DOCUMENT_TYPES = {
 // 常见目录内文本/代码文件：供流式服务响应 Markdown 相对链接以及用户手动选「在 Coda 中打开」；不改变媒体预览判定。
 const TEXT_SERVED_TYPES = {
   txt: 'text/plain; charset=utf-8',
+  text: 'text/plain; charset=utf-8',
   csv: 'text/csv; charset=utf-8',
   tsv: 'text/tab-separated-values; charset=utf-8',
   json: 'application/json; charset=utf-8',
@@ -124,6 +126,7 @@ const TEXT_SERVED_TYPES = {
   htm: 'text/html; charset=utf-8',
   css: 'text/css; charset=utf-8',
   scss: 'text/plain; charset=utf-8',
+  sass: 'text/plain; charset=utf-8',
   less: 'text/plain; charset=utf-8',
   js: 'text/javascript; charset=utf-8',
   mjs: 'text/javascript; charset=utf-8',
@@ -154,6 +157,7 @@ const TEXT_SERVED_TYPES = {
   cs: 'text/plain; charset=utf-8',
   php: 'text/plain; charset=utf-8',
   rb: 'text/plain; charset=utf-8',
+  erb: 'text/plain; charset=utf-8',
   lua: 'text/plain; charset=utf-8',
   r: 'text/plain; charset=utf-8',
   pl: 'text/plain; charset=utf-8',
@@ -164,6 +168,7 @@ const TEXT_SERVED_TYPES = {
   sh: 'text/plain; charset=utf-8',
   bash: 'text/plain; charset=utf-8',
   zsh: 'text/plain; charset=utf-8',
+  fish: 'text/plain; charset=utf-8',
   mk: 'text/plain; charset=utf-8',
   dockerfile: 'text/plain; charset=utf-8',
   diff: 'text/plain; charset=utf-8',
@@ -174,8 +179,22 @@ const TEXT_SERVED_TYPES = {
   toml: 'text/plain; charset=utf-8',
   ini: 'text/plain; charset=utf-8',
   cfg: 'text/plain; charset=utf-8',
+  mod: 'text/plain; charset=utf-8',
+  sum: 'text/plain; charset=utf-8',
+  gradle: 'text/plain; charset=utf-8',
+  lock: 'text/plain; charset=utf-8',
   log: 'text/plain; charset=utf-8',
 };
+// 常见无后缀或点开头的文本/配置文件名（小写，与 icons.mjs / languages.mjs 对齐）。
+const TEXT_SERVED_NAMES = new Set([
+  'readme', 'changelog', 'contributing', 'authors',
+  'license', 'licence', 'copying', 'unlicense',
+  'makefile', 'gnumakefile', 'dockerfile', 'containerfile',
+  'gemfile', 'rakefile', 'podfile', 'vagrantfile', 'procfile',
+  '.gitignore', '.gitattributes', '.gitmodules', '.gitconfig', '.gitkeep', '.mailmap',
+  '.env', '.envrc', '.editorconfig', '.npmrc', '.nvmrc', '.dockerignore',
+  '.prettierrc', '.eslintrc', '.babelrc',
+]);
 // 查证过 Coda 播放器不支持的视频：按扩展名直接不预览，不读字节（mkv 容器不支持，avi 的 canPlayType 说 maybe 但实际报错）。
 const NO_PREVIEW = new Set(['mkv', 'avi']);
 
@@ -211,6 +230,9 @@ export function openCategoryOf(name) {
 export function servedType(name) {
   const media = mediaOf(name);
   if (media) return media.preview ? media.type : null;
+  const str = String(name);
+  const base = str.slice(str.lastIndexOf('/') + 1).toLowerCase();
+  if (TEXT_SERVED_NAMES.has(base) || base.startsWith('.env.')) return 'text/plain; charset=utf-8';
   const ext = extensionOf(name);
   if (!ext) return null;
   if (Object.hasOwn(COMPANION_TYPES, ext)) return COMPANION_TYPES[ext];
