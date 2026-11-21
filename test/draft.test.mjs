@@ -1,188 +1,120 @@
-// add_text：lib/draft.mjs 直接测，加从 activate 入口走到（假的）coda.api 的整条链路。全部用假接口，不碰真实会话。
-// 草稿接口的路径只在 lib/draft.mjs 里写，测试和 harness 从那里取。
+// add_text：lib/draft.mjs 直接测，加从 activate 入口走到（假的）coda.call 的整条链路。全部用假接口，不碰真实会话。
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { activate } from '../main.mjs';
-import { addText, compose, draftSession } from '../lib/draft.mjs';
+import { addText } from '../lib/draft.mjs';
 import { DRAFT_LIMIT } from '../view/protocol.mjs';
-import { checkoutOf, deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
+import { appendDraftText, checkoutOf, deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
 
 const caught = promise => promise.then(() => null, error => error);
 
-// 假的草稿接口：每个会话一份草稿，保存要带对版本。照服务端的规矩，正文只能有 text、attachments（ID 字符串）、revision。
-// hooks.get / hooks.post 在回答之前执行，可以卡住或动手脚。
-function draftApi({ drafts, hooks = {} }) {
+function withDraft(drafts, hook) {
   const log = [];
   return {
     log, drafts,
-    async api(path, body) {
-      const session = draftSession(path);
-      const current = drafts[session];
-      if (body === undefined) {
-        log.push({ method: 'GET', session });
-        await hooks.get?.(session);
-        return structuredClone(current);
-      }
-      log.push({ method: 'POST', session, body: structuredClone(body) });
-      await hooks.post?.(session, log.filter(entry => entry.method === 'POST').length);
-      const keys = Object.keys(body);
-      assert.ok(keys.every(key => ['text', 'attachments', 'revision'].includes(key)), `多余字段：${keys}`);
-      assert.ok(body.attachments.every(id => typeof id === 'string'), '附件必须是 ID 字符串');
-      if (body.revision !== current.revision) return { draft: structuredClone(current), conflict: true };
-      Object.assign(current, { text: body.text, attachments: current.attachments.filter(a => body.attachments.includes(a.id)), revision: current.revision + 1 });
-      return { draft: structuredClone(current) };
+    coda: {
+      async call(resource, name, input, options) {
+        assert.deepEqual(resource.kind, 'coda/thread@1');
+        assert.equal(name, 'append-draft');
+        log.push({ session: resource.id, input: structuredClone(input), options });
+        await hook?.(resource.id, input, options);
+        if (options?.signal?.aborted) throw Object.assign(new Error('操作已取消'), { name: 'AbortError' });
+        const current = drafts[resource.id];
+        if (!current) throw new Error('未知会话');
+        if (current instanceof Error) throw current;
+        const next = appendDraftText(current.text, input.text, Boolean(input.line));
+        if (next.length > DRAFT_LIMIT) throw Object.assign(new Error('草稿超过 10 万字上限'), { code: 'too_long' });
+        current.text = next;
+        return {};
+      },
     },
   };
 }
-const draftOf = (text = '', attachments = [], revision = 1) => ({ text, attachments, revision });
-const withDraft = (drafts, hooks) => {
-  const fake = draftApi({ drafts, hooks });
-  return { ...fake, coda: { api: (path, body) => fake.api(path, body) } };
-};
-
-// ---- 拼法 ----
-
-test('compose：文字类的接在后面，前后各一个空格；内容类另起一行，结尾换行', () => {
-  const cases = [
-    ['', 'src/a.ts', false, 'src/a.ts '],
-    ['看看', 'src/a.ts', false, '看看 src/a.ts '],
-    ['看看 ', 'src/a.ts', false, '看看 src/a.ts '],
-    ['看看\n', 'src/a.ts', false, '看看\nsrc/a.ts '],
-    ['看看\t', 'src/a.ts', false, '看看\tsrc/a.ts '],
-    ['', 'a\nb', true, 'a\nb\n'],
-    ['看看', 'a\nb', true, '看看\na\nb\n'],
-    ['看看\n', 'a\nb', true, '看看\na\nb\n'],
-    ['看看 ', 'a\nb', true, '看看 \na\nb\n'],
-    // 内容本身以换行结尾（三击选行等）：不再多加，免得多出一个空行
-    ['', 'a\nb\n', true, 'a\nb\n'],
-    ['看看\n', 'a\n', true, '看看\na\n'],
-    ['看看', 'a\n\n', true, '看看\na\n\n'],
-    ['', '\n', true, '\n'],
-  ];
-  for (const [current, text, block, expected] of cases) assert.equal(compose(current, text, block), expected, JSON.stringify([current, block]));
-});
+const draftOf = (text = '', attachments = []) => ({ text, attachments });
 
 // ---- addText 本身 ----
 
-test('addText：保存现有附件的 ID，带上读到的版本', async t => {
-  const api = withDraft({ A: draftOf('hi', [{ id: 'att-1', name: 'x.png' }, { id: 'att-2' }], 7) });
-  assert.equal(await addText(api.coda, 'A', { text: 'p', block: false }), true);
-  assert.deepEqual(api.log.map(entry => entry.method), ['GET', 'POST']);
-  assert.deepEqual(api.log[1].body, { text: 'hi p ', attachments: ['att-1', 'att-2'], revision: 7 });
-  assert.deepEqual(api.drafts.A.attachments.map(a => a.id), ['att-1', 'att-2'], '服务端的附件还在');
-  assert.equal(api.drafts.A.text, 'hi p ');
+test('addText：原样传给 coda/thread@1 的 append-draft，路径传 line: false、内容传 line: true；连续追加不多出空格或空行，附件原样保留', async () => {
+  const api = withDraft({ A: draftOf('', [{ id: 'att-1' }]), B: draftOf('') });
+  assert.equal(await addText(api.coda, 'A', { text: 'a.txt', block: false }), true);
+  assert.equal(await addText(api.coda, 'A', { text: 'b.txt', block: false }), true);
+  assert.equal(api.drafts.A.text, 'a.txt b.txt', '连续追加路径：仅单个空格分隔，无双空格');
+
+  assert.equal(await addText(api.coda, 'B', { text: '第一段', block: true }), true);
+  assert.equal(await addText(api.coda, 'B', { text: '第二段', block: true }), true);
+  assert.equal(api.drafts.B.text, '第一段\n第二段', '连续追加选区：仅单个换行分隔，无多余空行');
+
+  assert.deepEqual(api.log.map(entry => ({ session: entry.session, input: entry.input })), [
+    { session: 'A', input: { text: 'a.txt', line: false } },
+    { session: 'A', input: { text: 'b.txt', line: false } },
+    { session: 'B', input: { text: '第一段', line: true } },
+    { session: 'B', input: { text: '第二段', line: true } },
+  ]);
+  assert.deepEqual(api.drafts.A.attachments, [{ id: 'att-1' }]);
 });
 
-test('addText：会话 ID 要编码，只写传进来的会话', async () => {
+test('addText：传原样会话 ID，只写传进来的会话', async () => {
   const api = withDraft({ 'a/b': draftOf() });
   await addText(api.coda, 'a/b', { text: 'x', block: true });
-  assert.deepEqual(api.log.map(entry => entry.session), ['a/b', 'a/b']);
+  assert.deepEqual(api.log.map(entry => entry.session), ['a/b']);
+  assert.equal(api.drafts['a/b'].text, 'x');
 });
 
-test('addText：版本不符，用服务端回来的内容重拼并成功；附件也取新的', async () => {
-  const drafts = { A: draftOf('旧', [{ id: 'a1' }], 1) };
-  const api = withDraft(drafts, { post: async (session, n) => {
-    if (n === 1) Object.assign(drafts.A, { text: '旧，别人又打了', attachments: [{ id: 'a1' }, { id: 'a2' }], revision: 2 });
-  } });
-  assert.equal(await addText(api.coda, 'A', { text: 'p', block: false }), true);
-  const posts = api.log.filter(entry => entry.method === 'POST');
-  assert.equal(posts.length, 2);
-  assert.deepEqual(posts[1].body, { text: '旧，别人又打了 p ', attachments: ['a1', 'a2'], revision: 2 });
-  assert.equal(api.log.filter(entry => entry.method === 'GET').length, 1, '重试用回答里的草稿，不重新读');
-});
+test('addText：超过上限回 draft_too_long（本地超限不调接口，服务端拒绝也能映射）', async () => {
+  const local = withDraft({ A: draftOf() });
+  assert.equal((await caught(addText(local.coda, 'A', { text: 'x'.repeat(DRAFT_LIMIT + 1), block: false }))).code, 'draft_too_long');
+  assert.equal(local.log.length, 0, '单段就超上限：不碰接口');
 
-test('addText：连续版本不符，共试 3 次后 draft_failed', async () => {
-  const drafts = { A: draftOf('x', [], 1) };
-  const api = withDraft(drafts, { post: async () => { drafts.A.revision++; } });
-  const error = await caught(addText(api.coda, 'A', { text: 'p', block: false }));
-  assert.equal(error.code, 'draft_failed');
-  assert.equal(api.log.filter(entry => entry.method === 'POST').length, 3);
-});
+  const exact = withDraft({ A: draftOf() });
+  assert.equal(await addText(exact.coda, 'A', { text: 'x'.repeat(DRAFT_LIMIT), block: true }), true, '正好满上限：放得下');
+  assert.equal(exact.log.length, 1);
 
-test('addText：超过上限回 draft_too_long，不截断、不保存；重试时服务端内容变长也重查', async () => {
-  const near = withDraft({ A: draftOf('x'.repeat(DRAFT_LIMIT - 5), [], 1) });
-  assert.equal((await caught(addText(near.coda, 'A', { text: 'abcd', block: false }))).code, 'draft_too_long');
-  assert.deepEqual(near.log.map(entry => entry.method), ['GET']);
-  assert.equal(await addText(near.coda, 'A', { text: 'abc', block: false }), true, '前后各一个空格加 3 个字，正好 5 个单元，放得下');
+  const server = withDraft({ A: draftOf('x'.repeat(DRAFT_LIMIT - 2)) });
+  assert.equal((await caught(addText(server.coda, 'A', { text: 'abcd', block: false }))).code, 'draft_too_long');
+  assert.equal(server.log.length, 1);
 
-  const drafts = { A: draftOf('', [], 1) };
-  const api = withDraft(drafts, { post: async () => { Object.assign(drafts.A, { text: 'y'.repeat(DRAFT_LIMIT), revision: 2 }); } });
-  assert.equal((await caught(addText(api.coda, 'A', { text: 'p', block: false }))).code, 'draft_too_long');
-  assert.equal(api.log.filter(entry => entry.method === 'POST').length, 1, '第二次不保存');
-});
-
-test('addText：接口抛错、回答形状不对、文字无效都是 draft_failed', async () => {
-  const boom = { api: async () => { throw new Error('网络'); } };
-  assert.equal((await caught(addText(boom, 'A', { text: 'p', block: false }))).code, 'draft_failed');
-  for (const reply of [undefined, {}, { text: 1, attachments: [] }, { text: '', attachments: [{ id: 1 }] }, { text: '', attachments: {} }]) {
-    assert.equal((await caught(addText({ api: async () => reply }, 'A', { text: 'p', block: false }))).code, 'draft_failed', JSON.stringify(reply));
+  for (const error of [
+    Object.assign(new Error('nope'), { code: 'draft_too_long' }),
+    Object.assign(new Error('nope'), { code: 'too_large' }),
+    new Error('草稿太长'),
+    new Error('draft exceeds limit'),
+  ]) {
+    const mapped = { call: async () => { throw error; } };
+    assert.equal((await caught(addText(mapped, 'A', { text: 'p', block: false }))).code, 'draft_too_long', error.message);
   }
+});
+
+test('addText：接口抛错或文字无效都是 draft_failed', async () => {
+  const boom = { call: async () => { throw new Error('网络'); } };
+  assert.equal((await caught(addText(boom, 'A', { text: 'p', block: false }))).code, 'draft_failed');
   const api = withDraft({ A: draftOf() });
   for (const bad of [{ text: 7, block: false }, { text: 'a\0b', block: false }, { text: 'a', block: 'yes' }, { block: true }]) {
     assert.equal((await caught(addText(api.coda, 'A', bad))).code, 'draft_failed', JSON.stringify(bad));
   }
   assert.equal(api.log.length, 0, '无效的文字不碰接口');
-  const saveFails = { api: async (path, body) => { if (body) throw new Error('x'); return draftOf(); } };
-  assert.equal((await caught(addText(saveFails, 'A', { text: 'p', block: false }))).code, 'draft_failed');
 });
 
-test('addText：保存的回答没有合法的 draft（undefined、null、{}、{ draft: {} }）→ draft_failed，不算写入成功', async () => {
-  for (const reply of [undefined, null, {}, { draft: {} }]) {
-    const posts = [];
-    const api = { api: async (path, body) => { if (body === undefined) return draftOf('hi', [], 2); posts.push(body); return reply; } };
-    const error = await caught(addText(api, 'A', { text: 'p', block: false }));
-    assert.equal(error?.code, 'draft_failed', JSON.stringify(reply));
-    assert.equal(posts.length, 1, '不重试');
-  }
-});
+test('addText：调用前或调用途中 valid() 变假 / signal 中止 → 取消写入、不修改草稿、返回 false', async () => {
+  const before = withDraft({ A: draftOf('原') });
+  assert.equal(await addText(before.coda, 'A', { text: 'p', block: false }, { valid: () => false }), false);
+  const aborted = new AbortController();
+  aborted.abort();
+  assert.equal(await addText(before.coda, 'A', { text: 'p', block: false }, { signal: aborted.signal }), false);
+  assert.equal(before.log.length, 0);
+  assert.equal(before.drafts.A.text, '原');
 
-test('addText：内容和服务端相同时接口直接回 { draft }，算成功', async () => {
-  const api = { api: async (path, body) => (body ? { draft: { text: body.text, attachments: [], revision: 1 } } : draftOf('p ')) };
-  assert.equal(await addText(api, 'A', { text: 'p', block: false }), true);
-});
-
-// ---- 换会话：用 valid 直接测，三个时机 ----
-
-test('addText：读完草稿后会话换了 → 不写、不报', async () => {
-  const get = deferred();
-  const api = withDraft({ A: draftOf() }, { get: () => get.promise });
-  let live = true;
-  const run = addText(api.coda, 'A', { text: 'p', block: false }, { valid: () => live });
-  await waitFor(() => api.log.length === 1, 'GET');
-  live = false;
-  get.resolve();
+  const gate = deferred(), controller = new AbortController();
+  const during = withDraft({ A: draftOf('原') }, () => gate.promise);
+  const run = addText(during.coda, 'A', { text: 'p', block: false }, { signal: controller.signal });
+  await waitFor(() => during.log.length === 1, 'call');
+  assert.equal(during.log[0].options?.signal, controller.signal, '把 signal 传给了 coda.call');
+  controller.abort();
+  gate.resolve();
   assert.equal(await run, false);
-  assert.deepEqual(api.log.map(entry => entry.method), ['GET']);
-});
-
-test('addText：版本不符回来之前会话换了 → 不重试、不报', async () => {
-  const drafts = { A: draftOf('x', [], 1) };
-  const post = deferred();
-  const api = withDraft(drafts, { post: async () => { drafts.A.revision = 5; await post.promise; } });
-  let live = true;
-  const run = addText(api.coda, 'A', { text: 'p', block: false }, { valid: () => live });
-  await waitFor(() => api.log.length === 2, 'POST');
-  live = false;
-  post.resolve();
-  assert.equal(await run, false);
-  assert.equal(api.log.filter(entry => entry.method === 'POST').length, 1);
-});
-
-test('addText：第二次保存之前会话换了 → 不写、不报；重试始终写最初的会话', async () => {
-  const drafts = { A: draftOf('x', [], 1), B: draftOf('', [], 1) };
-  let checks = 0;
-  const api = withDraft(drafts, { post: async () => { drafts.A.revision = 9; } });
-  // 读完草稿、第一次保存回来的两次核对放行，第二次保存之前的不放行
-  const valid = () => ++checks <= 2;
-  assert.equal(await addText(api.coda, 'A', { text: 'p', block: false }, { valid }), false);
-  assert.equal(api.log.filter(entry => entry.method === 'POST').length, 1);
-
-  const retry = withDraft({ A: draftOf('x', [], 1), B: draftOf('', [], 1) }, { post: async (session, n) => { if (n === 1) retry.drafts.A.revision = 9; } });
-  assert.equal(await addText(retry.coda, 'A', { text: 'p', block: false }), true);
-  assert.deepEqual([...new Set(retry.log.map(entry => entry.session))], ['A']);
+  assert.equal(during.drafts.A.text, '原', '中止后尚未落地的写入被取消，旧草稿未修改');
 });
 
 // ---- 经 activate ----
@@ -193,13 +125,17 @@ async function repo(t) {
   return root;
 }
 
-// 假 coda：会话查询照旧，草稿接口换成上面的假接口。
-function appFor(root, drafts, hooks, threads = { A: checkoutOf(root), B: checkoutOf(root) }) {
-  const fake = fakeCoda(threads);
-  const base = fake.coda.api, api = withDraft(drafts, hooks);
-  fake.coda.api = (path, body) => (draftSession(path) !== null ? api.api(path, body) : base(path));
+function appFor(root, drafts, hook, threads = { A: checkoutOf(root), B: checkoutOf(root) }) {
+  const fake = fakeCoda(threads, { drafts });
+  if (hook) {
+    const prev = fake.coda.call;
+    fake.coda.call = async (resource, name, input, options) => {
+      await hook(resource.id, input, options);
+      return prev(resource, name, input, options);
+    };
+  }
   activate(fake.coda);
-  return { fake, draft: api };
+  return { fake };
 }
 async function opened(fake, session, options) {
   const view = fake.open(session, options);
@@ -209,134 +145,151 @@ async function opened(fake, session, options) {
 }
 const add = (view, requestId, body, generation = 1) => view.send({ type: 'add_text', generation, requestId, ...body });
 
-test('经 activate：add_text 写进当前会话的草稿，成功回只有信封的 added；两种拼法', async t => {
+test('经 activate：add_text 写进当前会话的草稿，成功回只有信封的 added；连续追加不多出空格或空行', async t => {
   const root = await repo(t);
-  const { fake, draft } = appFor(root, { A: draftOf('看看', [{ id: 'f1' }], 3) });
+  const { fake } = appFor(root, { A: draftOf('看看', [{ id: 'f1' }]) });
   const view = await opened(fake, 'A');
   add(view, 'r1', { text: 'src/a.ts', block: false });
   assert.deepEqual(await view.answer('r1'), { type: 'added', generation: 1, requestId: 'r1' });
-  add(view, 'r2', { text: 'const a = 1;', block: true });
+  add(view, 'r2', { text: 'src/b.ts', block: false });
   assert.deepEqual(await view.answer('r2'), { type: 'added', generation: 1, requestId: 'r2' });
-  assert.equal(draft.drafts.A.text, '看看 src/a.ts \nconst a = 1;\n');
-  assert.deepEqual(draft.drafts.A.attachments, [{ id: 'f1' }]);
-  assert.ok(draft.log.every(entry => entry.session === 'A'));
+  add(view, 'r3', { text: 'const a = 1;', block: true });
+  assert.deepEqual(await view.answer('r3'), { type: 'added', generation: 1, requestId: 'r3' });
+  add(view, 'r4', { text: 'const b = 2;', block: true });
+  assert.deepEqual(await view.answer('r4'), { type: 'added', generation: 1, requestId: 'r4' });
+  assert.equal(fake.drafts.A.text, '看看 src/a.ts src/b.ts\nconst a = 1;\nconst b = 2;');
+  assert.deepEqual(fake.drafts.A.attachments, [{ id: 'f1' }]);
+  assert.deepEqual(fake.calls.map(entry => ({ id: entry.resource.id, input: entry.input })), [
+    { id: 'A', input: { text: 'src/a.ts', line: false } },
+    { id: 'A', input: { text: 'src/b.ts', line: false } },
+    { id: 'A', input: { text: 'const a = 1;', line: true } },
+    { id: 'A', input: { text: 'const b = 2;', line: true } },
+  ]);
 });
 
 test('经 activate：文件视图的会话取 args.session', async t => {
   const root = await repo(t);
-  const { fake, draft } = appFor(root, { A: draftOf() });
+  const { fake } = appFor(root, { A: draftOf() });
   const view = await opened(fake, null, { view: 'file', args: { session: 'A', path: 'x' } });
   add(view, 'r', { text: 'p', block: false });
   assert.equal((await view.answer('r')).error, undefined);
-  assert.equal(draft.drafts.A.text, 'p ');
+  assert.equal(fake.drafts.A.text, 'p');
 });
 
 test('经 activate：草稿失败、太长、文字无效都回对应的错误码', async t => {
   const root = await repo(t);
-  const { fake, draft } = appFor(root, { A: draftOf('x'.repeat(DRAFT_LIMIT)) });
+  const { fake } = appFor(root, { A: draftOf('x'.repeat(DRAFT_LIMIT)) });
   const view = await opened(fake, 'A');
   add(view, 'long', { text: 'p', block: false });
   const long = await view.answer('long');
   assert.deepEqual([long.type, long.error.code], ['added', 'draft_too_long']);
   add(view, 'bad', { text: 5, block: false });
   assert.equal((await view.answer('bad')).error.code, 'draft_failed');
-  draft.drafts.A = null; // 接口回答不了
+  fake.drafts.A = new Error('接口出错');
   add(view, 'broken', { text: 'p', block: false });
   assert.equal((await view.answer('broken')).error.code, 'draft_failed');
 });
 
-test('经 activate：读完草稿后换会话 → 不写、不回答、不报错', async t => {
+test('经 activate：调用途中切换会话 → 中止旧信号、旧草稿不被修改、新草稿不受影响且可继续写入', async t => {
   const root = await repo(t);
-  const get = deferred();
-  const { fake, draft } = appFor(root, { A: draftOf(), B: draftOf() }, { get: session => (session === 'A' ? get.promise : undefined) });
+  const entered = deferred(), gate = deferred();
+  let capturedSignal = null;
+  const { fake } = appFor(root, { A: draftOf('旧A'), B: draftOf('') }, async (session, _input, options) => {
+    if (session === 'A') {
+      capturedSignal = options?.signal ?? null;
+      entered.resolve();
+      await gate.promise;
+    }
+  });
   const view = await opened(fake, 'A');
-  add(view, 'r', { text: 'p', block: false });
-  await waitFor(() => draft.log.length === 1, 'GET');
+  add(view, 'r1', { text: 'p', block: false });
+  await entered.promise;
+  assert.ok(capturedSignal instanceof AbortSignal, '传了 AbortSignal');
+  assert.equal(capturedSignal.aborted, false);
   view.switchTo('B');
-  get.resolve();
+  await waitFor(() => view.of('root').length === 2, 'B root');
+  assert.equal(capturedSignal.aborted, true, '换会话立刻中止上一代次的信号');
+  gate.resolve();
   await flush();
-  assert.deepEqual(draft.log.map(entry => entry.method), ['GET']);
-  assert.equal(view.posted.some(message => message.requestId === 'r'), false);
-  assert.equal(draft.drafts.B.text, '', '新会话的草稿没被动');
+  assert.equal(view.posted.some(message => message.requestId === 'r1'), false, '不给旧代次回执');
+  assert.equal(fake.drafts.A.text, '旧A', '尚未落地的 A 草稿写入被取消');
+  assert.equal(fake.drafts.B.text, '', 'B 草稿未被污染');
+
+  add(view, 'r2', { text: 'b.txt', block: false }, 2);
+  assert.deepEqual(await view.answer('r2'), { type: 'added', generation: 2, requestId: 'r2' });
+  assert.equal(fake.drafts.B.text, 'b.txt', '切到 B 后用新信号正常写入');
 });
 
-test('经 activate：版本不符回来之前换会话 → 不重试、不回答；重试期间始终是最初的会话', async t => {
+test('经 activate：调用途中关闭视图 → 中止信号、旧草稿不被修改、不回执', async t => {
   const root = await repo(t);
-  const post = deferred(), drafts = { A: draftOf('x', [], 1), B: draftOf('', [], 1) };
-  const { fake, draft } = appFor(root, drafts, { post: async () => { drafts.A.revision = 4; await post.promise; } });
+  const entered = deferred(), gate = deferred();
+  let capturedSignal = null;
+  const { fake } = appFor(root, { A: draftOf('旧A') }, async (session, _input, options) => {
+    if (session === 'A') {
+      capturedSignal = options?.signal ?? null;
+      entered.resolve();
+      await gate.promise;
+    }
+  });
   const view = await opened(fake, 'A');
-  add(view, 'r', { text: 'p', block: false });
-  await waitFor(() => draft.log.length === 2, 'POST');
-  view.switchTo('B');
-  post.resolve();
+  add(view, 'r1', { text: 'p', block: false });
+  await entered.promise;
+  assert.ok(capturedSignal instanceof AbortSignal);
+  await view.close();
+  assert.equal(capturedSignal.aborted, true, '关视图立刻中止信号');
+  gate.resolve();
   await flush();
-  assert.equal(draft.log.filter(entry => entry.method === 'POST').length, 1);
-  assert.equal(view.posted.some(message => message.requestId === 'r'), false);
-  assert.ok(draft.log.every(entry => entry.session === 'A'), '没有写到 B');
-});
-
-test('经 activate：视图关闭后不再保存、不回答', async t => {
-  const root = await repo(t);
-  const get = deferred();
-  const { fake, draft } = appFor(root, { A: draftOf() }, { get: () => get.promise });
-  const view = await opened(fake, 'A');
-  add(view, 'r', { text: 'p', block: false });
-  await waitFor(() => draft.log.length === 1, 'GET');
-  view.close();
-  get.resolve();
-  await flush();
-  assert.deepEqual(draft.log.map(entry => entry.method), ['GET']);
+  assert.equal(view.posted.some(message => message.requestId === 'r1'), false);
+  assert.equal(fake.drafts.A.text, '旧A', '尚未落地的 A 草稿写入被取消');
 });
 
 test('经 activate：旧代次的 add_text 不处理', async t => {
   const root = await repo(t);
-  const { fake, draft } = appFor(root, { A: draftOf(), B: draftOf() });
+  const { fake } = appFor(root, { A: draftOf(), B: draftOf() });
   const view = await opened(fake, 'A');
   add(view, 'old', { text: 'p', block: false }, 99);
   await flush();
-  assert.equal(draft.log.length, 0);
+  assert.equal(fake.calls.length, 0);
 });
 
-// ---- 公开边界 ----
+// ---- 契约边界：已删除的 coda.api 不应再出现在代码中 ----
 
-// 扫 git 跟踪的文件，返回里面出现草稿接口路径的文件。只扫跟踪的：本地没提交的东西（.claude 之类）不是公开内容，不该让测试误报。
-async function endpointHits(root) {
+async function legacyApiHits(root) {
   const hits = [];
-  const endpoint = /threads\/[^`'"\s]*\/draft/; // 比对前去掉反斜杠：转义写法的正则字面量也算
-  // -z：名字里有空格、中文也不转义。
+  const legacy = /\bcoda\.api\s*\(/;
   const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0').filter(Boolean);
   assert.ok(tracked.length > 0, 'git ls-files 没有列出文件：不在仓库里，边界没有检查');
   for (const rel of tracked) {
-    if (!/\.(mjs|js|html|css|md|json)$/.test(rel)) continue;
+    if (!/\.(mjs|js)$/.test(rel) || rel.startsWith('view/vendor/')) continue;
     let text;
     try { text = await readFile(join(root, rel), 'utf8'); } catch (error) {
-      if (error.code === 'ENOENT') continue; // 已跟踪但工作区里删了、还没提交：不在了就没有可检查的
+      if (error.code === 'ENOENT') continue;
       throw error;
     }
-    if (endpoint.test(text.replaceAll('\\', ''))) hits.push(rel);
+    if (legacy.test(text)) hits.push(rel);
   }
   return hits;
 }
 
-test('草稿接口的路径只出现在 lib/draft.mjs，公开文件（含 test/）里都没有', async () => {
-  assert.deepEqual(await endpointHits(new URL('..', import.meta.url).pathname), ['lib/draft.mjs']);
+test('代码（含测试）里不再调用已删除的 coda.api', async () => {
+  assert.deepEqual(await legacyApiHits(new URL('..', import.meta.url).pathname), []);
 });
 
-test('边界测试只看 git 跟踪的文件：没跟踪的不扫，跟踪后删掉的跳过，后缀过滤保留，名字里有空格和中文也行', async t => {
+test('契约边界测试只看 git 跟踪的脚本文件：没跟踪的不扫，跟踪后删掉的跳过，名字里有空格和中文也行', async t => {
   const root = await tempDir(t);
   const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
   git('init', '-q');
-  const leaky = `const path = '${['threads', 'x', 'draft'].join('/')}';\n`; // 拼出来：这个测试文件自己不能含接口路径
+  const leaky = `await ${['coda', 'api'].join('.')}('threads/1');\n`;
   await mkdir(join(root, '.claude'));
   await mkdir(join(root, '文档 目录'));
   await writeFile(join(root, 'clean.mjs'), 'export const a = 1;\n');
-  await writeFile(join(root, 'gone.md'), leaky); // 跟踪了，下面从工作区删掉
+  await writeFile(join(root, 'gone.mjs'), leaky);
   await writeFile(join(root, 'leak.mjs'), leaky);
-  await writeFile(join(root, '文档 目录', '泄露.md'), leaky);
-  await writeFile(join(root, 'data.bin'), leaky); // 后缀不在名单里
+  await writeFile(join(root, '文档 目录', '泄露.mjs'), leaky);
+  await writeFile(join(root, 'note.md'), leaky);
   git('add', '-A');
-  await rm(join(root, 'gone.md'));
-  await writeFile(join(root, '.claude', 'local.md'), leaky); // 没跟踪：不扫
+  await rm(join(root, 'gone.mjs'));
+  await writeFile(join(root, '.claude', 'local.mjs'), leaky);
   await writeFile(join(root, 'untracked.mjs'), leaky);
-  assert.deepEqual((await endpointHits(root)).sort(), ['leak.mjs', '文档 目录/泄露.md']);
+  assert.deepEqual((await legacyApiHits(root)).sort(), ['leak.mjs', '文档 目录/泄露.mjs']);
 });

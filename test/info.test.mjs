@@ -350,7 +350,8 @@ test('经 activate：没有根目录时 stat、dir_size、add_text 都回答 no_
     }
     view.close();
   }
-  assert.ok(fake.api.every(path => /^threads\/[^/]+$/.test(path)), '只查过会话，没有别的接口调用');
+  assert.equal(fake.calls.length, 0, '没有碰草稿操作');
+  assert.ok(fake.queries.every(q => q.resource?.kind === 'coda/thread@1' && q.name === 'workspace'), '只查过会话 workspace，没有别的接口调用');
 });
 
 test('经 activate：取消后不再发读取，也不回答；迟到的取消和代次不对的取消不影响新统计', async t => {

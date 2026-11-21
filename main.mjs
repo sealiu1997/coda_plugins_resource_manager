@@ -39,6 +39,7 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits, m
   const s = {
     session: sessionOf(view.context), generation: 1, root: NO_ROOT, sent: null,
     hello: false, closed: false, rootSeq: 0, poll: null,
+    abort: new AbortController(), // 绑定当前会话代次与视图生命周期，换会话或关闭时中止在途的草稿写入
     listing: makeListing(), // 这个视图共用的并发上限和快照；视图关闭、换会话、根目录变化时丢弃
   };
   const turns = new Map();
@@ -102,6 +103,8 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits, m
 
   function switchSession(session) {
     stopPoll();
+    s.abort.abort();
+    s.abort = new AbortController();
     s.session = session ?? null;
     s.generation++;
     resetReads();
@@ -134,7 +137,7 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits, m
     },
     async [Type.ADD_TEXT](message, { generation }) {
       if (!s.session) throw fail(ErrorCode.NO_ROOT, '没有会话');
-      return await addText(coda, s.session, message, { valid: () => !stale(generation) }) ? {} : null;
+      return await addText(coda, s.session, message, { valid: () => !stale(generation), signal: s.abort.signal }) ? {} : null;
     },
   };
   // 回答依赖根目录的：读完回来根目录换了，不能带旧根目录的内容。
@@ -206,6 +209,7 @@ function serve(coda, view, sessionOf, { makeListing, sizeLimits, searchLimits, m
 
   view.onClose(async () => {
     s.closed = true;
+    s.abort.abort();
     resetReads();
     stopPoll();
     try { await (await watching)?.dispose(); } catch { /* 已经取消 */ }

@@ -67,5 +67,5 @@ test('文件被删：显示已不存在；没有会话：模块不查询，页�
   const bare = await setup(t, { path: 'src/a.txt' });
   await waitFor(() => /没有打开的会话/.test(notice(bare.page)), '没有会话');
   await flush();
-  assert.equal(bare.fake.api.length, 0);
+  assert.equal(bare.fake.queries.length, 0);
 });
