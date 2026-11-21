@@ -1,11 +1,10 @@
-// 真实链路：真实的 app.mjs 页面 + 真实的 connect() + 真实的 activate 模块 + 真实的临时目录，只有 coda.api（草稿接口和会话查询）是假的。
-// 「右键添加」从页面的右键一路走到假 coda.api 的保存；「属性」从页面一路走到真实的 stat 和 dir_size。
+// 真实链路：真实的 app.mjs 页面 + 真实的 connect() + 真实的 activate 模块 + 真实的临时目录，只有 coda.query / coda.call 是假的。
+// 「右键添加」从页面的右键一路走到假 coda.call 的 append-draft；「属性」从页面一路走到真实的 stat 和 dir_size。
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { activate } from '../main.mjs';
-import { draftPath } from '../lib/draft.mjs';
 import { loadApp, visible } from './support/dom.mjs';
 import { checkoutOf, deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
 import { rowNamed } from './support/treehost.mjs';
@@ -17,16 +16,7 @@ async function setup(t, { draft } = {}) {
   await writeFile(join(root, 'a.txt'), 'hello');
   await writeFile(join(root, 'src', 'x.js'), 'x'.repeat(100));
   await writeFile(join(root, 'src', 'y.js'), 'y'.repeat(50));
-  const fake = fakeCoda({ A: checkoutOf(root) });
-  const gets = [], saves = [];
-  const sessionApi = fake.coda.api;
-  fake.coda.api = async (path, body) => {
-    if (path !== draftPath('A')) return sessionApi(path);
-    if (body === undefined) { gets.push(path); return structuredClone(draft); }
-    saves.push(structuredClone(body));
-    Object.assign(draft, { text: body.text, revision: draft.revision + 1 });
-    return { draft: structuredClone(draft) };
-  };
+  const fake = fakeCoda({ A: checkoutOf(root) }, { drafts: { A: draft } });
   activate(fake.coda);
   const view = fake.open('A');
   const loaded = deferred();
@@ -38,47 +28,46 @@ async function setup(t, { draft } = {}) {
   });
   loaded.resolve();
   await waitFor(() => rowNamed(page, 'a.txt'), '目录树出现');
-  return { base, root, fake, view, page, copied, backs, events, gets, saves, draft };
+  return { base, root, fake, view, page, copied, backs, events, draft };
 }
 const buttons = page => page.menu.find(node => node.tagName === 'BUTTON');
 const choose = (page, label) => buttons(page).find(node => node.textContent === label).dispatch('click');
 
-test('右键添加：页面右键 → add_text → 模块写草稿（带现有附件）→ 回答 → 提示「已添加到输入框」', async t => {
-  const { page, saves, gets, draft, copied } = await setup(t, { draft: { text: '看看', attachments: [{ id: 'f1' }], revision: 3 } });
+test('右键添加：页面右键 → add_text → 模块调 append-draft（保留附件）→ 回答 → 提示「已添加到输入框」', async t => {
+  const { page, fake, draft, copied } = await setup(t, { draft: { text: '看看', attachments: [{ id: 'f1' }] } });
   rowNamed(page, 'a.txt').dispatch('contextmenu', { clientX: 5, clientY: 6 });
   assert.deepEqual(buttons(page).map(node => node.textContent), ['打开', '添加到聊天', '复制相对路径', '复制绝对路径', '属性']);
   choose(page, '添加到聊天');
   await waitFor(() => page.hint.textContent === '已添加到输入框', '成功提示');
-  assert.equal(gets.length, 1);
-  assert.deepEqual(saves, [{ text: '看看 a.txt ', attachments: ['f1'], revision: 3 }]);
+  assert.deepEqual(fake.calls.map(entry => ({ resource: entry.resource, name: entry.name, input: entry.input })), [
+    { resource: { kind: 'coda/thread@1', id: 'A' }, name: 'append-draft', input: { text: 'a.txt', line: false } },
+  ]);
   assert.equal(draft.text, '看看 a.txt ');
+  assert.deepEqual(draft.attachments, [{ id: 'f1' }]);
   assert.deepEqual(copied, [], '成功不复制');
   assert.ok(visible(page.hint));
   assert.equal(page.hint.classList.contains('warn'), false);
 });
 
 test('右键添加：草稿接口不可用时回答 draft_failed，页面改成复制并提示', async t => {
-  const { page, fake, copied, saves } = await setup(t, { draft: { text: '', attachments: [], revision: 1 } });
-  const api = fake.coda.api;
-  fake.coda.api = async (path, body) => { if (path === draftPath('A')) throw new Error('没有这个接口'); return api(path, body); };
+  const { page, fake, copied } = await setup(t, { draft: { text: '', attachments: [] } });
+  fake.onCall = async () => { throw new Error('没有这个接口'); };
   rowNamed(page, 'src').dispatch('contextmenu', { clientX: 5, clientY: 6 });
   choose(page, '添加到聊天');
   await waitFor(() => page.hint.textContent === '没能写入输入框，已复制', '失败提示');
   assert.deepEqual(copied, ['src']);
-  assert.equal(saves.length, 0);
+  assert.equal(fake.calls.length, 1);
   assert.ok(page.hint.classList.contains('warn'));
 });
 
-test('右键添加：保存的回答不带 draft（接口形状异常）时页面改成复制，不提示已添加', async t => {
-  const { page, fake, copied, saves } = await setup(t, { draft: { text: '', attachments: [], revision: 1 } });
-  const api = fake.coda.api;
-  fake.coda.api = async (path, body) => (path === draftPath('A') && body !== undefined ? (saves.push(body), undefined) : api(path, body));
+test('右键添加：草稿超限时回答 draft_too_long，页面改成复制并提示', async t => {
+  const { page, fake, copied } = await setup(t, { draft: { text: '', attachments: [] } });
+  fake.onCall = async () => { throw Object.assign(new Error('草稿太长'), { code: 'too_long' }); };
   rowNamed(page, 'src').dispatch('contextmenu', { clientX: 5, clientY: 6 });
   choose(page, '添加到聊天');
-  await waitFor(() => page.hint.textContent === '没能写入输入框，已复制', '失败提示');
-  assert.equal(saves.length, 1, '保存过一次，没重试');
+  await waitFor(() => page.hint.textContent === '没能写入输入框，已复制', '超限回退提示');
+  assert.equal(fake.calls.length, 1);
   assert.deepEqual(copied, ['src']);
-  assert.notEqual(page.hint.textContent, '已添加到输入框');
   assert.ok(page.hint.classList.contains('warn'));
 });
 

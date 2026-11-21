@@ -13,29 +13,34 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { activate } from '../../main.mjs';
-import { draftSession } from '../../lib/draft.mjs';
+import { appendDraftText } from '../support/fake.mjs';
 
 const viewDir = fileURLToPath(new URL('../../view/', import.meta.url));
 const [dirA, dirB = dirA, port = '0', dirW = null, nameW = 'demo'] = process.argv.slice(2);
 if (!dirA) { console.error('用法：node test/harness/server.mjs <目录A> [目录B] [端口]'); process.exit(1); }
 
 // ---- 假的 coda 宿主（形状同 test/support/fake.mjs）----
-const threads = { A: { checkout: { kind: 'worktree', state: 'ready', path: dirA } }, B: { checkout: { kind: 'worktree', state: 'ready', path: dirB } }, ...(dirW ? { W: { checkout: { kind: 'worktree', state: 'ready', path: dirW, projectId: 'project-w' } } } : {}) };
+const threads = {
+  A: { state: 'ready', path: dirA, project: null },
+  B: { state: 'ready', path: dirB, project: null },
+  ...(dirW ? { W: { state: 'ready', path: dirW, project: { id: 'project-w', name: nameW } } } : {}),
+};
 const watchers = new Set(), views = new Set(), providers = new Map();
-const drafts = { A: { text: '', attachments: [], revision: 1 }, B: { text: '', attachments: [], revision: 1 }, W: { text: '', attachments: [], revision: 1 } };
+const drafts = { A: { text: '' }, B: { text: '' }, W: { text: '' } };
 const services = new Map(); // 流式服务：模块登记的 handler，下面的 /service/<名字>/… 转给它
 activate({
   views: { register: (id, provider) => providers.set(id, provider) },
   services: { register: (name, handler) => { services.set(name, handler); return { dispose: () => services.delete(name) }; } },
-  api: async (path, body) => {
-    if (path === 'agents') return { projects: dirW ? [{ id: 'project-w', name: nameW }] : [] }; // 项目列表（根目录标题的项目名从这里取）
-    const session = draftSession(path);
-    if (session === null) return threads[decodeURIComponent(path.replace(/^threads\//, ''))];
-    const current = drafts[session];
-    if (body === undefined) return structuredClone(current);
-    if (body.revision !== current.revision) return { draft: structuredClone(current), conflict: true };
-    Object.assign(current, { text: body.text, revision: current.revision + 1 });
-    return { draft: structuredClone(current) };
+  query: async (resource, name) => {
+    if (resource?.kind === 'coda/thread@1' && name === 'workspace') return threads[resource.id];
+    throw new Error(`不认识的查询：${resource?.kind} ${name}`);
+  },
+  call: async (resource, name, input) => {
+    if (resource?.kind !== 'coda/thread@1' || name !== 'append-draft') throw new Error(`不认识的操作：${resource?.kind} ${name}`);
+    const current = drafts[resource.id];
+    if (!current) throw new Error(`未知会话：${resource.id}`);
+    current.text = appendDraftText(current.text, input.text, Boolean(input.line));
+    return {};
   },
   watch: async (_name, fn) => { watchers.add(fn); return { dispose: () => watchers.delete(fn) }; },
 });

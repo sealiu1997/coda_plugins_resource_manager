@@ -299,10 +299,10 @@ test('轮询启停：旧会话在途的轮询查询回来后不会重新挂起�
   hold.resolve(checkoutOf(null, 'preparing'));
   await flush();
   assert.equal(pending.size, 0, '没有残留的轮询计时器');
-  const count = fake.api.length;
+  const count = fake.queries.length;
   t.mock.timers.tick(POLL_MS * 5);
   await flush();
-  assert.equal(fake.api.length, count);
+  assert.equal(fake.queries.length, count);
 });
 
 test('轮询启停：视图关闭后，关闭前在途的查询回来也不会重新挂起轮询；watch 被取消', async t => {
@@ -318,10 +318,10 @@ test('轮询启停：视图关闭后，关闭前在途的查询回来也不会�
   hold.resolve(checkoutOf(null, 'preparing'));
   await flush();
   assert.equal(pending.size, 0, '没有残留的轮询计时器');
-  const count = fake.api.length, posted = view.posted.length;
+  const count = fake.queries.length, posted = view.posted.length;
   t.mock.timers.tick(POLL_MS * 5);
   await flush();
-  assert.equal(fake.api.length, count);
+  assert.equal(fake.queries.length, count);
   assert.equal(view.posted.length, posted);
 });
 
@@ -329,7 +329,7 @@ test('视图关闭：挂着的轮询计时器被清掉，关闭后的请求和 w
   const pending = trackTimers(t);
   const fake = fakeCoda({ A: checkoutOf(null, 'preparing') });
   const view = await started(fake, 'A');
-  const count = fake.api.length;
+  const count = fake.queries.length;
   assert.equal(pending.size, 1, '关闭前挂着一个轮询计时器');
   await view.close();
   assert.equal(pending.size, 0);
@@ -337,7 +337,7 @@ test('视图关闭：挂着的轮询计时器被清掉，关闭后的请求和 w
   fake.emit('A', 't');
   view.send({ type: 'list', generation: 1, requestId: 'late', path: '' });
   await flush();
-  assert.equal(fake.api.length, count);
+  assert.equal(fake.queries.length, count);
   assert.equal(view.of('listed').length, 0);
 });
 
@@ -396,7 +396,7 @@ test('file 视图：args 缺失或 session 不是非空字符串时没有会话�
     const view = await startedFile(fake, args, 'A');
     assert.deepEqual(view.of('session'), [{ type: 'session', generation: 1, session: null }], JSON.stringify(args));
     assert.deepEqual(view.lastRoot(), { type: 'root', generation: 1, state: 'none', path: null, project: null }, JSON.stringify(args));
-    assert.equal(fake.api.length, 0);
+    assert.equal(fake.queries.length, 0);
   }
 });
 

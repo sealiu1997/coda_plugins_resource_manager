@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { activate } from '../main.mjs';
 import { loadApp } from './support/dom.mjs';
-import { deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
+import { deferred, fakeCoda, flush, tempDir, waitFor, workspaceOf } from './support/fake.mjs';
 import { openTree, sectionOf } from './support/treehost.mjs';
 
 const UUID = 'c0377d40-2fa7-42a0-94ab-49a31b2215c3';
@@ -180,10 +180,10 @@ test('根目录没就绪（gone）：iPhone 工具条标题空、系统返回的
 
 // ---- 真实入口：真实模块（queryRoot 从 Coda 的项目列表取项目名）+ 真实页面 ----
 
-test('真实入口：真实 activate 的 queryRoot 从 agents 的项目列表取项目名（checkout.projectId），root 消息送到页面，标题按宽度省略', async t => {
+test('真实入口：真实 activate 的 queryRoot 从 workspace 查询取项目名，root 消息送到页面，标题按宽度省略', async t => {
   const base = await tempDir(t), work = join(base, UUID);
   await mkdir(work);
-  const fake = fakeCoda({ A: { checkout: { kind: 'worktree', state: 'ready', path: work, projectId: 'p1' } }, agents: { projects: [{ id: 'p1', name: 'coda_plugins_resource_manager' }] } });
+  const fake = fakeCoda({ A: workspaceOf(work, 'ready', { id: 'p1', name: 'coda_plugins_resource_manager' }) });
   activate(fake.coda);
   const view = fake.open('A'), ready = deferred();
   let page;

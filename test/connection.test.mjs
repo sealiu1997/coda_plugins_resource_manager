@@ -6,7 +6,6 @@ import { getEventListeners } from 'node:events';
 import { join } from 'node:path';
 import test from 'node:test';
 import { activate } from '../main.mjs';
-import { draftSession } from '../lib/draft.mjs';
 import { createListing } from '../lib/tree.mjs';
 import { Cancelled, RequestError, Stale, connect } from '../view/connection.mjs';
 import { MESSAGE_LIMIT, messageSize } from '../view/protocol.mjs';
@@ -206,16 +205,7 @@ test('connect 接真实模块：stat、dir_size、add_text 的往返；取消真
 
   const gate = deferred();
   const spy = countingFs({ hooks: { lstat: async (path, original) => { if (path.includes('big/')) await gate.promise; return original(path); } } });
-  const drafts = { text: '', attachments: [{ id: 'f1' }], revision: 1, posts: [] };
-  const fake = fakeCoda({ A: checkoutOf(root) });
-  const base_api = fake.coda.api;
-  fake.coda.api = async (path, body) => {
-    if (draftSession(path) === null) return base_api(path);
-    if (!body) return { text: drafts.text, attachments: drafts.attachments, revision: drafts.revision };
-    drafts.posts.push(body);
-    drafts.text = body.text;
-    return { draft: { ...drafts } };
-  };
+  const fake = fakeCoda({ A: checkoutOf(root) }, { drafts: { A: { text: '', attachments: [{ id: 'f1' }] } } });
   activate(fake.coda, { makeListing: () => createListing({ fs: spy.fs }) });
   const view = fake.open('A');
   let page;
@@ -229,7 +219,10 @@ test('connect 接真实模块：stat、dir_size、add_text 的往返；取消真
   assert.deepEqual([stat.type, stat.kind, stat.size], ['statted', 'file', 5]);
   const added = await page.link.call('add_text', { text: 'a.txt', block: false });
   assert.equal(added.type, 'added');
-  assert.deepEqual(drafts.posts, [{ text: 'a.txt ', attachments: ['f1'], revision: 1 }]);
+  assert.deepEqual(fake.calls.map(entry => ({ id: entry.resource.id, name: entry.name, input: entry.input })), [
+    { id: 'A', name: 'append-draft', input: { text: 'a.txt', line: false } },
+  ]);
+  assert.equal(fake.drafts.A.text, 'a.txt ');
 
   const before = spy.counts.lstat;
   const controller = new AbortController();
