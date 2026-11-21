@@ -1,12 +1,16 @@
 // 音视频和图片的本机流式服务（lib/media.mjs，设计见第 20 节）：真实 http 服务器 + 真实临时目录。
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdir, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import test from 'node:test';
 import { createMedia } from '../lib/media.mjs';
 import { externalPreviewOf, mediaOf, servedType } from '../view/protocol.mjs';
 import { tempDir } from './support/fake.mjs';
+
+const execFileAsync = promisify(execFile);
 
 const BODY = Buffer.from('0123456789abcdefghij'); // 20 字节
 
@@ -233,4 +237,10 @@ test('coda.open 文档类型与嵌套 Markdown 相对链接：统一经流式服
   const traverse = await fetchRel('../../outside.pdf');
   assert.notEqual(traverse.status, 200, '越出根目录的相对路径必须被拒绝');
   assert.equal(traverse.text.includes('TOP-SECRET-PDF'), false);
+
+  if (process.platform !== 'win32') {
+    await execFileAsync('mkfifo', [join(root, 'docs', 'pipe.txt')]);
+    const fifo = await fetch(new URL('./pipe.txt', docBase), { signal: AbortSignal.timeout(2000) });
+    assert.equal(fifo.status, 404, '命名管道（FIFO）必须以 O_NONBLOCK 及时拒绝，不能阻塞');
+  }
 });
