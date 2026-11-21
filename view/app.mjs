@@ -14,7 +14,7 @@ import { Model, STATE_LIMIT, View, noticeText, parseState, putSession, trimState
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
 import { mountPress, onMotionChange, reducedMotion } from './press.mjs';
-import { EntryKind, OpenWith, RootState, SortKey, Type, openCategoryOf, servedType } from './protocol.mjs';
+import { EntryKind, OpenWith, RootState, SortKey, Type, openCategoryOf, servedType, serviceUrl } from './protocol.mjs';
 import { createRestore, createTrail } from './restore.mjs';
 import { createSearch } from './search.mjs';
 import { mountSearchbar } from './searchbar.mjs';
@@ -144,6 +144,8 @@ const preview = mountPreview($('preview'), {
   // 选中文字的右键菜单只有 Mac：iPhone 用系统的选区菜单。
   selectionMenu: isIOS ? null : (event, selection) => { menu.open(event, { items: chat.selectionItems(selection) }); menuFrom = null; },
   consumed: menu.consumed, // 菜单开着时的 Esc 归菜单：查找条不处理
+  openExternal: url => { if (typeof coda.open === 'function') Promise.resolve().then(() => coda.open(url)).catch(() => {}); },
+  openRelative: relPath => openFile(relPath),
 });
 // 属性页：页内一层。
 let infoOpen = false;
@@ -176,7 +178,6 @@ let openSeq = 0;
 let openingExternal = false;
 let queuedExternal = null;
 const cancelExternal = () => { openSeq++; queuedExternal = null; };
-const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
 function openInline(path, { select = true } = {}) {
   openPressed = !isIOS; // 用户在 Mac 上打开的：render 把焦点交给预览面板
   note({ kind: 'push', from: mode(), to: 'preview' });
@@ -194,7 +195,7 @@ async function drainExternal(first) {
           const granted = await conn.link.call(Type.MEDIA, { path });
           if (seq === openSeq) {
             if (!granted?.token) throw new Error('no media service');
-            await coda.open(`coda-view://service/media/${granted.token}/${encodePath(path)}`);
+            await coda.open(serviceUrl(granted.token, path));
           }
         } catch {
           if (seq === openSeq && model.ready) openInline(path, { select });

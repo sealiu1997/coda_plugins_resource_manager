@@ -32,7 +32,7 @@ test('resolveRelativePath：基于当前文件目录解析相对路径，拒绝�
 test('safeLinkTarget：只放行 http/https/mailto、页内锚点与工作目录内相对路径，拒绝危险协议', () => {
   assert.deepEqual(safeLinkTarget('https://example.com/x', 'README.md'), { kind: 'external', href: 'https://example.com/x' });
   assert.deepEqual(safeLinkTarget('mailto:a@b.com', 'README.md'), { kind: 'external', href: 'mailto:a@b.com' });
-  assert.deepEqual(safeLinkTarget('#section-1', 'README.md'), { kind: 'hash', href: '#section-1' });
+  assert.deepEqual(safeLinkTarget('#section-1', 'README.md'), { kind: 'hash', href: '#section-1', id: 'section-1' });
   assert.deepEqual(safeLinkTarget('./guide.md', 'docs/README.md'), { kind: 'relative', path: 'docs/guide.md' });
   assert.equal(safeLinkTarget('javascript:alert(1)', 'README.md'), null);
   assert.equal(safeLinkTarget('data:text/html,<script>alert(1)</script>', 'README.md'), null);
@@ -78,7 +78,7 @@ test('renderMarkdown：支持 GFM 块级与行内语法，代码块复用语法�
 
   const link = byTag(md, 'a')[0];
   assert.equal(link.getAttribute('href'), 'https://example.com');
-  assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
+  assert.equal(link.getAttribute('target'), null, '不使用沙箱禁止的 target=_blank');
 
   assert.equal(byTag(md, 'blockquote').length, 1);
   const boxes = byTag(md, 'input');
@@ -380,4 +380,127 @@ test('富文本右键复制和添加到聊天保留跨块换行与 <br> 换行',
   // 验证 <br> 硬换行也保留换行（6-12 对应「第一行」<br>「第二行」）
   sel.select(md, 6, 12);
   assert.equal(clippedRichSelection(md)?.text, '第一行\n第二行');
+});
+
+test('表格空单元格选区、ATX # C#、全名围栏高亮、列表后顶层定义、任务文本保留、外链/相对/锚点/远程图片与后台刷新失败切模式回归', async t => {
+  await withDom(t);
+
+  // 1. # C# 保留、全名 javascript / python 围栏高亮、列表内标题和未闭合围栏后无空行的顶层引用定义、任务清单保留 1. 与 >
+  const src = [
+    '# C#',
+    '## Title ###',
+    '',
+    '![Logo][logo]',
+    '',
+    '- # Assets',
+    '[logo]: assets/logo.png',
+    '',
+    '![After][after]',
+    '',
+    '- ```text',
+    '  unclosed',
+    '[after]: assets/after.png',
+    '',
+    '- [x] 1. Install dependencies',
+    '- [ ] > quoted',
+    '',
+    '```javascript',
+    'const a = 1;',
+    '```',
+    '',
+    '```python',
+    'def foo(): return 1',
+    '```',
+    '',
+    '[外链](https://example.com) <https://auto.example> [相对](./other.md) [跳标题](#c)',
+    '',
+    '![远程](https://example.com/pic.png)',
+    '',
+    '| 左 |  | 右 |',
+    '| --- | --- | --- |',
+    '| A |  | B |',
+  ].join('\n');
+
+  const extOpened = [], relOpened = [];
+  let scrolledId = null;
+  const md = renderMarkdown(src, {
+    basePath: 'docs/README.md',
+    resolveImage: rel => `coda-view://service/media/tok1/${rel}`,
+    onOpenExternal: url => extOpened.push(url),
+    onOpenRelative: p => relOpened.push(p),
+  });
+
+  assert.equal(byTag(md, 'h1')[0]?.textContent, 'C#', '# C# 必须保留尾随 #');
+  assert.equal(byTag(md, 'h1')[0]?.getAttribute('id'), 'c');
+  assert.equal(byTag(md, 'h2')[0]?.textContent, 'Title', '空白分隔的闭合 ### 去掉');
+
+  // 两个顶层引用定义均生效
+  const imgs = byTag(md, 'img');
+  assert.deepEqual(imgs.map(i => i.getAttribute('src')), [
+    'coda-view://service/media/tok1/docs/assets/logo.png',
+    'coda-view://service/media/tok1/docs/assets/after.png',
+  ]);
+  // 远程图片降级为占位而非 img
+  assert.ok(byClass(md, 'md-img-fallback').some(n => n.textContent === '[外链图片：远程]'));
+
+  // 任务清单保留 1. 与 >，不生成嵌套 ol / blockquote
+  const tasks = byClass(md, 'md-task');
+  assert.equal(tasks.length, 2);
+  assert.equal(tasks[0].textContent, '1. Install dependencies');
+  assert.equal(byTag(tasks[0], 'ol').length, 0);
+  assert.equal(tasks[1].textContent, '> quoted');
+  assert.equal(byTag(tasks[1], 'blockquote').length, 0);
+
+  // javascript 和 python 全名围栏均高亮
+  const codes = byClass(md, 'md-code');
+  const jsCode = codes.find(c => c.textContent.includes('const a = 1;'));
+  const pyCode = codes.find(c => c.textContent.includes('def foo()'));
+  assert.ok(jsCode.find(n => n.classList?.contains('hljs-keyword')).length > 0, 'javascript 全名高亮');
+  assert.ok(pyCode.find(n => n.classList?.contains('hljs-keyword')).length > 0, 'python 全名高亮');
+
+  // 外链、自动链接、相对链接与锚点跳转
+  const links = byTag(md, 'a');
+  for (const a of links) assert.equal(a.getAttribute('target'), null);
+  links.find(a => a.textContent === '外链').dispatch('click');
+  links.find(a => a.textContent === 'https://auto.example').dispatch('click');
+  links.find(a => a.textContent === '相对').dispatch('click');
+  assert.deepEqual(extOpened, ['https://example.com', 'https://auto.example']);
+  assert.deepEqual(relOpened, ['docs/other.md']);
+  byTag(md, 'h1')[0].scrollIntoView = () => { scrolledId = byTag(md, 'h1')[0].getAttribute('id'); };
+  links.find(a => a.textContent === '跳标题').dispatch('click');
+  assert.equal(scrolledId, 'c');
+
+  // 2. 跨空单元格表格选区：| 左 |  | 右 | → '左\t\t右'
+  const table = byTag(md, 'table')[0];
+  const sel = fakeSelection(t, md);
+  const start = md.textContent.indexOf('左右');
+  sel.select(md, start, start + 2);
+  assert.equal(clippedRichSelection(md)?.text, '左\t\t右', '跨越空单元格必须保留两个制表符');
+  assert.ok(table);
+
+  // 3. 后台刷新失败后切到「源码」仍保留失败提示与重试入口
+  const el = new Element('div');
+  const docText = '# 初始\n';
+  let failNext = false;
+  const preview = mountPreview(el, {
+    read: async () => {
+      if (failNext) throw Object.assign(new Error('磁盘忙'), { code: 'io_error' });
+      return { kind: 'text', data: Buffer.from(docText).toString('base64'), offset: 0, size: Buffer.byteLength(docText), mtimeMs: 100, eof: true };
+    },
+    copy: () => {},
+  });
+  await preview.open('README.md');
+  await flush();
+  failNext = true;
+  await preview.refresh();
+  await flush();
+  const meta = byClass(el, 'pmeta')[0];
+  const retry = el.find(n => n.tagName === 'BUTTON' && n.textContent === '重试')[0];
+  assert.match(meta.textContent, /更新失败：磁盘忙/);
+  assert.equal(retry.hidden, false);
+
+  const sourceBtn = byClass(el, 'pmode')[0].find(n => n.tagName === 'BUTTON' && n.textContent === '源码')[0];
+  sourceBtn.dispatch('click');
+  assert.match(meta.textContent, /更新失败：磁盘忙/, '切到源码后仍应保留后台刷新失败提示');
+  assert.equal(retry.hidden, false, '切到源码后仍应保留重试入口');
 });

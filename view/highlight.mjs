@@ -89,5 +89,8 @@ export function highlight(text, language) {
   }
 }
 
+// 按代码围栏的语言标识解析 highlight.js 语言 id：优先匹配库已注册的语言名或别名（如 javascript、python），再退回文件名/扩展名表。
+export const hasLanguage = name => Boolean(name && hljs.getLanguage(name));
+
 // 给测试：打包的库本身。
 export { hljs };

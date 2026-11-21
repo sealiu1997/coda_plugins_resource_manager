@@ -44,6 +44,8 @@ const preview = mountPreview($('preview'), {
   media: path => conn.link.call('media', { path }),
   selectionMenu: isIOS ? null : (event, selection) => menu.open(event, { items: chat.selectionItems(selection) }),
   consumed: menu.consumed,
+  openExternal: url => { if (typeof coda.open === 'function') Promise.resolve().then(() => coda.open(url)).catch(() => {}); },
+  openRelative: relPath => { want = { ...want, path: relPath }; restore = null; schedule(); },
 });
 
 // 模块跟随的会话和启动参数里的不是同一个时（换会话的两条消息没有先后保证），不能读，等对上。
