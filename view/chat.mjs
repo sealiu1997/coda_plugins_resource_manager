@@ -40,9 +40,10 @@ export function createChat({ link, copy, hint }) {
   return {
     add,
     // 选中文字的菜单项。内容和位置在打开菜单前就取好了（selection），点菜单时不再读选区。
+    // 富文本预览（如 Markdown 预览模式）没有源码行号，仅提供「添加到聊天（内容）」和「复制」。
     selectionItems: ({ path, text, startLine, endLine }) => [
       { label: '添加到聊天（内容）', run: () => add(text, { block: true }) },
-      { label: '添加到聊天（位置）', run: () => add(positionText(path, startLine, endLine)) },
+      ...(Number.isInteger(startLine) ? [{ label: '添加到聊天（位置）', run: () => add(positionText(path, startLine, endLine)) }] : []),
       { label: '复制', run: () => copy(text) },
     ],
   };

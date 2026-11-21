@@ -215,6 +215,11 @@ test('打开偏好类别归类与嵌套 Markdown 相对链接：统一经流式�
   for (const name of ['a.swift', 'README', 'Dockerfile', 'Makefile', '.gitignore', 'LICENSE', '.env', '.env.local']) {
     assert.equal(servedType(name), 'text/plain; charset=utf-8', name);
   }
+  // 带已知扩展名的 .env.* 必须保留对应扩展名的 MIME，不被 .env.* 兜底覆盖
+  assert.equal(servedType('.env.json'), 'application/json; charset=utf-8');
+  assert.equal(servedType('.env.yaml'), 'text/yaml; charset=utf-8');
+  assert.equal(servedType('.env.md'), 'text/markdown; charset=utf-8');
+  assert.equal(servedType('.env.pdf'), 'application/pdf');
   const { root, base, url } = await serving(t);
   await mkdir(join(root, 'docs'), { recursive: true });
   await mkdir(join(root, 'assets'), { recursive: true });
@@ -223,6 +228,8 @@ test('打开偏好类别归类与嵌套 Markdown 相对链接：统一经流式�
   await writeFile(join(root, 'docs', 'example.txt'), 'hello txt\n');
   await writeFile(join(root, 'docs', 'guide.md'), '# guide\n');
   await writeFile(join(root, 'docs', 'spec.docx'), 'PK-docx');
+  await writeFile(join(root, 'docs', '.env.json'), '{"a":1}');
+  await writeFile(join(root, 'docs', '.env.local'), 'KEY=1\n');
   await writeFile(join(root, 'assets', 'diagram.png'), 'PNGDATA');
   await writeFile(join(base, 'outside.pdf'), 'TOP-SECRET-PDF');
   await symlink(join(base, 'outside.pdf'), join(root, 'docs', 'escape.pdf'));
@@ -242,6 +249,8 @@ test('打开偏好类别归类与嵌套 Markdown 相对链接：统一经流式�
     text: 'PK-docx',
   });
   assert.deepEqual(await fetchRel('../assets/diagram.png'), { status: 200, type: 'image/png', text: 'PNGDATA' });
+  assert.deepEqual(await fetchRel('./.env.json'), { status: 200, type: 'application/json; charset=utf-8', text: '{"a":1}' });
+  assert.deepEqual(await fetchRel('./.env.local'), { status: 200, type: 'text/plain; charset=utf-8', text: 'KEY=1\n' });
 
   const escapeLink = await fetchRel('./escape.pdf');
   assert.equal(escapeLink.status, 403, '指向目录外的符号链接必须被拒绝');

@@ -223,17 +223,20 @@ export function openCategoryOf(name) {
 }
 
 // 流式服务肯供应的文件的 MIME 类型：能预览的媒体、模型的伴随文件、文档、Markdown 和常见文本/代码；其余返回 null（服务回 415）。
+// 精确文件名（如 .env、Makefile）优先；带已知扩展名（如 .env.json、.env.md、.env.pdf）按扩展名返回准确 MIME；其余 .env.* 以 text/plain 兜底。
 export function servedType(name) {
   const media = mediaOf(name);
   if (media) return media.preview ? media.type : null;
   const base = basenameLower(name);
-  if (TEXT_SERVED_NAMES.has(base) || isEnvName(base)) return 'text/plain; charset=utf-8';
+  if (TEXT_SERVED_NAMES.has(base)) return 'text/plain; charset=utf-8';
   const ext = extensionOf(name);
-  if (!ext) return null;
-  if (Object.hasOwn(COMPANION_TYPES, ext)) return COMPANION_TYPES[ext];
-  if (Object.hasOwn(MARKDOWN_TYPES, ext)) return MARKDOWN_TYPES[ext];
-  if (Object.hasOwn(DOCUMENT_TYPES, ext)) return DOCUMENT_TYPES[ext];
-  if (Object.hasOwn(TEXT_SERVED_TYPES, ext)) return TEXT_SERVED_TYPES[ext];
+  if (ext) {
+    if (Object.hasOwn(COMPANION_TYPES, ext)) return COMPANION_TYPES[ext];
+    if (Object.hasOwn(MARKDOWN_TYPES, ext)) return MARKDOWN_TYPES[ext];
+    if (Object.hasOwn(DOCUMENT_TYPES, ext)) return DOCUMENT_TYPES[ext];
+    if (Object.hasOwn(TEXT_SERVED_TYPES, ext)) return TEXT_SERVED_TYPES[ext];
+  }
+  if (isEnvName(base)) return 'text/plain; charset=utf-8';
   return null;
 }
 
