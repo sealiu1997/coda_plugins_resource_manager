@@ -5,7 +5,7 @@ import { mkdir, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createMedia } from '../lib/media.mjs';
-import { mediaOf, servedType } from '../view/protocol.mjs';
+import { externalPreviewOf, mediaOf, servedType } from '../view/protocol.mjs';
 import { tempDir } from './support/fake.mjs';
 
 const BODY = Buffer.from('0123456789abcdefghij'); // 20 字节
@@ -186,4 +186,27 @@ test('跨源：所有响应（含 304、416 和各种错误）带 Access-Control
   assert.match(preflight.res.headers.get('access-control-allow-headers'), /range/);
   assert.equal(preflight.body.length, 0);
   assert.equal((await get('a.mp3', { method: 'POST' })).res.status, 405);
+});
+
+test('coda.open 文档类型与流式服务放行 Markdown：externalPreviewOf 分流、servedType 放行 .md/.markdown、mediaOf 仍返回 null', async t => {
+  for (const ext of ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf', 'pages', 'numbers', 'key']) {
+    assert.equal(externalPreviewOf(`docs/file.${ext}`), 'file', ext);
+    assert.equal(externalPreviewOf(`docs/FILE.${ext.toUpperCase()}`), 'file', ext.toUpperCase());
+  }
+  for (const ext of ['md', 'markdown']) {
+    assert.equal(externalPreviewOf(`docs/readme.${ext}`), 'media', ext);
+    assert.equal(externalPreviewOf(`docs/README.${ext.toUpperCase()}`), 'media', ext.toUpperCase());
+    assert.equal(mediaOf(`docs/readme.${ext}`), null, `${ext} 不当媒体预览`);
+    assert.equal(servedType(`docs/readme.${ext}`), 'text/markdown; charset=utf-8', ext);
+  }
+  for (const name of ['a.txt', 'a.js', 'a.png', 'a.mp3', 'a.mp4', 'a.glb', 'README', '.md', '.pdf', 'dir.pdf/README', 'a.toString', '']) {
+    assert.equal(externalPreviewOf(name), null, name);
+  }
+  const { root, get } = await serving(t);
+  await writeFile(join(root, 'README.md'), '# hello\n');
+  await writeFile(join(root, 'guide.MARKDOWN'), '## hi\n');
+  const md = await get('README.md');
+  assert.deepEqual([md.res.status, md.res.headers.get('content-type'), md.body.toString()], [200, 'text/markdown; charset=utf-8', '# hello\n']);
+  const m2 = await get('guide.MARKDOWN');
+  assert.deepEqual([m2.res.status, m2.res.headers.get('content-type'), m2.body.toString()], [200, 'text/markdown; charset=utf-8', '## hi\n']);
 });

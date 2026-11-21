@@ -14,7 +14,7 @@ import { Model, STATE_LIMIT, View, noticeText, parseState, putSession, trimState
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
 import { mountPress, onMotionChange, reducedMotion } from './press.mjs';
-import { EntryKind, RootState, SortKey, Type } from './protocol.mjs';
+import { EntryKind, RootState, SortKey, Type, externalPreviewOf } from './protocol.mjs';
 import { createRestore, createTrail } from './restore.mjs';
 import { createSearch } from './search.mjs';
 import { mountSearchbar } from './searchbar.mjs';
@@ -169,11 +169,44 @@ function openInView(path) {
 }
 // 两端都在页内打开：model.openFile 设 selected 和 opened，经 onChange 切到预览。iPhone 触屏没有键盘焦点，不交焦点；
 // 快速两次轻点：第一次已切到预览，目录树 .off 不接指针事件，第二次落不到条目上。
-// 打开文件的统一入口（目录树、图标视图和搜索结果）：焦点交接和过渡意图在这里记，不随调用方复制。select 为假（搜索结果）时只设预览，不改 model.selected。
-function openFile(path, { select = true } = {}) {
+// 独立自增序号（不复用 epoch）：每次打开文件、换会话、根目录变化、切目录或打开属性页递增，避免前一次 coda.open 异步回退覆盖新操作。
+let openSeq = 0;
+const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
+const fileUrl = (rootPath, path) => {
+  const full = `${rootPath.replace(/\/+$/, '')}/${path}`;
+  return `file://${full.startsWith('/') ? '' : '/'}${encodePath(full)}`;
+};
+function openInline(path, { select = true } = {}) {
   openPressed = !isIOS; // 用户在 Mac 上打开的：render 把焦点交给预览面板
   note({ kind: 'push', from: mode(), to: 'preview' });
   model.openFile(path, { select });
+}
+async function openExternal(path, via, { select, seq }) {
+  try {
+    const rootPath = model.root?.path;
+    if (!rootPath) throw new Error('no root');
+    let url;
+    if (via === 'file') {
+      url = fileUrl(rootPath, path);
+    } else {
+      const granted = await conn.link.call(Type.MEDIA, { path });
+      if (seq !== openSeq) return;
+      if (!granted?.token) throw new Error('no media service');
+      url = `coda-view://service/media/${granted.token}/${encodePath(path)}`;
+    }
+    await coda.open(url);
+  } catch {
+    if (seq !== openSeq || !model.ready) return;
+    openInline(path, { select });
+  }
+}
+// 打开文件的统一入口（目录树、图标视图和搜索结果）：PDF/Office/iWork 与 Markdown 优先走 coda.open，失败静默退回页内预览；其余保持页内预览。
+// 走 coda.open 成功时不设 model.opened（因此不记入 setState 的 opened）。select 为假（搜索结果）时回退页内预览只设预览，不改 model.selected。
+function openFile(path, { select = true } = {}) {
+  const seq = ++openSeq;
+  const via = typeof coda.open === 'function' && model.ready && model.root?.path ? externalPreviewOf(path) : null;
+  if (via) { openExternal(path, via, { select, seq }); return; }
+  openInline(path, { select });
 }
 
 // ---- 渲染：同一批变化合并成一次 ----
@@ -614,6 +647,7 @@ $('preview').addEventListener('keydown', event => {
 let shownCwd = '';
 const enterDir = taken(path => enterInto(path));
 function enterInto(path) {
+  openSeq++;
   trail.remember(model.cwd, grid.scroll());
   selectEntry(null); // 进入新的一层：选中清空
   model.enter(path);
@@ -627,6 +661,7 @@ function enterInto(path) {
 function leaveDir(levels = 1, record = true) {
   takeover++; // 用户经按钮、键盘、返回退出图标视图的一层
   if (model.cwd === '') return false;
+  openSeq++;
   const from = model.cwd.split('/');
   model.leave(levels);
   if (record) note({ kind: 'fade', to: model.cwd });
@@ -690,6 +725,7 @@ if (nativeBack) quiet(() => coda.on('back', event => {
 
 // ---- 属性页：所有关闭的路径（原生返回、横屏的返回、换会话、根目录变化）都重新声明回上层 ----
 function openInfo(row) {
+  openSeq++;
   note({ kind: 'push', from: mode(), to: 'info' });
   infoOpen = true;
   infoStopped = false;
@@ -723,6 +759,7 @@ function onSession(data) {
   locator.cancel();
   clearSearch(); // 换会话：搜索词、结果、结果的选中、定位都清掉
   epoch++;
+  openSeq++;
   hint.hide();
   const saved = persisted.sessions[data.session] ?? null;
   pending = saved?.opened ? { preview: { top: saved.scroll.top, left: saved.scroll.left }, path: saved.opened } : { preview: null, path: null };
@@ -739,7 +776,7 @@ function onSession(data) {
 function onRoot(data) {
   const before = model.root;
   if (data.state !== before?.state || data.path !== before?.path) { menu.hide(); intent = null; endRunning(); } // 开着的菜单里的路径是旧根目录下的；换根目录不播过渡
-  if (data.state !== RootState.READY || before?.path !== data.path) closeInfo(false, true); // 属性页看的是旧根目录下的路径
+  if (data.state !== RootState.READY || before?.path !== data.path) { openSeq++; closeInfo(false, true); } // 属性页看的是旧根目录下的路径
   const scope = model.scope;
   if (data.state !== RootState.READY) { search.suspend(); locator.cancel(); } // 根目录暂不可用：取消在途搜索，丢掉结果，搜索词留着；定位作废（再就绪也不接着做）
   const done = model.receive(data);
