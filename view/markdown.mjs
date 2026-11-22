@@ -169,16 +169,20 @@ function renderLinkNode(labelNodes, dest, title, ctx) {
     }, ...labelNodes)];
   }
   if (target?.kind === 'mailto') {
-    return [h('a', {
-      href: target.href,
-      class: 'md-mailto',
-      'data-email': target.email,
-      title: title || `复制邮箱：${target.email}`,
-      onclick: event => {
-        event?.preventDefault?.();
-        ctx.onCopyEmail?.(target.email);
-      },
-    }, ...labelNodes)];
+    return [h('span', { class: 'md-mailto-wrap' },
+      h('span', { class: 'md-mailto-label' }, ...labelNodes),
+      h('button', {
+        type: 'button',
+        class: 'md-copy-email',
+        'data-email': target.email,
+        'aria-label': `复制邮箱 ${target.email}`,
+        title: `复制邮箱：${target.email}`,
+        onclick: event => {
+          event?.preventDefault?.();
+          ctx.onCopyEmail?.(target.email);
+        },
+      }, '复制邮箱'),
+    )];
   }
   if (target?.kind === 'hash') {
     return [h('a', {
@@ -408,14 +412,11 @@ function isBlockStart(lines, i) {
   return false;
 }
 
-function isPlainParagraphLine(line) {
-  return line.trim() !== ''
-    && !FENCE_RE.test(line)
-    && !HEADING_RE.test(line)
-    && !HR_RE.test(line)
-    && !QUOTE_RE.test(line)
-    && !LIST_RE.test(line)
-    && !LINK_DEF_RE.test(line);
+// 用实际块解析状态判断列表项末尾是否处于开放段落（空行或未闭合围栏直接为假），确保列表内表格、Setext/ATX 标题等之后的无缩进行不会被吞入列表。
+function endsWithOpenParagraph(itemLines, openFence, depth) {
+  if (openFence || itemLines.length === 0 || itemLines.at(-1).trim() === '') return false;
+  const parsed = parseBlockAst(itemLines, new Map(), depth + 1);
+  return parsed.at(-1)?.type === 'paragraph';
 }
 
 // 第一阶段：块级解析生成 AST，仅在合法块起始位置（含顶层、引用块、列表项内，排除代码块与段落续行）收集引用定义。
@@ -496,13 +497,11 @@ function parseBlockAst(lines, defs, depth = 0) {
         const itemLines = [firstLine];
         const firstFence = FENCE_RE.exec(firstLine);
         let openFence = firstFence ? new RegExp(`^ {0,3}${firstFence[1][0]}{${firstFence[1].length},}[ \\t]*$`) : null;
-        let inParagraph = !openFence && isPlainParagraphLine(firstLine);
         i++;
         while (i < lines.length) {
           if (lines[i].trim() === '') {
             if (i + 1 < lines.length && /^ +/.test(lines[i + 1])) {
               itemLines.push('');
-              inParagraph = false;
               i++;
               continue;
             }
@@ -518,18 +517,10 @@ function parseBlockAst(lines, defs, depth = 0) {
               if (openFence.test(sub)) openFence = null;
             } else {
               const subFence = FENCE_RE.exec(sub);
-              if (subFence) {
-                openFence = new RegExp(`^ {0,3}${subFence[1][0]}{${subFence[1].length},}[ \\t]*$`);
-                inParagraph = false;
-              } else if (inParagraph && LINK_DEF_RE.test(sub)) {
-                // CommonMark：引用定义不能打断已打开的段落，仍处于段落续行状态
-                inParagraph = true;
-              } else {
-                inParagraph = isPlainParagraphLine(sub);
-              }
+              if (subFence) openFence = new RegExp(`^ {0,3}${subFence[1][0]}{${subFence[1].length},}[ \\t]*$`);
             }
             i++;
-          } else if (!openFence && inParagraph && !isBlockStart(lines, i)) {
+          } else if (!isBlockStart(lines, i) && endsWithOpenParagraph(itemLines, openFence, depth)) {
             itemLines.push(lines[i]);
             i++;
           } else {

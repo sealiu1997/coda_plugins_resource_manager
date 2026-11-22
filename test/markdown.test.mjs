@@ -522,9 +522,24 @@ test('列表续行（无缩进与缩进两格）不被误收为引用定义，�
   assert.equal(byTag(md2, 'li').length, 1);
   assert.equal(byTag(md2, 'li')[0]?.textContent, 'Accepted values:\n[mode]: auto\nmore text', '缩进两格后再接无缩进续行仍留在同一列表项');
   assert.equal(byTag(md2, 'p').length, 0, '续行不得脱离列表成为独立段落');
+
+  // 列表内表格后的顶层引用定义不被吞进表格或列表
+  const src3 = '- Table:\n\n  A | B\n  --- | ---\n  x | y\n[guide]: guide.md "Setup | Guide"\n\nSee [guide].';
+  const md3 = renderMarkdown(src3, { basePath: 'README.md' });
+  assert.equal(byTag(md3, 'tbody')[0].children.length, 1, '表格只应包含数据行 x | y，不吞入引用定义');
+  const guideLink3 = byTag(md3, 'a').find(a => a.textContent === 'guide');
+  assert.equal(guideLink3?.getAttribute('data-rel-path'), 'guide.md', '列表内表格后的顶层引用定义应生效');
+
+  // 列表内 Setext 标题后的顶层引用定义与顶层段落均不被吞入列表
+  const src4 = '- Heading\n  ===\n[guide]: guide.md\nTop-level paragraph.\n\nSee [guide].';
+  const md4 = renderMarkdown(src4, { basePath: 'README.md' });
+  assert.equal(byTag(md4, 'li')[0]?.textContent, 'Heading');
+  assert.ok(byTag(md4, 'p').some(p => p.textContent === 'Top-level paragraph.'), '顶层段落不得被吞入列表');
+  const guideLink4 = byTag(md4, 'a').find(a => a.textContent === 'guide');
+  assert.equal(guideLink4?.getAttribute('data-rel-path'), 'guide.md', 'Setext 标题后的顶层引用定义应生效');
 });
 
-test('独立文件窗口：相对链接经 coda.open 新开 file 视图、mailto 复制邮箱并提示、外链失败显示原因', async t => {
+test('独立文件窗口：相对链接经 coda.open 新开 file 视图、mailto 提供可见「复制邮箱」按钮、外链失败显示原因', async t => {
   const opened = [], copied = [];
   const doc = '# 首页\n\n[指南](./guide.md) [联系](mailto:a@example.com) [外链](https://example.com)\n';
   const page = await loadFileApp(t, {
@@ -559,9 +574,12 @@ test('独立文件窗口：相对链接经 coda.open 新开 file 视图、mailto
   assert.deepEqual(opened, [{ view: 'file', args: { session: 's1', path: 'guide.md' } }], '独立窗口相对链接应经 coda.open 打开新 file 视图');
   assert.equal(byTag(page.preview, 'h1')[0]?.textContent, '首页', '原窗口仍保留 README.md 不被覆盖');
 
-  links.find(a => a.textContent === '联系').dispatch('click');
+  assert.equal(links.some(a => a.getAttribute('href')?.startsWith('mailto:')), false, '不渲染为普通 mailto 跳转链接');
+  const copyBtn = byClass(page.preview, 'md-copy-email')[0];
+  assert.equal(copyBtn?.textContent, '复制邮箱', '点按前提供明确可识别的「复制邮箱」按钮');
+  copyBtn.dispatch('click');
   await flush();
-  assert.deepEqual(copied, ['a@example.com'], 'mailto 应复制纯邮箱地址而不调 coda.open');
+  assert.deepEqual(copied, ['a@example.com'], '点「复制邮箱」应复制纯邮箱地址而不调 coda.open');
   assert.equal(opened.length, 1);
   assert.equal(page.hint.textContent, '已复制邮箱');
 

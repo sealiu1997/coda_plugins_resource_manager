@@ -190,6 +190,8 @@ button.icon svg { display: block; }
 .md a { color: var(--coda-accent, #0a84ff); text-decoration: none; }
 .md a:hover { text-decoration: underline; }
 .md .md-rel-link { color: var(--coda-accent, #0a84ff); }
+.md .md-mailto-wrap { display: inline-flex; align-items: baseline; gap: 4px; }
+.md .md-copy-email { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--coda-radius, 6px); background: var(--coda-secondary-background, rgba(127,127,127,.08)); color: var(--coda-accent, #0a84ff); font: inherit; font-size: .85em; cursor: pointer; }
 .md ul, .md ol { margin: .6em 0; padding-left: 1.6em; }
 .md li { margin: .25em 0; }
 .md li.md-task { list-style: none; margin-left: -1.2em; display: flex; align-items: baseline; gap: 6px; }
