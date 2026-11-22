@@ -31,7 +31,7 @@ test('resolveRelativePath：基于当前文件目录解析相对路径，拒绝�
 
 test('safeLinkTarget：只放行 http/https/mailto、页内锚点与工作目录内相对路径，拒绝危险协议', () => {
   assert.deepEqual(safeLinkTarget('https://example.com/x', 'README.md'), { kind: 'external', href: 'https://example.com/x' });
-  assert.deepEqual(safeLinkTarget('mailto:a@b.com', 'README.md'), { kind: 'external', href: 'mailto:a@b.com' });
+  assert.deepEqual(safeLinkTarget('mailto:a@b.com', 'README.md'), { kind: 'mailto', email: 'a@b.com', href: 'mailto:a@b.com' });
   assert.deepEqual(safeLinkTarget('#section-1', 'README.md'), { kind: 'hash', href: '#section-1', id: 'section-1' });
   assert.deepEqual(safeLinkTarget('./guide.md', 'docs/README.md'), { kind: 'relative', path: 'docs/guide.md' });
   assert.equal(safeLinkTarget('javascript:alert(1)', 'README.md'), null);
@@ -508,4 +508,65 @@ test('表格空单元格选区、ATX # C#、全名围栏高亮、列表后顶层
   sourceBtn.dispatch('click');
   assert.match(meta.textContent, /更新失败：磁盘忙/, '切到源码后仍应保留后台刷新失败提示');
   assert.equal(retry.hidden, false, '切到源码后仍应保留重试入口');
+});
+
+test('列表续行（无缩进与缩进两格）不被误收为引用定义，也不脱离列表', async t => {
+  await withDom(t);
+  const src1 = '- Accepted values:\n[mode]: auto\n\nSee [mode].';
+  const md1 = renderMarkdown(src1, { basePath: 'README.md' });
+  assert.equal(byTag(md1, 'li')[0]?.textContent, 'Accepted values:\n[mode]: auto', '无缩进的形似引用定义行作为开放段落续行留在列表内');
+  assert.equal(byTag(md1, 'a').length, 0, '[mode] 不应被误收集为引用定义');
+
+  const src2 = '- Accepted values:\n  [mode]: auto\nmore text';
+  const md2 = renderMarkdown(src2, { basePath: 'README.md' });
+  assert.equal(byTag(md2, 'li').length, 1);
+  assert.equal(byTag(md2, 'li')[0]?.textContent, 'Accepted values:\n[mode]: auto\nmore text', '缩进两格后再接无缩进续行仍留在同一列表项');
+  assert.equal(byTag(md2, 'p').length, 0, '续行不得脱离列表成为独立段落');
+});
+
+test('独立文件窗口：相对链接经 coda.open 新开 file 视图、mailto 复制邮箱并提示、外链失败显示原因', async t => {
+  const opened = [], copied = [];
+  const doc = '# 首页\n\n[指南](./guide.md) [联系](mailto:a@example.com) [外链](https://example.com)\n';
+  const page = await loadFileApp(t, {
+    platform: 'mac',
+    args: { session: 's1', path: 'README.md' },
+    postMessage: message => {
+      if (message.type === 'read') {
+        const data = Buffer.from(doc);
+        queueMicrotask(() => page.post({
+          type: 'chunk', generation: message.generation, requestId: message.requestId,
+          data: data.toString('base64'), offset: 0, size: data.length, mtimeMs: 100, kind: 'text', eof: true,
+        }));
+      }
+    },
+    on: () => {},
+    copy: text => { copied.push(text); },
+    getState: () => undefined,
+    setState: () => {},
+    open: target => {
+      opened.push(target);
+      if (typeof target === 'string') return Promise.reject(new Error('禁止打开外链'));
+      return Promise.resolve();
+    },
+  });
+  page.post({ type: 'session', generation: 1, session: 's1' });
+  page.post({ type: 'root', generation: 1, state: 'ready', path: '/A' });
+  await flush();
+
+  const links = byTag(page.preview, 'a');
+  links.find(a => a.textContent === '指南').dispatch('click');
+  await flush();
+  assert.deepEqual(opened, [{ view: 'file', args: { session: 's1', path: 'guide.md' } }], '独立窗口相对链接应经 coda.open 打开新 file 视图');
+  assert.equal(byTag(page.preview, 'h1')[0]?.textContent, '首页', '原窗口仍保留 README.md 不被覆盖');
+
+  links.find(a => a.textContent === '联系').dispatch('click');
+  await flush();
+  assert.deepEqual(copied, ['a@example.com'], 'mailto 应复制纯邮箱地址而不调 coda.open');
+  assert.equal(opened.length, 1);
+  assert.equal(page.hint.textContent, '已复制邮箱');
+
+  links.find(a => a.textContent === '外链').dispatch('click');
+  await flush();
+  assert.equal(opened.at(-1), 'https://example.com');
+  assert.match(page.hint.textContent, /打不开链接：禁止打开外链/, '外链打开失败应给出明确原因');
 });

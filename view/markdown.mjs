@@ -25,7 +25,7 @@ export function resolveRelativePath(basePath, rawTarget) {
   return joined ? joined : null;
 }
 
-// 链接安全校验：仅放行 http/https/mailto、页内锚点 #... 与工作目录内相对路径；拒绝 javascript:/data:/vbscript:/file: 等危险协议。
+// 链接安全校验：仅放行 http/https、mailto（单独归类为复制邮箱）、页内锚点 #... 与工作目录内相对路径；拒绝 javascript:/data:/vbscript:/file: 等危险协议。
 export function safeLinkTarget(rawHref, basePath = '') {
   if (typeof rawHref !== 'string') return null;
   let href = rawHref.trim();
@@ -35,7 +35,13 @@ export function safeLinkTarget(rawHref, basePath = '') {
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(href);
   if (scheme) {
     const proto = scheme[1].toLowerCase();
-    if (proto === 'http' || proto === 'https' || proto === 'mailto') return { kind: 'external', href };
+    if (proto === 'http' || proto === 'https') return { kind: 'external', href };
+    if (proto === 'mailto') {
+      const rest = href.slice(7);
+      const q = rest.indexOf('?');
+      const email = safeDecode((q >= 0 ? rest.slice(0, q) : rest).trim());
+      return email && !hasControl(email) ? { kind: 'mailto', email, href } : null;
+    }
     return null;
   }
   const rel = resolveRelativePath(basePath, href);
@@ -162,6 +168,18 @@ function renderLinkNode(labelNodes, dest, title, ctx) {
       },
     }, ...labelNodes)];
   }
+  if (target?.kind === 'mailto') {
+    return [h('a', {
+      href: target.href,
+      class: 'md-mailto',
+      'data-email': target.email,
+      title: title || `复制邮箱：${target.email}`,
+      onclick: event => {
+        event?.preventDefault?.();
+        ctx.onCopyEmail?.(target.email);
+      },
+    }, ...labelNodes)];
+  }
   if (target?.kind === 'hash') {
     return [h('a', {
       href: target.href,
@@ -276,7 +294,7 @@ function parseInline(text, ctx, depth = 0) {
         const inner = text.slice(i + 1, close);
         if (!/\s/.test(inner)) {
           const target = safeLinkTarget(inner, ctx.basePath);
-          if (target?.kind === 'external') {
+          if (target?.kind === 'external' || target?.kind === 'mailto') {
             flush();
             out.push(...renderLinkNode([inner], inner, '', ctx));
             i = close + 1;
@@ -503,12 +521,15 @@ function parseBlockAst(lines, defs, depth = 0) {
               if (subFence) {
                 openFence = new RegExp(`^ {0,3}${subFence[1][0]}{${subFence[1].length},}[ \\t]*$`);
                 inParagraph = false;
+              } else if (inParagraph && LINK_DEF_RE.test(sub)) {
+                // CommonMark：引用定义不能打断已打开的段落，仍处于段落续行状态
+                inParagraph = true;
               } else {
                 inParagraph = isPlainParagraphLine(sub);
               }
             }
             i++;
-          } else if (!openFence && inParagraph && !isBlockStart(lines, i) && !LINK_DEF_RE.test(lines[i])) {
+          } else if (!openFence && inParagraph && !isBlockStart(lines, i)) {
             itemLines.push(lines[i]);
             i++;
           } else {
@@ -603,10 +624,10 @@ function renderBlockAst(blocks, ctx) {
 }
 
 // 渲染 Markdown 文本为 .md 容器节点；绝不解析原始 HTML。
-export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpenExternal = null, onOpenRelative = null } = {}) {
+export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpenExternal = null, onOpenRelative = null, onCopyEmail = null } = {}) {
   const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
   const defs = new Map();
   const ast = parseBlockAst(normalized.split('\n'), defs);
-  const ctx = { basePath, resolveImage, onOpenExternal, onOpenRelative, defs, headings: new Map() };
+  const ctx = { basePath, resolveImage, onOpenExternal, onOpenRelative, onCopyEmail, defs, headings: new Map() };
   return h('div', { class: 'md selectable' }, ...renderBlockAst(ast, ctx));
 }

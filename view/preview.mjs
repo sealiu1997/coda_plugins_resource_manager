@@ -69,7 +69,7 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
 // 不传 media 就一律走分块读取（直接挂载预览的测试用）。
 // 3D 模型（第 21 节）：mountModel 挂查看器（默认 viewer3d.mjs，测试可换）。gltf、obj、stl、ply 的内容是文本时头部有「3D / 文本」切换，文本走分块读取。
-export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null, mountModel = mountViewer, openExternal = null, openRelative = null }) {
+export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null, mountModel = mountViewer, openExternal = null, openRelative = null, copyEmail = null }) {
   const name = h('div', { class: 'pname truncate' }), meta = h('div', { class: 'pmeta caption secondary truncate' }, ' ');
   const fileIcon = h('span', { class: 'pico', 'aria-hidden': 'true' });
   // 图标按钮：可访问名称和 Mac 的悬停提示都是 label；没有图标的退回文字。
@@ -178,7 +178,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       const note = result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '';
       setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), `修改于 ${formatTime(result.mtimeMs)}`);
       const resolveImage = mediaToken ? rel => serviceUrl(mediaToken, rel) : null;
-      const md = renderMarkdown(result.text, { basePath: path, resolveImage, onOpenExternal: openExternal, onOpenRelative: openRelative });
+      const md = renderMarkdown(result.text, { basePath: path, resolveImage, onOpenExternal: openExternal, onOpenRelative: openRelative, onCopyEmail: copyEmail ?? (email => copy(email)) });
       gutterEl = null;
       if (selectionMenu) md.addEventListener('contextmenu', event => onSelect(event, md, false));
       body.replaceChildren(md);

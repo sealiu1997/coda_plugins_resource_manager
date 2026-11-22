@@ -44,8 +44,27 @@ const preview = mountPreview($('preview'), {
   media: path => conn.link.call('media', { path }),
   selectionMenu: isIOS ? null : (event, selection) => menu.open(event, { items: chat.selectionItems(selection) }),
   consumed: menu.consumed,
-  openExternal: url => { if (typeof coda.open === 'function') Promise.resolve().then(() => coda.open(url)).catch(() => {}); },
-  openRelative: relPath => { want = { ...want, path: relPath }; restore = null; schedule(); },
+  openExternal: url => {
+    const mine = want.session;
+    Promise.resolve().then(() => coda.open(url)).then(
+      () => { if (want.session === mine) hint.hide(); },
+      error => { if (want.session === mine) hint.show(`打不开链接：${error?.message ?? '未知原因'}`); },
+    );
+  },
+  copyEmail: email => {
+    const mine = want.session;
+    Promise.resolve().then(() => coda.copy(email)).then(
+      () => { if (want.session === mine) hint.show('已复制邮箱', { warn: false }); },
+      () => { if (want.session === mine) hint.show('没能复制邮箱'); },
+    );
+  },
+  openRelative: relPath => {
+    const mine = want.session;
+    Promise.resolve().then(() => coda.open({ view: 'file', args: { session: want.session, path: relPath } })).then(
+      () => { if (want.session === mine) hint.hide(); },
+      error => { if (want.session === mine) hint.show(`打不开文件：${error?.message ?? '未知原因'}`); },
+    );
+  },
 });
 
 // 模块跟随的会话和启动参数里的不是同一个时（换会话的两条消息没有先后保证），不能读，等对上。

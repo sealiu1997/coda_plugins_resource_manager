@@ -144,7 +144,20 @@ const preview = mountPreview($('preview'), {
   // 选中文字的右键菜单只有 Mac：iPhone 用系统的选区菜单。
   selectionMenu: isIOS ? null : (event, selection) => { menu.open(event, { items: chat.selectionItems(selection) }); menuFrom = null; },
   consumed: menu.consumed, // 菜单开着时的 Esc 归菜单：查找条不处理
-  openExternal: url => { if (typeof coda.open === 'function') Promise.resolve().then(() => coda.open(url)).catch(() => {}); },
+  openExternal: url => {
+    const mine = epoch;
+    Promise.resolve().then(() => coda.open(url)).then(
+      () => { if (mine === epoch) hint.hide(); },
+      error => { if (mine === epoch) hint.show(`打不开链接：${error?.message ?? '未知原因'}`); },
+    );
+  },
+  copyEmail: email => {
+    const mine = epoch;
+    Promise.resolve().then(() => coda.copy(email)).then(
+      () => { if (mine === epoch) hint.show('已复制邮箱', { warn: false }); },
+      () => { if (mine === epoch) hint.show('没能复制邮箱'); },
+    );
+  },
   openRelative: relPath => openFile(relPath),
 });
 // 属性页：页内一层。
