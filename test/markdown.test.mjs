@@ -402,7 +402,10 @@ test('表格空单元格选区、ATX # C#、全名围栏高亮、列表后顶层
     '[after]: assets/after.png',
     '',
     '- [x] 1. Install dependencies',
-    '- [ ] > quoted',
+    '- [ ] > 80% coverage',
+    '- [x] [example]: example.txt',
+    '',
+    '  More details',
     '',
     '```javascript',
     'const a = 1;',
@@ -443,13 +446,15 @@ test('表格空单元格选区、ATX # C#、全名围栏高亮、列表后顶层
   // 远程图片降级为占位而非 img
   assert.ok(byClass(md, 'md-img-fallback').some(n => n.textContent === '[外链图片：远程]'));
 
-  // 任务清单保留 1. 与 >，不生成嵌套 ol / blockquote
+  // 任务清单保留 1.、> 与 [example]:，不生成嵌套 ol / blockquote 或被当成引用定义删除
   const tasks = byClass(md, 'md-task');
-  assert.equal(tasks.length, 2);
+  assert.equal(tasks.length, 3);
   assert.equal(tasks[0].textContent, '1. Install dependencies');
   assert.equal(byTag(tasks[0], 'ol').length, 0);
-  assert.equal(tasks[1].textContent, '> quoted');
+  assert.equal(tasks[1].textContent, '> 80% coverage');
   assert.equal(byTag(tasks[1], 'blockquote').length, 0);
+  assert.ok(tasks[2].textContent.includes('[example]: example.txt'), '任务首行形似引用定义的正文必须保留');
+  assert.ok(tasks[2].textContent.includes('More details'), '任务项后续缩进段落必须保留');
 
   // javascript 和 python 全名围栏均高亮
   const codes = byClass(md, 'md-code');
