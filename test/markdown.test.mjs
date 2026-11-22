@@ -537,6 +537,14 @@ test('列表续行（无缩进与缩进两格）不被误收为引用定义，�
   assert.ok(byTag(md4, 'p').some(p => p.textContent === 'Top-level paragraph.'), '顶层段落不得被吞入列表');
   const guideLink4 = byTag(md4, 'a').find(a => a.textContent === 'guide');
   assert.equal(guideLink4?.getAttribute('data-rel-path'), 'guide.md', 'Setext 标题后的顶层引用定义应生效');
+
+  // 嵌套列表的无缩进段落续行留在最内层 li，不被移到外层 ul 之外
+  const src5 = '- Outer\n  - Inner\n    first detail\ncontinued detail';
+  const md5 = renderMarkdown(src5, { basePath: 'README.md' });
+  assert.deepEqual(md5.children.map(n => n.tagName), ['UL'], '外层容器只应有顶层 ul，不得在外层 ul 后生成独立 p');
+  const uls5 = byTag(md5, 'ul');
+  assert.equal(uls5.length, 2, '应保留外层与内层两级 ul');
+  assert.equal(byTag(uls5[1], 'li')[0]?.textContent, 'Inner\nfirst detail\ncontinued detail', '无缩进续行应保留在内层 li 中');
 });
 
 test('独立文件窗口：相对链接经 coda.open 新开 file 视图、mailto 提供可见「复制邮箱」按钮、外链失败显示原因', async t => {
@@ -587,4 +595,59 @@ test('独立文件窗口：相对链接经 coda.open 新开 file 视图、mailto
   await flush();
   assert.equal(opened.at(-1), 'https://example.com');
   assert.match(page.hint.textContent, /打不开链接：禁止打开外链/, '外链打开失败应给出明确原因');
+});
+
+test('复制邮箱按钮不影响标题锚点，且富文本选区跳过按钮文案并保持字符偏移准确', async t => {
+  await withDom(t);
+  const src = '# [Contact](mailto:a@example.com)\n\n[Go](#contact)\n\n前文 [联系](mailto:a@example.com) 后文\n';
+  const md = renderMarkdown(src, { basePath: 'README.md' });
+  const h1 = byTag(md, 'h1')[0];
+  assert.equal(h1.getAttribute('id'), 'contact', '标题锚点 ID 不得混入「复制邮箱」按钮文案');
+  assert.equal(byClass(h1, 'md-copy-email').length, 1, '标题内的可见「复制邮箱」按钮仍保留');
+
+  let scrolled = false;
+  h1.scrollIntoView = () => { scrolled = true; };
+  byTag(md, 'a').find(a => a.textContent === 'Go').dispatch('click');
+  assert.equal(scrolled, true, '点击 #contact 应正确滚动到标题');
+
+  const p = byTag(md, 'p').find(node => node.textContent.includes('前文'));
+  const sel = fakeSelection(t, p);
+  sel.select(p, 0, p.textContent.length);
+  assert.equal(clippedRichSelection(p)?.text, '前文 联系 后文', '整句选区不得混入「复制邮箱」');
+
+  const afterStart = p.textContent.indexOf('后文');
+  sel.select(p, afterStart, afterStart + 2);
+  assert.equal(clippedRichSelection(p)?.text, '后文', '按钮之后的选区字符偏移必须准确');
+
+  const btnStart = p.textContent.indexOf('复制邮箱');
+  sel.select(p, btnStart, btnStart + 4);
+  assert.equal(clippedRichSelection(p), null, '只选中按钮文案时不应产出正文选区');
+
+  // 经 preview 真实右键菜单验证复制/添加到聊天收到的正文不含按钮文案
+  const el = new Element('div');
+  const added = [], copied = [];
+  const chat = createChat({
+    link: { generation: 1, size: () => 10, call: async (_type, fields) => { added.push(fields); return {}; } },
+    copy: text => { copied.push(text); },
+    hint: { show: () => {} },
+  });
+  let menuItems = null;
+  const preview = mountPreview(el, {
+    read: async () => ({ kind: 'text', data: Buffer.from(src).toString('base64'), offset: 0, size: Buffer.byteLength(src), mtimeMs: 100, eof: true }),
+    copy: () => {},
+    selectionMenu: (_event, selection) => { menuItems = chat.selectionItems(selection); },
+  });
+  await preview.open('README.md');
+  await flush();
+  const mdEl = byClass(el, 'md')[0];
+  const fullSel = fakeSelection(t, el);
+  const start = mdEl.textContent.indexOf('前文');
+  const end = mdEl.textContent.indexOf('后文') + 2;
+  fullSel.select(mdEl, start, end);
+  mdEl.dispatch('contextmenu', { clientX: 10, clientY: 10 });
+  assert.deepEqual(menuItems?.map(i => i.label), ['添加到聊天（内容）', '复制']);
+  await menuItems[0].run();
+  menuItems[1].run();
+  assert.deepEqual(added, [{ text: '前文 联系 后文', block: true }], '添加到聊天不得混入「复制邮箱」');
+  assert.deepEqual(copied, ['前文 联系 后文'], '右键复制不得混入「复制邮箱」');
 });

@@ -4,6 +4,7 @@ import { h } from './dom.mjs';
 import { HIGHLIGHT_LIMIT, appendAll, hasLanguage, hasLongLine, highlight } from './highlight.mjs';
 import { languageOf } from './languages.mjs';
 import { hasControl, joinRelative } from './protocol.mjs';
+import { RICH_UI_ATTR, richTextContent } from './selection.mjs';
 
 const MAX_DEPTH = 16;
 
@@ -174,6 +175,7 @@ function renderLinkNode(labelNodes, dest, title, ctx) {
       h('button', {
         type: 'button',
         class: 'md-copy-email',
+        [RICH_UI_ATTR]: '',
         'data-email': target.email,
         'aria-label': `复制邮箱 ${target.email}`,
         title: `复制邮箱：${target.email}`,
@@ -412,11 +414,19 @@ function isBlockStart(lines, i) {
   return false;
 }
 
-// 用实际块解析状态判断列表项末尾是否处于开放段落（空行或未闭合围栏直接为假），确保列表内表格、Setext/ATX 标题等之后的无缩进行不会被吞入列表。
+function lastBlockEndsWithParagraph(blocks) {
+  const last = blocks.at(-1);
+  if (!last) return false;
+  if (last.type === 'paragraph') return true;
+  if (last.type === 'list') return lastBlockEndsWithParagraph(last.items.at(-1)?.blocks ?? []);
+  return false;
+}
+
+// 用实际块解析状态判断列表项（含最内层嵌套列表）末尾是否处于开放段落（空行或未闭合围栏直接为假），确保列表内表格、Setext/ATX 标题等之后的无缩进行不会被吞入列表。
 function endsWithOpenParagraph(itemLines, openFence, depth) {
   if (openFence || itemLines.length === 0 || itemLines.at(-1).trim() === '') return false;
   const parsed = parseBlockAst(itemLines, new Map(), depth + 1);
-  return parsed.at(-1)?.type === 'paragraph';
+  return lastBlockEndsWithParagraph(parsed);
 }
 
 // 第一阶段：块级解析生成 AST，仅在合法块起始位置（含顶层、引用块、列表项内，排除代码块与段落续行）收集引用定义。
@@ -570,7 +580,7 @@ function renderBlockAst(blocks, ctx) {
       case 'heading': {
         const content = parseInline(block.text, ctx);
         const headingEl = h(`h${block.level}`, {}, ...content);
-        const base = slugify(headingEl.textContent);
+        const base = slugify(richTextContent(headingEl));
         if (base) {
           let id = base, n = 1;
           while (ctx.headings.has(id)) id = `${base}-${n++}`;
