@@ -176,6 +176,54 @@ button.icon svg { display: block; }
 .code .text .hljs-addition { color: var(--hl-addition); }
 .code .text .hljs-deletion { color: var(--hl-deletion); }
 .code .text .hljs-section { color: var(--hl-section); }
+/* Markdown 页内富文本预览：贴合当前代码/纯文本风格，复用 Coda 主题变量与高亮配色。 */
+.md { padding: 12px 16px 24px; max-width: 780px; line-height: 1.65; color: var(--coda-foreground, #1d1d1f); overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 1.25em 0 .5em; font-weight: 600; line-height: 1.3; }
+.md h1 { font-size: 1.55em; padding-bottom: .3em; border-bottom: 1px solid var(--line); }
+.md h2 { font-size: 1.3em; padding-bottom: .25em; border-bottom: 1px solid var(--line); }
+.md h3 { font-size: 1.12em; }
+.md h4 { font-size: 1em; }
+.md h5, .md h6 { font-size: .92em; color: var(--coda-secondary, #6e6e73); }
+.md p { margin: .65em 0; }
+.md a { color: var(--coda-accent, #0a84ff); text-decoration: none; }
+.md a:hover { text-decoration: underline; }
+.md .md-rel-link { color: var(--coda-accent, #0a84ff); }
+.md .md-mailto-wrap { display: inline-flex; align-items: baseline; gap: 4px; }
+.md .md-copy-email { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--coda-radius, 6px); background: var(--coda-secondary-background, rgba(127,127,127,.08)); color: var(--coda-accent, #0a84ff); font: inherit; font-size: .85em; cursor: pointer; }
+.md ul, .md ol { margin: .6em 0; padding-left: 1.6em; }
+.md li { margin: .25em 0; }
+.md li.md-task { list-style: none; margin-left: -1.2em; display: flex; align-items: baseline; gap: 6px; }
+.md li.md-task input { flex: none; margin: 0; accent-color: var(--coda-accent, #0a84ff); }
+.md blockquote { margin: .75em 0; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--coda-secondary, #6e6e73); }
+.md blockquote > :first-child { margin-top: 0; }
+.md blockquote > :last-child { margin-bottom: 0; }
+.md hr { margin: 1.2em 0; border: 0; border-top: 1px solid var(--line); }
+.md .md-inline-code { padding: 1px 5px; border-radius: 4px; background: var(--coda-secondary-background, rgba(127,127,127,.12)); font: .9em var(--coda-mono, ui-monospace, Menlo, monospace); }
+.md .md-code { margin: .8em 0; padding: 10px 12px; overflow-x: auto; border-radius: var(--coda-radius, 6px); border: 1px solid var(--line); background: var(--coda-secondary-background, rgba(127,127,127,.08)); font: .9em/1.55 var(--coda-mono, ui-monospace, Menlo, monospace); tab-size: 4; }
+.md .md-code code { font: inherit; }
+.md .md-code .hljs-keyword { color: var(--hl-keyword); }
+.md .md-code .hljs-string { color: var(--hl-string); }
+.md .md-code .hljs-comment { color: var(--hl-comment); }
+.md .md-code .hljs-number, .md .md-code .hljs-literal { color: var(--hl-number); }
+.md .md-code .hljs-title { color: var(--hl-title); }
+.md .md-code .hljs-type, .md .md-code .hljs-built_in { color: var(--hl-type); }
+.md .md-code .hljs-attr, .md .md-code .hljs-property, .md .md-code .hljs-attribute { color: var(--hl-attr); }
+.md .md-code .hljs-meta { color: var(--hl-meta); }
+.md .md-code .hljs-tag, .md .md-code .hljs-name, .md .md-code .hljs-selector-tag, .md .md-code .hljs-selector-class, .md .md-code .hljs-selector-id, .md .md-code .hljs-selector-pseudo, .md .md-code .hljs-selector-attr { color: var(--hl-tag); }
+.md .md-code .hljs-variable { color: var(--hl-variable); }
+.md .md-code .hljs-regexp { color: var(--hl-regexp); }
+.md .md-code .hljs-addition { color: var(--hl-addition); }
+.md .md-code .hljs-deletion { color: var(--hl-deletion); }
+.md .md-code .hljs-section { color: var(--hl-section); }
+.md .md-table-wrap { margin: .8em 0; overflow-x: auto; }
+.md table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: .95em; }
+.md th, .md td { padding: 6px 10px; border: 1px solid var(--line); text-align: left; }
+.md th { font-weight: 600; background: var(--coda-secondary-background, rgba(127,127,127,.08)); }
+.md .md-img { display: block; max-width: 100%; height: auto; margin: .6em 0; border-radius: var(--coda-radius, 6px); }
+.md .md-img-fallback { font-size: .92em; }
+.coda-ios .md { padding: 12px 14px calc(24px + var(--safe-bottom)); }
 .media { display: grid; place-items: start center; padding: 12px; }
 .media video { width: 100%; max-height: 70vh; border-radius: var(--coda-radius, 6px); background: #000; }
 .media audio { width: 100%; }

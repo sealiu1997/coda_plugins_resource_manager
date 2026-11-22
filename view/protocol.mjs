@@ -223,17 +223,20 @@ export function openCategoryOf(name) {
 }
 
 // 流式服务肯供应的文件的 MIME 类型：能预览的媒体、模型的伴随文件、文档、Markdown 和常见文本/代码；其余返回 null（服务回 415）。
+// 精确文件名（如 .env、Makefile）优先；带已知扩展名（如 .env.json、.env.md、.env.pdf）按扩展名返回准确 MIME；其余 .env.* 以 text/plain 兜底。
 export function servedType(name) {
   const media = mediaOf(name);
   if (media) return media.preview ? media.type : null;
   const base = basenameLower(name);
-  if (TEXT_SERVED_NAMES.has(base) || isEnvName(base)) return 'text/plain; charset=utf-8';
+  if (TEXT_SERVED_NAMES.has(base)) return 'text/plain; charset=utf-8';
   const ext = extensionOf(name);
-  if (!ext) return null;
-  if (Object.hasOwn(COMPANION_TYPES, ext)) return COMPANION_TYPES[ext];
-  if (Object.hasOwn(MARKDOWN_TYPES, ext)) return MARKDOWN_TYPES[ext];
-  if (Object.hasOwn(DOCUMENT_TYPES, ext)) return DOCUMENT_TYPES[ext];
-  if (Object.hasOwn(TEXT_SERVED_TYPES, ext)) return TEXT_SERVED_TYPES[ext];
+  if (ext) {
+    if (Object.hasOwn(COMPANION_TYPES, ext)) return COMPANION_TYPES[ext];
+    if (Object.hasOwn(MARKDOWN_TYPES, ext)) return MARKDOWN_TYPES[ext];
+    if (Object.hasOwn(DOCUMENT_TYPES, ext)) return DOCUMENT_TYPES[ext];
+    if (Object.hasOwn(TEXT_SERVED_TYPES, ext)) return TEXT_SERVED_TYPES[ext];
+  }
+  if (isEnvName(base)) return 'text/plain; charset=utf-8';
   return null;
 }
 
@@ -250,6 +253,20 @@ export function splitRelative(path) {
   if (segments.includes('..')) return { problem: '路径不能含 ..' };
   return { segments };
 }
+
+// 相对路径接在目录后面：合并 ./ 和 ../，不让它跑出根目录（跑出去返回 null）。3D 模型与 Markdown 共用这一处。
+export function joinRelative(dir, rel) {
+  const out = dir ? dir.split('/').filter(Boolean) : [];
+  for (const part of String(rel).split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') { if (out.length === 0) return null; out.pop(); } else out.push(part);
+  }
+  return out.join('/');
+}
+
+// 流式服务里文件的地址：逐段编码相对路径，可选带 ?v= 版本参数。预览、3D 模型与 coda.open 共用这一处。
+export const encodeServicePath = path => String(path).split('/').map(encodeURIComponent).join('/');
+export const serviceUrl = (token, path, version = '') => `coda-view://service/media/${token}/${encodeServicePath(path)}${version ? `?v=${version}` : ''}`;
 
 // 隐藏名单：按全名比。目录树、图标视图的「显示隐藏文件」和文件名搜索（模块和页面）共用这一处。
 const HIDDEN = new Set(['.git', '.DS_Store']);

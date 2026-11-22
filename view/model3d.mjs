@@ -1,5 +1,7 @@
 // 3D 模型预览里不碰 DOM、不碰 three 的部分（设计见 docs/design/phase-3.md 第 21 节）：服务地址、glTF 的头和压缩扩展检查、obj 的 mtllib、相对路径、文本切换的条件、动画的播放状态。Node 里能直接测。
-import { ContentKind } from './protocol.mjs';
+import { ContentKind, encodeServicePath, joinRelative, serviceUrl } from './protocol.mjs';
+
+export { joinRelative, serviceUrl };
 
 export const BIG_FILE = 64 * 1024 * 1024; // 超过这个大小先问一声再读（整份读进内存，iPhone 上可能直接崩掉页面）
 export const Z_UP = new Set(['stl', 'ply', '3mf']); // 这几种格式多半是 Z 轴朝上，转成 three.js 的 Y 轴朝上
@@ -7,13 +9,10 @@ export const Z_UP = new Set(['stl', 'ply', '3mf']); // 这几种格式多半是 
 // 这三种压缩 three 自带的 GLTFLoader 不能直接解（要另外的解码器和 wasm），不带，提示不能预览。
 export const UNSUPPORTED_GLTF = ['KHR_draco_mesh_compression', 'EXT_meshopt_compression', 'KHR_texture_basisu'];
 
-const encodePath = path => path.split('/').map(encodeURIComponent).join('/');
-// 流式服务里文件的地址；v 只用来在文件变了之后换地址。
-export const serviceUrl = (token, path, version = '') => `coda-view://service/media/${token}/${encodePath(path)}${version ? `?v=${version}` : ''}`;
 // 一个文件所在目录的地址，带结尾的斜杠：gltf 的 .bin、贴图和 obj 的 .mtl 按相对路径接在它后面。
 export const directoryUrl = (token, path) => {
   const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-  return `coda-view://service/media/${token}/${dir ? `${encodePath(dir)}/` : ''}`;
+  return `coda-view://service/media/${token}/${dir ? `${encodeServicePath(dir)}/` : ''}`;
 };
 export const extensionOf = path => (path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : '');
 
@@ -47,16 +46,6 @@ export function unsupportedExtensions(json) {
 export function mtllibOf(text) {
   const match = /^[ \t]*mtllib[ \t]+(.+?)[ \t]*$/m.exec(text);
   return match ? match[1].replaceAll('\\', '/') : null;
-}
-
-// 相对路径接在目录后面：合并 ./ 和 ../，不让它跑出根目录（跑出去返回 null）。
-export function joinRelative(dir, rel) {
-  const out = dir ? dir.split('/') : [];
-  for (const part of rel.split('/')) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') { if (out.length === 0) return null; out.pop(); } else out.push(part);
-  }
-  return out.join('/');
 }
 
 // PLY 头里 element face 的个数（ASCII 和二进制都适用）；没有或读不出头返回 0，按点云处理。

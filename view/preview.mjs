@@ -5,8 +5,9 @@ import { formatDuration, formatSize } from './format.mjs';
 import { HIGHLIGHT_LIMIT, appendAll, hasLongLine, highlight } from './highlight.mjs';
 import { icon, iconFor } from './icons.mjs';
 import { languageOf } from './languages.mjs';
-import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, TEXT_LIMIT, imageType, mediaOf } from './protocol.mjs';
-import { clippedSelection, linesOf } from './selection.mjs';
+import { renderMarkdown } from './markdown.mjs';
+import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, OpenCategory, TEXT_LIMIT, imageType, mediaOf, openCategoryOf, serviceUrl } from './protocol.mjs';
+import { clippedRichSelection, clippedSelection, linesOf } from './selection.mjs';
 import { mayBeText, offersTextView } from './model3d.mjs';
 import { mountViewer } from './viewer3d.mjs';
 
@@ -68,7 +69,7 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
 // 不传 media 就一律走分块读取（直接挂载预览的测试用）。
 // 3D 模型（第 21 节）：mountModel 挂查看器（默认 viewer3d.mjs，测试可换）。gltf、obj、stl、ply 的内容是文本时头部有「3D / 文本」切换，文本走分块读取。
-export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null, mountModel = mountViewer }) {
+export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null, mountModel = mountViewer, openExternal = null, openRelative = null, copyEmail = null }) {
   const name = h('div', { class: 'pname truncate' }), meta = h('div', { class: 'pmeta caption secondary truncate' }, ' ');
   const fileIcon = h('span', { class: 'pico', 'aria-hidden': 'true' });
   // 图标按钮：可访问名称和 Mac 的悬停提示都是 label；没有图标的退回文字。
@@ -76,8 +77,12 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const copyPath = () => path !== null && copy(path);
   const retryButton = h('button', { class: 'link', onclick: () => load(!changed), hidden: true }, '重试');
   const body = h('div', { class: 'pbody', tabindex: '-1' }); // 可聚焦：关查找条后焦点回正文
-  const modes = [['3d', '3D'], ['text', '文本']].map(([value, label]) => ({ value, button: h('button', { class: 'link', onclick: () => setMode(value) }, label) }));
-  const modeBar = h('div', { class: 'pmode', role: 'group', 'aria-label': '显示方式', hidden: true }, ...modes.map(({ button }) => button));
+  const MODE_GROUPS = {
+    model: [['3d', '3D'], ['text', '文本']],
+    markdown: [['preview', '预览'], ['source', '源码']],
+  };
+  let modeButtons = [];
+  const modeBar = h('div', { class: 'pmode', role: 'group', 'aria-label': '显示方式', hidden: true });
   const inspectSlot = h('div', { class: 'pinspect-slot', hidden: true });
   let gutterEl = null;
   const find = createFind({ body, gutterWidth: () => gutterEl?.offsetWidth ?? 0 });
@@ -118,15 +123,34 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const setStale = reason => { stale = reason; paintMeta(); };
   let player = null; // 正在显示的音视频或图片元素
   let viewer = null; // 正在显示的 3D 模型视图：revoke 释放它，stop 只停加载和动画
-  let mode = '3d', offersText = false; // 模型文件现在看 3D 还是文本；内容是文本的才有切换（换文件时都回到初始）
+  let modeGroup = null, mode = '3d', offersText = false; // modeGroup：'model' | 'markdown' | null
+  let lastResult = null, mdToken = null; // Markdown 模式切换时复用已读正文和流式口令
   const paintMode = () => {
-    modeBar.hidden = !offersText;
-    for (const { value, button } of modes) button.setAttribute('aria-pressed', String(mode === value));
+    const activeGroup = modeGroup === 'markdown' ? 'markdown' : offersText ? 'model' : null;
+    if (activeGroup === null) { modeBar.hidden = true; return; }
+    if (modeBar.dataset.group !== activeGroup) {
+      modeBar.dataset.group = activeGroup;
+      modeButtons = MODE_GROUPS[activeGroup].map(([value, label]) => ({
+        value,
+        button: h('button', { class: 'link', onclick: () => setMode(value) }, label),
+      }));
+      modeBar.replaceChildren(...modeButtons.map(({ button }) => button));
+    }
+    modeBar.hidden = false;
+    for (const { value, button } of modeButtons) button.setAttribute('aria-pressed', String(mode === value));
   };
   function setMode(next) {
     if (path === null || mode === next) return;
     mode = next;
     paintMode();
+    if (modeGroup === 'markdown' && lastResult) {
+      const prevStale = stale;
+      show(lastResult, mdToken);
+      if (prevStale !== null) setStale(prevStale);
+      body.scrollTop = 0; body.scrollLeft = 0;
+      if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { highlight: pendingFind.highlight });
+      return;
+    }
     load(false);
   }
   const stopMedia = () => {
@@ -139,16 +163,28 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     h('p', {}, title), detail ? h('p', { class: 'secondary' }, detail) : null,
     action ? h('button', { class: 'link', onclick: action.run }, action.label) : null));
 
-  function show(result) {
+  function show(result, mediaToken = null) {
     revoke();
-    textShown = result.kind === ContentKind.TEXT;
+    lastResult = result;
+    const isMdPreview = result.kind === ContentKind.TEXT && modeGroup === 'markdown' && mode === 'preview';
+    textShown = result.kind === ContentKind.TEXT && !isMdPreview;
     pendingFind = null;
-    if (!textShown) find.close(); // 图片、二进制没有查找
+    if (!textShown) find.close(); // 图片、二进制、Markdown 富文本预览不启用源码查找（切到「源码」即可查找）
     shown = { size: result.size, mtimeMs: result.mtimeMs };
     // 元信息：目录 · 行数 · 大小；根目录下的文件没有目录，非文本没有行数。修改时间放进 title。
-    // 高亮：认得出语言才试；超过上限不试，库或解析出错就退回纯文本，都在元信息里注明。认不出语言的不加说明。
     const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
     const lines = result.kind === ContentKind.TEXT ? `${lineCount(result.text)} 行` : '';
+    if (isMdPreview) {
+      const note = result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '';
+      setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), `修改于 ${formatTime(result.mtimeMs)}`);
+      const resolveImage = mediaToken ? rel => serviceUrl(mediaToken, rel) : null;
+      const md = renderMarkdown(result.text, { basePath: path, resolveImage, onOpenExternal: openExternal, onOpenRelative: openRelative, onCopyEmail: copyEmail ?? (email => copy(email)) });
+      gutterEl = null;
+      if (selectionMenu) md.addEventListener('contextmenu', event => onSelect(event, md, false));
+      body.replaceChildren(md);
+      return;
+    }
+    // 高亮：认得出语言才试；超过上限不试，库或解析出错就退回纯文本，都在元信息里注明。认不出语言的不加说明。
     const language = result.kind === ContentKind.TEXT ? languageOf(path.split('/').pop()) : null;
     // 先判大小，超过只写「不高亮」；没超再判行长。
     // 有长行：上色已经按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行，所以只计数、导航、滚动。
@@ -164,7 +200,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if (colored) appendAll(text, colored);
       gutterEl = gutter;
       pendingFind = { el: text, text: result.text, highlight: !longLine };
-      if (selectionMenu) text.addEventListener('contextmenu', event => onSelect(event, text));
+      if (selectionMenu) text.addEventListener('contextmenu', event => onSelect(event, text, true));
       body.replaceChildren(h('div', { class: 'code' }, gutter, text));
     } else if (result.kind === ContentKind.IMAGE && result.bytes.length > 0) {
       objectUrl = URL.createObjectURL(new Blob([result.bytes], { type: imageType(path) }));
@@ -175,18 +211,27 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     }
   }
 
-  function onSelect(event, text) {
-    const picked = clippedSelection(text);
+  function onSelect(event, text, withLines = true) {
+    const picked = withLines ? clippedSelection(text) : clippedRichSelection(text);
     if (!picked) return;
     event.preventDefault();
-    selectionMenu(event, { path, text: picked.text, ...linesOf(text.textContent, picked.start, picked.start + picked.text.length) });
+    selectionMenu(event, withLines
+      ? { path, text: picked.text, ...linesOf(text.textContent, picked.start, picked.start + picked.text.length) }
+      : { path, text: picked.text });
+  }
+
+  function clearMarkdownState() {
+    lastResult = null;
+    mdToken = null;
+    if (modeGroup === 'markdown') { modeGroup = null; paintMode(); }
   }
 
   function failure(error, silent, retry) {
     if (error.stale) return;
     // 文件没了（后台刷新发现）：先释放，正文被换掉后，播放中的音视频和 3D 的画布不能继续占着。
-    if (error.code === ErrorCode.NOT_FOUND) { revoke(); shown = null; textShown = false; find.clearContent(); setMeta(' '); return notice('文件已不存在', path); }
+    if (error.code === ErrorCode.NOT_FOUND) { revoke(); shown = null; clearMarkdownState(); textShown = false; find.clearContent(); setMeta(' '); return notice('文件已不存在', path); }
     if (silent && shown) return setStale(error.message); // 后台刷新失败：保留正文，提示原因
+    clearMarkdownState();
     textShown = false;
     find.clearContent(); // 整页重读失败：标记清掉，计数写「—」，之后再读成功就重新找
     notice('读不到这个文件', error.message, { label: '重试', run: retry });
@@ -212,7 +257,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     if (kind !== 'image') el.addEventListener('loadedmetadata', () => { if (player === el && Number.isFinite(el.duration)) setMetaText(line([...parts, formatDuration(el.duration)]), title); });
     player = el;
     body.replaceChildren(h('div', { class: kind === 'image' ? 'image' : 'media' }, el));
-    el.src = `coda-view://service/media/${key}/${path.split('/').map(encodeURIComponent).join('/')}?v=${size}-${mtimeMs}`;
+    el.src = serviceUrl(key, path, `${size}-${mtimeMs}`);
   }
 
   // 3D 模型：查看器自己取字节、解析、渲染（第 21 节）。
@@ -263,7 +308,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   // silent：刷新。没变化不重画；变了就换内容，并尽量留在原来的滚动位置；有待恢复的位置时用它。
   async function load(silent) {
     const mine = ++token, mark = () => mine === token;
-    if (!silent) { shown = null; textShown = false; find.clearContent(); setMeta('读取中…'); revoke(); body.replaceChildren(); }
+    if (!silent) { shown = null; clearMarkdownState(); textShown = false; find.clearContent(); setMeta('读取中…'); revoke(); body.replaceChildren(); }
     try {
       const kind = media && mediaOf(path);
       if (kind && await loadMedia(kind, silent, mark)) return;
@@ -275,7 +320,22 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if (result.same) return setStale(null);
       // 刷新留在原位；整页重读（打开、重载、重试）没有要恢复的位置就明确从头开始，不靠清空正文后滚动条自己归零。
       const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });
-      show(result);
+      const isMarkdown = result.kind === ContentKind.TEXT && openCategoryOf(path) === OpenCategory.MARKDOWN;
+      let nextToken = null;
+      if (isMarkdown && media && result.text.includes('![')) {
+        try { nextToken = (await media(path))?.token ?? null; } catch { nextToken = null; }
+        if (!mark()) return;
+      }
+      if (isMarkdown) {
+        if (modeGroup !== 'markdown') { modeGroup = 'markdown'; mode = 'preview'; }
+        mdToken = nextToken;
+        paintMode();
+      } else if (modeGroup === 'markdown') {
+        modeGroup = null;
+        mdToken = null;
+        paintMode();
+      }
+      show(result, mdToken);
       body.scrollTop = keep.top; body.scrollLeft = keep.left;
       // 顺序：换正文 → 设好滚动位置 → 重建查找（刷新和换正文时查找不滚动，不盖掉恢复）
       if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { highlight: pendingFind.highlight });
@@ -290,7 +350,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       settle(false);
       if (next !== path) find.close(); // 换了文件就关查找，不靠调用方先 stop()
       opens++;
-      if (next !== path) { mode = '3d'; offersText = false; paintMode(); } // 换了文件：回到 3D，切换等读到内容再决定有没有
+      if (next !== path) { modeGroup = null; mode = '3d'; offersText = false; lastResult = null; mdToken = null; paintMode(); } // 换了文件：重置模式与缓存
       path = next;
       const base = next.split('/').pop();
       name.textContent = base;
@@ -305,7 +365,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     // 内容的来源变了（根目录换了位置）：旧正文不能留，也不能按元数据判断「没变」。
     reload() { find.close(); return path === null ? undefined : load(false); }, // 来源变了：查找也关
     // 停止（逻辑关闭，立即）：不再读、不再刷新，待恢复的位置结算；画面（正文、图片的 URL）留着，由 release 在退场结束时清掉。
-    stop() { settle(false); player?.pause?.(); viewer?.cancel(); token++; path = null; shown = null; textShown = false; find.close(); stoppedAt = opens; },
+    stop() { settle(false); player?.pause?.(); viewer?.cancel(); token++; path = null; shown = null; lastResult = null; mdToken = null; textShown = false; find.close(); stoppedAt = opens; },
     // 释放（画面）：停止之后又打开过就什么都不做。
     release() {
       if (stoppedAt !== opens) return; // 停止之后又打开过（打开次数变了）：这一屏是新的，不是退场的旧页

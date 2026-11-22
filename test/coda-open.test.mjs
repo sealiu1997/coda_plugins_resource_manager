@@ -81,7 +81,7 @@ async function open(t, { roots = {}, coda = {}, state: initialState = undefined,
 
 const row = (page, name) => page.tree.find(node => node.classList.contains('row') && node.textContent.includes(name))[0];
 const dbl = async (page, name) => { row(page, name).dispatch('click'); row(page, name).dispatch('dblclick'); await flush(); };
-const text = page => page.preview.find(node => node.classList.contains('text'))[0]?.textContent;
+const text = page => (page.preview.find(node => node.classList.contains('text'))[0] ?? page.preview.find(node => node.classList.contains('md'))[0])?.textContent;
 const menuButtons = page => page.menu.find(node => node.tagName === 'BUTTON');
 const rightClick = (page, name) => row(page, name).dispatch('contextmenu', { clientX: 5, clientY: 6 });
 const choose = async (page, label) => { menuButtons(page).find(node => node.textContent === label).dispatch('click'); await flush(); };
@@ -107,7 +107,7 @@ test('初始默认全部走资源管理器页内预览，不调 coda.open', asyn
   await dbl(page, 'README.md');
   assert.deepEqual(host.opened, []);
   assert.equal(visible(page.preview), true);
-  assert.equal(text(page), '# hi\n');
+  assert.equal(text(page), 'hi');
 
   // 返回目录树后打开 PDF，初始也默认走页内预览
   page.preview.find(node => node.tagName === 'BUTTON' && node.getAttribute('aria-label') === '返回')[0].dispatch('click');
@@ -154,7 +154,7 @@ test('右键「在 Coda 中打开」立即用 Coda 打开并按类别记住默�
   // 不同类别（markdown）不受影响，仍默认走资源管理器页内预览
   await dbl(page, 'README.md');
   assert.equal(visible(page.preview), true);
-  assert.equal(text(page), '# hi\n');
+  assert.equal(text(page), 'hi');
   page.preview.find(node => node.tagName === 'BUTTON' && node.getAttribute('aria-label') === '返回')[0].dispatch('click');
   await flush();
 
@@ -233,7 +233,7 @@ test('跨会话与重建页面连贯回归：会话 A 经菜单设定偏好后�
   // 未设定偏好的 markdown 在会话 B 仍默认走资源管理器页内预览
   await dbl(second.page, 'notes.md');
   assert.equal(visible(second.page.preview), true);
-  assert.equal(text(second.page), '# b');
+  assert.equal(text(second.page), 'b');
 });
 
 test('parseState 校验 openWith：只保留合法类别与 coda/inline，坏值被忽略', () => {
@@ -264,7 +264,7 @@ test('coda.open 抛错（异步 reject 或同步 throw）与无流式服务时�
     await flush();
     await dbl(page, 'README.md');
     assert.equal(visible(page.preview), true);
-    assert.equal(text(page), '# fallback\n');
+    assert.equal(text(page), 'fallback');
     assert.equal(page.hint.textContent, '', '静默回退，不弹错误提示');
   }
   // 同步 throw
@@ -296,7 +296,7 @@ test('coda.open 抛错（异步 reject 或同步 throw）与无流式服务时�
     await dbl(page, 'README.md');
     assert.deepEqual(calls, [], '没有口令就不调 coda.open');
     assert.equal(visible(page.preview), true);
-    assert.equal(text(page), '# no-service\n');
+    assert.equal(text(page), 'no-service');
   }
 });
 
@@ -491,7 +491,7 @@ test('iPhone 长按「在 Coda 中打开」立即打开并记住偏好，后续�
   row(page, 'c.md').dispatch('click');
   await flush();
   assert.equal(visible(page.preview), true);
-  assert.equal(text(page), '# md');
+  assert.equal(text(page), 'md');
 });
 
 test('iPhone：恢复偏好后轻点 PDF / Markdown 走 coda.open，不进页内预览、不记入 setState.opened', async t => {
@@ -591,5 +591,5 @@ test('独立 file 视图不调 coda.open，打开 Markdown/PDF 仍走页内预�
 
   assert.deepEqual(calls, [], '独立 file 视图不能再调 coda.open');
   assert.equal(visible(page.preview), true);
-  assert.equal(page.preview.find(node => node.classList.contains('text'))[0]?.textContent, '# standalone\n');
+  assert.equal(page.preview.find(node => node.classList.contains('md'))[0]?.textContent, 'standalone');
 });
