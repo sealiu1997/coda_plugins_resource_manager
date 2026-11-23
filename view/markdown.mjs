@@ -91,6 +91,7 @@ function classifyImage(rawSrc, basePath, resolveImage) {
 const ESCAPABLE_RE = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
 
 // 行内「原子」片段的结尾（不含）：反斜杠转义、完整的代码跨度、HTML 注释，按这个顺序识别；不是返回 -1。
+// 反引号序列找不到等长闭合时，整段反引号作为字面量原子（结尾 = i + 反引号数），不再从中间重新配对。
 // parseInline 和所有闭合前瞻（强调、删除线、链接、图片）共用，识别顺序只此一份。
 function atomEnd(text, i) {
   const ch = text[i];
@@ -98,8 +99,14 @@ function atomEnd(text, i) {
   if (ch === '`') {
     let ticks = 1;
     while (text[i + ticks] === '`') ticks++;
-    const close = text.indexOf('`'.repeat(ticks), i + ticks);
-    return close >= 0 ? close + ticks : -1;
+    for (let j = i + ticks; j < text.length; j++) {
+      if (text[j] !== '`') continue;
+      let n = 1;
+      while (text[j + n] === '`') n++;
+      if (n === ticks) return j + n;
+      j += n - 1;
+    }
+    return i + ticks;
   }
   if (text.startsWith('<!--', i)) {
     const end = text.indexOf('-->', i + 4);
@@ -268,6 +275,7 @@ function parseInline(text, ctx, depth = 0) {
       else if (ch === '`') {
         let ticks = 1;
         while (text[i + ticks] === '`') ticks++;
+        if (atom === i + ticks) { buf += '`'.repeat(ticks); i = atom; continue; }
         flush();
         let code = text.slice(i + ticks, atom - ticks).replace(/\n/g, ' ');
         if (code.length >= 2 && code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);

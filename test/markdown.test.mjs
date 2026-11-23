@@ -997,3 +997,35 @@ test('转义的 \\<!-- 保留字面量，也不生成换行', async t => {
   assert.equal(byTag(md, 'p')[0].textContent, '<!-- literal -->\nNext');
   assert.equal(byTag(md, 'br').length, 0);
 });
+
+test('反引号只和等长序列配对，不匹配时整段按字面量，闭合扫描也一样', async t => {
+  await withDom(t);
+  const render = text => renderMarkdown(text, { basePath: 'README.md' });
+  const link = render('[Use `](guide.md) and ``code``');
+  assert.equal(byTag(link, 'a').length, 1, '链接不被长度不同的反引号吞掉');
+  assert.equal(byTag(link, 'a')[0].getAttribute('data-rel-path'), 'guide.md');
+  assert.deepEqual(byClass(link, 'md-inline-code').map(c => c.textContent), ['code']);
+
+  const image = render('![A `](logo.png) and ``code``');
+  assert.equal(byTag(image, 'img').length + byClass(image, 'md-img-fallback').length, 1, '图片不被吞掉');
+  assert.deepEqual(byClass(image, 'md-inline-code').map(c => c.textContent), ['code']);
+
+  const strong = render('**Use `** and ``code``');
+  assert.equal(byTag(strong, 'strong')[0]?.textContent, 'Use `');
+  assert.deepEqual(byClass(strong, 'md-inline-code').map(c => c.textContent), ['code']);
+
+  const del = render('~~Use `~~ and ``code``');
+  assert.equal(byTag(del, 'del')[0]?.textContent, 'Use `');
+  assert.deepEqual(byClass(del, 'md-inline-code').map(c => c.textContent), ['code']);
+
+  // 无等长闭合：整段反引号是字面量，不从中间重新配对
+  const lone = render('``a` b');
+  assert.equal(byClass(lone, 'md-inline-code').length, 0);
+  assert.equal(lone.textContent, '``a` b');
+
+  // 正向：等长配对仍是代码跨度，内部可含更短的反引号
+  const pair = render('``a`b`` 和 `c`');
+  assert.deepEqual(byClass(pair, 'md-inline-code').map(c => c.textContent), ['a`b', 'c']);
+  const closed = render('[x ``a`b`` y](guide.md)');
+  assert.equal(byTag(closed, 'a').length, 1, '等长代码跨度内的反引号不影响链接配对');
+});
