@@ -8,6 +8,7 @@ import { clippedRichSelection } from '../view/selection.mjs';
 import { Element, loadFileApp, visible } from './support/dom.mjs';
 import { flush } from './support/fake.mjs';
 import { open } from './support/filepage.mjs';
+import { installHighlights } from './support/highlights.mjs';
 import { fakeSelection } from './support/selection.mjs';
 
 async function withDom(t) {
@@ -146,7 +147,7 @@ test('mountPreview：Markdown 默认进入「预览」模式，支持「预览 /
   assert.equal(byClass(el, 'md').length, 1, '默认进入富文本预览');
   assert.equal(byTag(el, 'h1')[0]?.textContent, '标题');
   assert.equal(byTag(el, 'img')[0]?.getAttribute('src'), 'coda-view://service/media/tok99/assets/a%20b.png');
-  assert.equal(preview.canFind, true, '预览模式下查找入口可用，打开时切到源码');
+  assert.equal(preview.canFind, true, '预览模式下查找入口可用，直接在预览里找');
 
   const modeBar = byClass(el, 'pmode')[0];
   assert.equal(modeBar.hidden, false);
@@ -169,10 +170,11 @@ test('mountPreview：Markdown 默认进入「预览」模式，支持「预览 /
   assert.equal(byClass(el, 'md').length, 1);
 });
 
-test('mountPreview：Markdown 预览里 openFind 自动切到「源码」并打开查找条，非 Markdown 预览不受影响', async t => {
+test('mountPreview：Markdown 预览里 openFind 留在预览并打开查找条，找得到渲染后的文字', async t => {
   await withDom(t);
   const el = new Element('div');
-  const content = '# 标题\n\n正文\n';
+  installHighlights(t);
+  const content = '# 标题\n\n**正** 文\n'; // 渲染后是「正 文」，源码里是「**正** 文」
   const data = Buffer.from(content).toString('base64');
   const preview = mountPreview(el, {
     read: async () => ({ kind: 'text', data, offset: 0, size: Buffer.byteLength(content), mtimeMs: 100, eof: true }),
@@ -188,11 +190,16 @@ test('mountPreview：Markdown 预览里 openFind 自动切到「源码」并打�
   assert.equal(preview.canFind, true);
 
   assert.equal(preview.openFind(), true);
-  assert.equal(byClass(el, 'md').length, 0, '已切到源码');
-  assert.equal(byClass(el, 'text')[0]?.textContent, content);
+  assert.equal(byClass(el, 'md').length, 1, '留在预览');
+  assert.equal(byClass(el, 'text').length, 0, '没有切到源码');
   assert.equal(preview.findOpen, true, '查找条已打开');
   const pressed = byTag(byClass(el, 'pmode')[0], 'button').map(b => b.getAttribute('aria-pressed'));
-  assert.deepEqual(pressed, ['false', 'true'], '模式条跟着切到「源码」');
+  assert.deepEqual(pressed, ['true', 'false'], '模式条还是「预览」');
+  const field = byClass(el, 'finput')[0];
+  field.value = '正 文';
+  field.dispatch('input');
+  t.mock.timers.tick(150);
+  assert.equal(byClass(el, 'fcount')[0].textContent, '1/1', '在渲染后的文字里找到');
 
   // 读不到文件的页面不能查找
   const broken = mountPreview(new Element('div'), { read: async () => { throw Object.assign(new Error('坏了'), { code: 'io' }); }, copy: () => {} });
@@ -626,6 +633,22 @@ test('独立文件窗口：相对链接经 coda.open 新开 file 视图、mailto
   await flush();
   assert.equal(opened.at(-1), 'https://example.com');
   assert.match(page.hint.textContent, /打不开链接：禁止打开外链/, '外链打开失败应给出明确原因');
+});
+
+test('图片占位的字照旧计入标题 ID：带占位的标题不抢走后面同名标题的页内链接', async t => {
+  await withDom(t);
+  for (const [image, id] of [['![状态](https://example.com/badge.png)', 'md-安装-外链图片状态'], ['![状态](badge.png)', 'md-安装-图片状态']]) { // 远程图片、没有流式地址的本地图片
+    const md = renderMarkdown(`# 安装 ${image}\n\n# 安装\n\n[跳转](#安装)\n`, { basePath: 'README.md' });
+    const [first, second] = byTag(md, 'h1');
+    assert.equal(byClass(first, 'md-img-fallback').length, 1, '是占位');
+    assert.equal(first.getAttribute('id'), id, '占位文字计入 slug，和加标记之前一致');
+    assert.equal(second.getAttribute('id'), 'md-安装');
+    let scrolled = null;
+    first.scrollIntoView = () => { scrolled = first; };
+    second.scrollIntoView = () => { scrolled = second; };
+    byTag(md, 'a').find(a => a.textContent === '跳转').dispatch('click');
+    assert.equal(scrolled, second, '跳到第二个标题');
+  }
 });
 
 test('复制邮箱按钮不影响标题锚点，且富文本选区跳过按钮文案并保持字符偏移准确', async t => {

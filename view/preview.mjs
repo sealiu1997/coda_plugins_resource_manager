@@ -6,6 +6,7 @@ import { HIGHLIGHT_LIMIT, appendAll, hasLongLine, highlight } from './highlight.
 import { icon, iconFor } from './icons.mjs';
 import { languageOf } from './languages.mjs';
 import { renderMarkdown } from './markdown.mjs';
+import { createModes } from './modes.mjs';
 import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, OpenCategory, TEXT_LIMIT, imageType, mediaOf, openCategoryOf, serviceUrl } from './protocol.mjs';
 import { clippedRichSelection, clippedSelection, linesOf } from './selection.mjs';
 import { mayBeText, offersTextView } from './model3d.mjs';
@@ -62,8 +63,8 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // back：给了就在头部最左边放「返回」（Mac 侧栏预览：原生工具栏项目只能在右侧）；文件页和 iPhone 不传。
 // open(path, scroll) 带了要恢复的位置时，返回的 Promise 在「位置用上了」时变 true（正文到了、已设好位置；读取失败不算，位置留着等重试），
 // 在「位置作废」时变 false（预览关了、改看别的文件）。读取被刷新、重载或 changed 作废时位置不丢：接替它的那次读取接着带上，用上才算完。
-// 文件内查找（第 18.6 节）是预览自己的一部分，接在预览已有的生命周期上：open 换了文件、reload、stop、close 关查找；refresh 保留；release 不碰。
-// 页面只负责入口：canFind（有显示着的文本才有）、openFind()（⌘F、iPhone 的「查找」菜单项）。consumed(event)：这个按键已经被菜单消费了（菜单开着时的 Esc）。
+// 文件内查找（第 18.6 节、第 26.2 节）是预览自己的一部分，接在预览已有的生命周期上：open 换了文件、reload、stop、close 关查找；refresh 保留；release 不碰。
+// 页面只负责入口：canFind（有显示着的文本才有，富文本预览也有）、openFind()（⌘F、iPhone 的「查找」菜单项）。consumed(event)：这个按键已经被菜单消费了（菜单开着时的 Esc）。
 // selectionMenu(event, { path, text, startLine, endLine })：给了就接管正文里选中文字的右键（只有 Mac 传）；预览不知道菜单里是什么。
 // 选区为空、或裁到正文里之后为空时不接管，走系统默认。内容和行号在这里取好，交出去之后和选区无关。
 // media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
@@ -78,10 +79,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const copyPath = () => path !== null && copy(path);
   const retryButton = h('button', { class: 'link', onclick: () => load(!changed), hidden: true }, '重试');
   const body = h('div', { class: 'pbody', tabindex: '-1' }); // 可聚焦：关查找条后焦点回正文
-  const MODE_GROUPS = {
-    model: [['3d', '3D'], ['text', '文本']],
-    markdown: [['preview', '预览'], ['source', '源码']],
-  };
+  const modes = createModes();
   let modeButtons = [];
   const modeBar = h('div', { class: 'pmode', role: 'group', 'aria-label': '显示方式', hidden: true });
   const inspectSlot = h('div', { class: 'pinspect-slot', hidden: true });
@@ -105,7 +103,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if (event.shiftKey) find.prev(); else find.next();
     }
   });
-  let textShown = false, pendingFind = null, longLine = false; // 现在显示的是不是文本；show() 换好的正文，等滚动位置设好再交给查找
+  let textShown = false, pendingFind = null, longLine = false; // 现在显示的是不是文本（源码或富文本预览）；show() 换好的正文，等滚动位置设好再交给查找
 
   let path = null, token = 0, shown = null, objectUrl = null; // shown：当前显示的 { size, mtimeMs }
   let opens = 0, stoppedAt = -1; // 打开次数和上一次停止时的次数：释放只在停止之后没有再打开过时才做（返回的退场还没结束又打开了）
@@ -124,37 +122,37 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const setStale = reason => { stale = reason; paintMeta(); };
   let player = null; // 正在显示的音视频或图片元素
   let viewer = null; // 正在显示的 3D 模型视图：revoke 释放它，stop 只停加载和动画
-  let modeGroup = null, mode = '3d', offersText = false; // modeGroup：'model' | 'markdown' | null
-  let lastResult = null, mdToken = null; // Markdown 模式切换时复用已读正文和流式口令
+  let lastResult = null, richToken = null; // 富文本模式切换时复用已读正文和流式口令
   const paintMode = () => {
-    const activeGroup = modeGroup === 'markdown' ? 'markdown' : offersText ? 'model' : null;
-    if (activeGroup === null) { modeBar.hidden = true; return; }
-    if (modeBar.dataset.group !== activeGroup) {
-      modeBar.dataset.group = activeGroup;
-      modeButtons = MODE_GROUPS[activeGroup].map(([value, label]) => ({
+    const items = modes.buttons();
+    if (items.length === 0) { modeBar.hidden = true; return; }
+    const { group } = modes.state();
+    if (modeBar.dataset.group !== group) {
+      modeBar.dataset.group = group;
+      modeButtons = items.map(({ value, label }) => ({
         value,
         button: h('button', { class: 'link', onclick: () => setMode(value) }, label),
       }));
       modeBar.replaceChildren(...modeButtons.map(({ button }) => button));
     }
     modeBar.hidden = false;
-    for (const { value, button } of modeButtons) button.setAttribute('aria-pressed', String(mode === value));
+    for (const { value, pressed } of items) modeButtons.find(entry => entry.value === value).button.setAttribute('aria-pressed', String(pressed));
   };
+  // 把 show() 换好的正文交给查找（顺序：换正文 → 设好滚动位置 → 重建查找）。keepPosition：后台刷新沿用旧位置；预览和源码之间切换取第 1 处。
+  const feedFind = keepPosition => { if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { rich: pendingFind.rich, highlight: pendingFind.highlight, keepPosition }); };
   function setMode(next) {
-    if (path === null || mode === next) return;
-    mode = next;
+    if (path === null || !modes.select(next)) return;
     paintMode();
-    if (modeGroup === 'markdown' && lastResult) {
+    if (modes.state().group === 'rich' && lastResult) {
       const prevStale = stale;
-      show(lastResult, mdToken);
+      show(lastResult, richToken);
       if (prevStale !== null) setStale(prevStale);
       body.scrollTop = 0; body.scrollLeft = 0;
-      if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { highlight: pendingFind.highlight });
+      feedFind(false);
       return;
     }
     load(false);
   }
-  const inMarkdownPreview = () => modeGroup === 'markdown' && mode === 'preview' && lastResult?.kind === ContentKind.TEXT;
   const stopMedia = () => {
     if (!player) return;
     player.pause?.(); player.removeAttribute('src'); player.load?.();
@@ -169,20 +167,23 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   function show(result, mediaToken = null) {
     revoke();
     lastResult = result;
-    const isMdPreview = result.kind === ContentKind.TEXT && modeGroup === 'markdown' && mode === 'preview';
-    textShown = result.kind === ContentKind.TEXT && !isMdPreview;
+    const isMdPreview = result.kind === ContentKind.TEXT && modes.isRichPreview();
+    textShown = result.kind === ContentKind.TEXT;
     pendingFind = null;
-    if (!textShown) find.close(); // 图片、二进制、Markdown 富文本预览不启用源码查找（切到「源码」即可查找）
+    if (!textShown) find.close(); // 图片、二进制不能查找；源码和富文本预览都能
     shown = { size: result.size, mtimeMs: result.mtimeMs };
     // 元信息：目录 · 行数 · 大小；根目录下的文件没有目录，非文本没有行数。修改时间放进 title。
     const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
     const lines = result.kind === ContentKind.TEXT ? `${lineCount(result.text)} 行` : '';
+    // 有长行：上色按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行（源码和富文本里不折行的代码块都一样），所以只计数、导航、滚动。
+    longLine = result.kind === ContentKind.TEXT && hasLongLine(result.text);
     if (isMdPreview) {
       const note = result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '';
       setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), `修改于 ${formatTime(result.mtimeMs)}`);
       const resolveImage = mediaToken ? rel => serviceUrl(mediaToken, rel) : null;
       const md = renderMarkdown(result.text, { basePath: path, resolveImage, onOpenExternal: openExternal, onOpenRelative: openRelative, onCopyEmail: copyEmail ?? (email => copy(email)) });
       gutterEl = null;
+      pendingFind = { el: md, text: null, rich: true, highlight: !longLine };
       if (selectionMenu) md.addEventListener('contextmenu', event => onSelect(event, md, false));
       body.replaceChildren(md);
       return;
@@ -190,8 +191,6 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     // 高亮：认得出语言才试；超过上限不试，库或解析出错就退回纯文本，都在元信息里注明。认不出语言的不加说明。
     const language = result.kind === ContentKind.TEXT ? languageOf(path.split('/').pop()) : null;
     // 先判大小，超过只写「不高亮」；没超再判行长。
-    // 有长行：上色已经按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行，所以只计数、导航、滚动。
-    longLine = result.kind === ContentKind.TEXT && hasLongLine(result.text);
     const skip = !language ? '' : result.bytes.length > HIGHLIGHT_LIMIT ? '不高亮' : longLine ? '行太长，不高亮' : '';
     const colored = language && !skip ? highlight(result.text, language) : null;
     const plain = !language ? '' : skip || (colored ? '' : '没能高亮');
@@ -202,7 +201,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       const text = h('pre', { class: 'text selectable' }, ...(colored ? [] : [result.text]));
       if (colored) appendAll(text, colored);
       gutterEl = gutter;
-      pendingFind = { el: text, text: result.text, highlight: !longLine };
+      pendingFind = { el: text, text: result.text, rich: false, highlight: !longLine };
       if (selectionMenu) text.addEventListener('contextmenu', event => onSelect(event, text, true));
       body.replaceChildren(h('div', { class: 'code' }, gutter, text));
     } else if (result.kind === ContentKind.IMAGE && result.bytes.length > 0) {
@@ -225,8 +224,9 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
 
   function clearMarkdownState() {
     lastResult = null;
-    mdToken = null;
-    if (modeGroup === 'markdown') { modeGroup = null; paintMode(); }
+    richToken = null;
+    modes.content(false);
+    paintMode();
   }
 
   function failure(error, silent, retry) {
@@ -280,7 +280,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   // 媒体文件（按扩展名）：返回 true 表示已经处理（显示、提示或已作废），false 表示这个文件走分块读取（宿主没有流式服务时的图片和模型，模型选了看文本时）。
   // 刷新不打断播放：音视频和模型变了只在元信息行提示「文件已变化」，点「重载」才换；图片和提示页变了直接换。
   async function loadMedia({ kind, preview }, silent, mark) {
-    if (kind === 'model' && mode === 'text') return false;
+    if (kind === 'model' && modes.state().mode === 'text') return false;
     const granted = await media(path);
     if (!mark()) return true;
     const { token: key, size, mtimeMs } = granted;
@@ -292,7 +292,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     if (kind === 'model') { // 内容是不是文本，用模块现有的判断（读第一块）；不经查看器，没有 WebGL 的设备上文本模型也能切到文本看
       const first = mayBeText(path) ? await read(path, 0) : null;
       if (!mark()) return true; // 先核对作废，再动共享状态
-      offersText = first !== null && offersTextView(path, first.kind);
+      modes.capability(first !== null && offersTextView(path, first.kind));
       paintMode();
     }
     const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });
@@ -311,7 +311,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   // silent：刷新。没变化不重画；变了就换内容，并尽量留在原来的滚动位置；有待恢复的位置时用它。
   async function load(silent) {
     const mine = ++token, mark = () => mine === token;
-    if (!silent) { shown = null; clearMarkdownState(); textShown = false; find.clearContent(); setMeta('读取中…'); revoke(); body.replaceChildren(); }
+    if (!silent) { shown = null; modes.reload(); clearMarkdownState(); textShown = false; find.clearContent(); setMeta('读取中…'); revoke(); body.replaceChildren(); }
     try {
       const kind = media && mediaOf(path);
       if (kind && await loadMedia(kind, silent, mark)) return;
@@ -326,22 +326,16 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       const isMarkdown = result.kind === ContentKind.TEXT && openCategoryOf(path) === OpenCategory.MARKDOWN;
       let nextToken = null;
       if (isMarkdown && media && result.text.includes('![')) {
-        try { nextToken = (await media(path))?.token ?? null; } catch { nextToken = mdToken; } // 取口令失败：沿用上一次的，已显示的图片不被换成占位
+        try { nextToken = (await media(path))?.token ?? null; } catch { nextToken = richToken; } // 取口令失败：沿用上一次的，已显示的图片不被换成占位
         if (!mark()) return;
       }
-      if (isMarkdown) {
-        if (modeGroup !== 'markdown') { modeGroup = 'markdown'; mode = 'preview'; }
-        mdToken = nextToken;
-        paintMode();
-      } else if (modeGroup === 'markdown') {
-        modeGroup = null;
-        mdToken = null;
-        paintMode();
-      }
-      show(result, mdToken);
+      modes.content(result.kind === ContentKind.TEXT);
+      richToken = isMarkdown ? nextToken : null;
+      paintMode();
+      show(result, richToken);
       body.scrollTop = keep.top; body.scrollLeft = keep.left;
       // 顺序：换正文 → 设好滚动位置 → 重建查找（刷新和换正文时查找不滚动，不盖掉恢复）
-      if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { highlight: pendingFind.highlight });
+      feedFind(true);
       settle(true);
     } catch (error) {
       if (mark()) failure(error, silent, () => load(false)); // 失败不算用上：待恢复的位置留着，重试或之后的刷新成功才用、才清
@@ -353,7 +347,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       settle(false);
       if (next !== path) find.close(); // 换了文件就关查找，不靠调用方先 stop()
       opens++;
-      if (next !== path) { modeGroup = null; mode = '3d'; offersText = false; lastResult = null; mdToken = null; paintMode(); } // 换了文件：重置模式与缓存
+      if (next !== path) { modes.open(openCategoryOf(next)); lastResult = null; richToken = null; paintMode(); } // 换了文件：重置模式与缓存
       path = next;
       const base = next.split('/').pop();
       name.textContent = base;
@@ -368,7 +362,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     // 内容的来源变了（根目录换了位置）：旧正文不能留，也不能按元数据判断「没变」。
     reload() { find.close(); return path === null ? undefined : load(false); }, // 来源变了：查找也关
     // 停止（逻辑关闭，立即）：不再读、不再刷新，待恢复的位置结算；画面（正文、图片的 URL）留着，由 release 在退场结束时清掉。
-    stop() { settle(false); player?.pause?.(); viewer?.cancel(); token++; path = null; shown = null; lastResult = null; mdToken = null; textShown = false; find.close(); stoppedAt = opens; },
+    stop() { settle(false); player?.pause?.(); viewer?.cancel(); token++; path = null; shown = null; lastResult = null; richToken = null; textShown = false; find.close(); stoppedAt = opens; },
     // 释放（画面）：停止之后又打开过就什么都不做。
     release() {
       if (stoppedAt !== opens) return; // 停止之后又打开过（打开次数变了）：这一屏是新的，不是退场的旧页
@@ -382,12 +376,11 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     scroll: () => (path === null ? { top: 0, left: 0 } : { top: body.scrollTop, left: body.scrollLeft }),
     onScroll: fn => body.addEventListener('scroll', fn, { passive: true }),
     get path() { return path; },
-    // 文件内查找的入口：有显示着的文本（或查找条已经开着）才有；Markdown 预览里没有可查找的源码，打开查找时先切到「源码」。
-    get canFind() { return path !== null && (textShown || find.isOpen || inMarkdownPreview()); },
+    // 文件内查找的入口：有显示着的文本（或查找条已经开着）才有；Markdown 预览里直接在渲染后的正文里找，不切模式。
+    get canFind() { return path !== null && (textShown || find.isOpen); },
     get findOpen() { return find.isOpen; },
     openFind() {
       if (!this.canFind) return false;
-      if (inMarkdownPreview()) setMode('source');
       find.open();
       return true;
     },

@@ -4,7 +4,8 @@ import { h } from './dom.mjs';
 import { HIGHLIGHT_LIMIT, appendAll, hasLanguage, hasLongLine, highlight } from './highlight.mjs';
 import { languageOf } from './languages.mjs';
 import { hasControl, joinRelative } from './protocol.mjs';
-import { RICH_UI_ATTR, richTextContent } from './selection.mjs';
+import { RICH_UI_ATTR } from './rich.mjs';
+import { richTextContent } from './selection.mjs';
 
 const MAX_DEPTH = 16;
 
@@ -196,9 +197,9 @@ function renderImageNode(alt, dest, title, ctx) {
     return h('img', { class: 'md-img', src: info.src, alt, title: title || null, draggable: 'false' });
   }
   if (info.kind === 'remote') {
-    return h('span', { class: 'md-img-fallback secondary', title: info.url }, alt ? `[外链图片：${alt}]` : '[外链图片]');
+    return h('span', { class: 'md-img-fallback secondary', [RICH_UI_ATTR]: '', title: info.url }, alt ? `[外链图片：${alt}]` : '[外链图片]');
   }
-  return h('span', { class: 'md-img-fallback secondary' }, alt ? `[图片：${alt}]` : '[图片]');
+  return h('span', { class: 'md-img-fallback secondary', [RICH_UI_ATTR]: '' }, alt ? `[图片：${alt}]` : '[图片]');
 }
 
 function renderLinkNode(labelNodes, dest, title, ctx) {
@@ -799,7 +800,7 @@ function renderBlockAst(blocks, ctx) {
       case 'heading': {
         const content = parseInline(block.text, ctx);
         const headingEl = h(`h${block.level}`, {}, ...content);
-        const base = slugify(richTextContent(headingEl));
+        const base = slugify(richTextContent(headingEl, node => node.classList?.contains('md-img-fallback'))); // 图片占位的字照旧计入标题 ID（和加标记之前一致），只有按钮不计
         if (base) {
           let id = headingId(base), n = 1;
           while (ctx.headings.has(id)) id = headingId(`${base}-${n++}`);

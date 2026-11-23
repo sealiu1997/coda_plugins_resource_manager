@@ -193,21 +193,24 @@ test('mountPreview：没传 canOpenInCoda 时不放按钮，传了才放，点�
 
 // ---- ⌘F 在 Markdown 预览里 ----
 
-const MD = '# 标题\n\nfoo bar\n';
-const sourceShown = page => byClass(page.preview, 'text').length === 1 && byClass(page.preview, 'md').length === 0;
+const MD = '# 标题\n\n**foo** bar\n'; // 渲染后「foo bar」跨了 <strong> 和后面的文字；源码里是「**foo** bar」，找不到
+const previewShown = page => byClass(page.preview, 'md').length === 1 && byClass(page.preview, 'text').length === 0;
 const findBar = page => byClass(page.preview, 'fbar')[0];
+// 在查找条里输入、等防抖，返回计数；每个入口都用它证明查找真的在渲染后的文字里找。
+const findCount = (page, tick, term) => { const field = byClass(page.preview, 'finput')[0]; field.value = term; field.dispatch('input'); tick(150); return byClass(page.preview, 'fcount')[0].textContent; };
 
-test('Mac 独立窗口：Markdown 预览里 ⌘F 切到「源码」并打开查找条', async t => {
+test('Mac 独立窗口：Markdown 预览里 ⌘F 留在预览并打开查找条，找得到渲染后的文字', async t => {
   installHighlights(t);
   const { page } = await start(t, { path: 'README.md', files: { 'README.md': { text: MD } } });
   assert.equal(byClass(page.preview, 'md').length, 1);
   document.activeElement = null;
   assert.equal(onDoc('f', cmd).prevented, true);
-  assert.ok(sourceShown(page));
+  assert.ok(previewShown(page), '没有切到源码');
   assert.equal(findBar(page).hidden, false);
+  assert.equal(findCount(page, ms => t.mock.timers.tick(ms), 'foo bar'), '1/1');
 });
 
-test('Mac 侧栏：Markdown 预览里 ⌘F 切到「源码」并打开查找条', async t => {
+test('Mac 侧栏：Markdown 预览里 ⌘F 留在预览并打开查找条，找得到渲染后的文字', async t => {
   installHighlights(t);
   const ctx = await startSearch(t, { listing: { '': ['README.md'] } });
   Object.assign(ctx.host, { autoRead: true, files: { 'README.md': MD } });
@@ -217,11 +220,12 @@ test('Mac 侧栏：Markdown 预览里 ⌘F 切到「源码」并打开查找条'
   assert.equal(byClass(ctx.page.preview, 'md').length, 1);
   document.activeElement = null;
   assert.equal(onDoc('f', cmd).prevented, true);
-  assert.ok(sourceShown(ctx.page));
+  assert.ok(previewShown(ctx.page), '没有切到源码');
   assert.equal(findBar(ctx.page).hidden, false);
+  assert.equal(findCount(ctx.page, ctx.tick, 'foo bar'), '1/1');
 });
 
-test('iPhone：Markdown 预览的 ⋯ 菜单里有「查找」，点了切到「源码」并打开查找条', async t => {
+test('iPhone：Markdown 预览的 ⋯ 菜单里有「查找」，点了留在预览并打开查找条，找得到渲染后的文字', async t => {
   installHighlights(t);
   const ctx = await startPhone(t, { listing: { '': ['README.md'] } });
   Object.assign(ctx.host, { autoRead: true, files: { 'README.md': MD } });
@@ -231,8 +235,9 @@ test('iPhone：Markdown 预览的 ⋯ 菜单里有「查找」，点了切到「
   ctx.page.preview.find(node => node.getAttribute('aria-label') === '更多')[0].dispatch('click');
   assert.deepEqual(ctx.page.menu.find(node => node.tagName === 'BUTTON').map(node => node.textContent), ['刷新', '查找', '复制路径']);
   ctx.page.menu.find(node => node.textContent === '查找')[0].dispatch('click');
-  assert.ok(sourceShown(ctx.page));
+  assert.ok(previewShown(ctx.page), '没有切到源码');
   assert.equal(findBar(ctx.page).hidden, false);
+  assert.equal(findCount(ctx.page, ctx.tick, 'foo bar'), '1/1');
 });
 
 // ---- B6：刷新时取图片口令失败，沿用上一次的 ----

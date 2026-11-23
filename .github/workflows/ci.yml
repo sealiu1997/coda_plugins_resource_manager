@@ -18,5 +18,6 @@ jobs:
           node-version: '24'
       - run: npm test
       - run: npm run test:webgl
+      - run: npm run test:rich-find
       - run: npm run check:coda
       - run: git diff --exit-code

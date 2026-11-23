@@ -103,7 +103,6 @@ const DOCUMENT_TYPES = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   ppt: 'application/vnd.ms-powerpoint',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  rtf: 'application/rtf',
   pages: 'application/vnd.apple.pages',
   numbers: 'application/vnd.apple.numbers',
   key: 'application/vnd.apple.keynote',
@@ -112,6 +111,7 @@ const DOCUMENT_TYPES = {
 const TEXT_SERVED_TYPES = {
   txt: 'text/plain; charset=utf-8',
   text: 'text/plain; charset=utf-8',
+  rtf: 'text/plain; charset=utf-8', // 页内按纯文本显示，Coda 打开 rtf 也只显示源码
   csv: 'text/csv; charset=utf-8',
   tsv: 'text/tab-separated-values; charset=utf-8',
   json: 'application/json; charset=utf-8',

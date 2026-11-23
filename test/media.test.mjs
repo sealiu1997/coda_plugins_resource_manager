@@ -193,11 +193,17 @@ test('跨源：所有响应（含 304、416 和各种错误）带 Access-Control
 });
 
 test('打开偏好类别归类与嵌套 Markdown 相对链接：统一经流式服务供应并受工作目录校验约束', async t => {
-  for (const ext of ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'rtf', 'pages', 'numbers', 'key']) {
+  for (const ext of ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'pages', 'numbers', 'key']) {
     assert.equal(openCategoryOf(`docs/file.${ext}`), OpenCategory.DOCUMENT, ext);
     assert.equal(openCategoryOf(`docs/FILE.${ext.toUpperCase()}`), OpenCategory.DOCUMENT, ext.toUpperCase());
     assert.equal(mediaOf(`docs/file.${ext}`), null, `${ext} 不当页内媒体预览`);
     assert.ok(servedType(`docs/file.${ext}`), `${ext} 流式服务放行`);
+  }
+  // rtf 归文本类：页内按纯文本显示，流式服务按 text/plain 供应（同 txt）
+  for (const name of ['docs/file.rtf', 'docs/FILE.RTF']) {
+    assert.equal(openCategoryOf(name), OpenCategory.TEXT, name);
+    assert.equal(mediaOf(name), null, `${name} 不当页内媒体预览`);
+    assert.equal(servedType(name), 'text/plain; charset=utf-8', name);
   }
   for (const ext of ['md', 'markdown', 'mdx']) {
     assert.equal(openCategoryOf(`docs/file.${ext}`), OpenCategory.MARKDOWN, ext);
