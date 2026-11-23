@@ -15,7 +15,7 @@ import { Model, STATE_LIMIT, View, noticeText, parseState, putSession, trimState
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
 import { mountPress, onMotionChange, reducedMotion } from './press.mjs';
-import { EntryKind, OpenCategory, OpenWith, RootState, SortKey, Type, openCategoryOf, servedType } from './protocol.mjs';
+import { EntryKind, OpenCategory, OpenWith, RootState, SortKey, Type, canOpenInCoda, openCategoryOf } from './protocol.mjs';
 import { createRestore, createTrail } from './restore.mjs';
 import { createSearch } from './search.mjs';
 import { mountSearchbar } from './searchbar.mjs';
@@ -204,7 +204,7 @@ const openModeOf = path => {
   const category = openCategoryOf(path);
   return (persisted.openWith[category] ?? (category === OpenCategory.DOCUMENT ? OpenWith.CODA : OpenWith.INLINE)) === OpenWith.CODA ? OpenWith.CODA : OpenWith.INLINE;
 };
-const canOpenExternal = path => typeof coda.open === 'function' && model.ready && Boolean(model.root?.path) && servedType(path) !== null;
+const canOpenExternal = path => typeof coda.open === 'function' && model.ready && Boolean(model.root?.path) && canOpenInCoda(path);
 // 打开文件的统一入口（目录树、图标视图和搜索结果）：按该类别当前默认习惯决定走 Coda 还是页内预览；
 // 走 coda.open 时复用单在途串行队列与本机流式服务，失败静默退回页内预览，成功时不设 model.opened（不记入 setState.opened）。
 // select 为假（搜索结果）时走页内预览只设预览，不改 model.selected。

@@ -209,6 +209,25 @@ button.icon svg { display: block; }
 .md th { font-weight: 600; background: var(--coda-secondary-background, rgba(127,127,127,.08)); }
 .md .md-img { display: block; max-width: 100%; height: auto; margin: .6em 0; border-radius: var(--coda-radius, 6px); }
 .md .md-img-fallback { font-size: .92em; }
+.md mark { padding: 0 2px; border-radius: 3px; background: color-mix(in srgb, var(--coda-accent, #0a84ff) 20%, transparent); color: inherit; }
+.md kbd { padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: var(--coda-radius, 6px); background: var(--coda-secondary-background, rgba(127,127,127,.08)); font: .88em var(--coda-mono, ui-monospace, Menlo, monospace); }
+.md figure { margin: .8em 0; }
+.md figcaption { margin-top: .35em; font-size: .92em; color: var(--coda-secondary, #6e6e73); }
+.md details { margin: .6em 0; }
+.md summary { cursor: pointer; }
+.md details > :not(summary) { margin-left: 1.2em; }
+.md dl { margin: .65em 0; }
+.md dt { font-weight: 600; margin-top: .5em; }
+.md dd { margin: .15em 0 .15em 1.6em; }
+.md .md-chip { display: inline-block; padding: 1px 8px; border: 1px solid var(--line); border-radius: var(--coda-radius, 6px); background: var(--coda-secondary-background, rgba(127,127,127,.08)); font-size: .92em; }
+.md .md-align-left { text-align: left; }
+.md .md-align-center { text-align: center; }
+.md .md-align-right { text-align: right; }
+.md .md-landmark { padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--coda-radius, 6px); }
+.md .md-landmark > summary { color: var(--coda-secondary, #6e6e73); }
+.md .md-img-box { display: inline-block; max-width: 100%; vertical-align: top; }
+.md .md-note { margin: .8em 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--coda-radius, 6px); font-size: .92em; }
+.md .md-note-action { margin-left: 8px; padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--coda-radius, 6px); background: var(--coda-secondary-background, rgba(127,127,127,.08)); color: var(--coda-accent, #0a84ff); font: inherit; cursor: pointer; }
 .coda-ios .md { padding: 12px 14px 24px; } /* 底部的安全区归 .pbody，这里不再叠一份 */
 .media { display: grid; place-items: start center; padding: 12px; }
 .media video { width: 100%; max-height: 70vh; border-radius: var(--coda-radius, 6px); background: #000; }

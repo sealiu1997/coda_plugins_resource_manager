@@ -3,11 +3,12 @@ import { h } from './dom.mjs';
 import { createFind } from './find.mjs';
 import { formatDuration, formatSize } from './format.mjs';
 import { HIGHLIGHT_LIMIT, appendAll, hasLongLine, highlight } from './highlight.mjs';
+import { decodeHtmlBytes, renderHtml } from './html.mjs';
 import { icon, iconFor } from './icons.mjs';
 import { languageOf } from './languages.mjs';
 import { renderMarkdown } from './markdown.mjs';
 import { createModes } from './modes.mjs';
-import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, TEXT_LIMIT, imageType, mediaOf, openCategoryOf, serviceUrl } from './protocol.mjs';
+import { ContentKind, EntryKind, ErrorCode, IMAGE_LIMIT, OpenCategory, TEXT_LIMIT, imageType, mediaOf, openCategoryOf, serviceUrl } from './protocol.mjs';
 import { clippedRichSelection, clippedSelection, linesOf } from './selection.mjs';
 import { mayBeText, offersTextView } from './model3d.mjs';
 import { mountViewer } from './viewer3d.mjs';
@@ -54,6 +55,17 @@ export async function readFile(read, { prev = null, onProgress = () => {}, cance
   throw Object.assign(error, { code: ErrorCode.IO });
 }
 
+// 渲染出的正文里有没有不折行的超长行：代码块（pre）和表格单元格（表格是 max-content 宽，格子里的字不折行）。
+function hasLongCode(root) {
+  const todo = [root];
+  while (todo.length) {
+    const node = todo.pop();
+    if ((node.tagName === 'PRE' || node.tagName === 'TD' || node.tagName === 'TH') && hasLongLine(node.textContent)) return true;
+    for (const kid of node.children ?? []) todo.push(kid);
+  }
+  return false;
+}
+
 const formatTime = ms => new Date(ms).toLocaleString('zh-CN', { hour12: false });
 export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
 
@@ -68,7 +80,8 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // selectionMenu(event, { path, text, startLine, endLine })：给了就接管正文里选中文字的右键（只有 Mac 传）；预览不知道菜单里是什么。
 // 选区为空、或裁到正文里之后为空时不接管，走系统默认。内容和行号在这里取好，交出去之后和选区无关。
 // media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
-// Markdown 正文先挂载，渲染结果里有本地图片才取口令，到了再给还没地址的图片补 src（第 27.2 节）；口令任务和图片回调由「正文版本」持有，换了正文或退场就作废。
+// HTML（html、htm、xhtml）读到字节后先 decodeHtmlBytes 解码，写回 result.text，预览和源码共用；解码失败退回源码（用读取时的 UTF-8 文本）并提示。
+// Markdown 和 HTML 正文先挂载，渲染结果里有本地图片才取口令，到了再给还没地址的图片补 src（第 27.2 节）；口令任务和图片回调由「正文版本」持有，换了正文或退场就作废。
 // 不传 media 就一律走分块读取（直接挂载预览的测试用）。
 // canOpenInCoda(path)、openInCoda(path)：「不预览」提示里的「在 Coda 中打开」按钮；canOpenInCoda 缺省为假，不放按钮，动作与行菜单的同名项一致，由页面给。
 // 3D 模型（第 21 节）：mountModel 挂查看器（默认 viewer3d.mjs，测试可换）。gltf、obj、stl、ply 的内容是文本时头部有「3D / 文本」切换，文本走分块读取。
@@ -176,7 +189,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
     const lines = isText ? `${lineCount(result.text)} 行` : '';
     const title = `修改于 ${formatTime(result.mtimeMs)}`;
-    const commit = (note, pending = null, gutter = null) => {
+    const commit = (note, pending = null, gutter = null, hover = '') => {
       bodyVersion++;
       lastResult = result;
       textShown = isText;
@@ -185,25 +198,33 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if (!isText) find.close(); // 图片、二进制不能查找；源码和富文本预览都能
       shown = { size: result.size, mtimeMs: result.mtimeMs };
       // 元信息：目录 · 行数 · 大小；根目录下的文件没有目录，非文本没有行数。修改时间放进 title。
-      setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), title);
+      setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), hover ? `${title}\n${hover}` : title);
     };
     // 有长行：上色按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行（源码和富文本里不折行的代码块都一样），所以只计数、导航、滚动。
     const longLine = isText && hasLongLine(result.text);
     const truncated = result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '';
-    let fellBack = false;
-    if (isText && modes.isRichPreview()) {
+    let fellBack = isText && modes.isRichPreview() && result.decodeFailed === true;
+    if (isText && modes.isRichPreview() && !fellBack) {
       try {
         const mine = bodyVersion + 1, images = []; // mine：提交时正文版本加一后就是这一份
         const resolveImage = media ? (mediaToken ? rel => serviceUrl(mediaToken, rel) : () => null) : null;
-        const md = renderMarkdown(result.text, {
+        const options = {
           basePath: path, resolveImage, onOpenExternal: openExternal, onOpenRelative: openRelative, onCopyEmail: copyEmail ?? (email => copy(email)),
           isCurrent: () => bodyVersion === mine,
-          onLocalImage: entry => { if (entry.img.getAttribute('src') === null) images.push(entry); },
-        });
+        };
+        let md, note = truncated, hover = '', plainOnly = longLine;
+        if (openCategoryOf(path) === OpenCategory.HTML) {
+          const page = renderHtml(result.text, { ...options, onViewSource: () => { if (bodyVersion === mine) setMode('source'); } });
+          md = page.node;
+          images.push(...page.images.filter(({ img }) => img.getAttribute('src') === null));
+          note = [truncated, '静态预览'].filter(Boolean).join('，');
+          hover = ['静态预览：不运行脚本，不加载外部资源，样式和布局已简化，完整内容切到「源码」看。', page.title && `标题：${page.title}`].filter(Boolean).join('\n');
+          plainOnly = hasLongCode(md); // 不折行的只有代码块；HTML 源码常是压成一行的，不能按源码判断
+        } else md = renderMarkdown(result.text, { ...options, onLocalImage: entry => { if (entry.img.getAttribute('src') === null) images.push(entry); } });
         if (selectionMenu) md.addEventListener('contextmenu', event => onSelect(event, md, false));
         revoke(false);
         body.replaceChildren(md);
-        commit(truncated, { el: md, text: null, rich: true, highlight: !longLine });
+        commit(note, { el: md, text: null, rich: true, highlight: !plainOnly }, null, hover);
         if (images.length > 0) supplyImages(mine, images);
         return;
       } catch { fellBack = true; }
@@ -359,6 +380,9 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       });
       if (!mark() || result.cancelled) return;
       if (result.same) return setStale(null);
+      if (result.kind === ContentKind.TEXT && openCategoryOf(path) === OpenCategory.HTML) {
+        try { result.text = decodeHtmlBytes(result.bytes, result.truncated); } catch { result.decodeFailed = true; }
+      }
       // 刷新留在原位；整页重读（打开、重载、重试）没有要恢复的位置就明确从头开始，不靠清空正文后滚动条自己归零。
       const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });
       modes.content(result.kind === ContentKind.TEXT);

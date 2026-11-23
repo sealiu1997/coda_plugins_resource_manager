@@ -64,6 +64,30 @@ test('buildRichIndex：块、<br>、单元格的边界各占一个虚拟字符�
   assert.deepEqual(findRich(index, '10').list, [[9, 11]]);
 });
 
+test('共用块标签（renderHtml 和 Markdown 都会输出的）：dl/dt/dd、figure/figcaption、caption、列表和表格各层都是边界，匹配不跨过，选区提取保留换行', async t => {
+  await withDom(t);
+  const cases = [
+    ['dl', el('dl', null, el('dt', null, 'Alpha'), el('dd', null, 'Beta')), 'Alpha', 'Beta'],
+    ['figure', el('figure', null, el('img'), '图', el('figcaption', null, 'Caption')), '图', 'Caption'],
+    ['figcaption 相邻 figure', el('div', null, el('figure', null, 'Pic'), el('figcaption', null, 'Cap')), 'Pic', 'Cap'],
+    ['caption', el('table', null, el('caption', null, 'Title'), el('tbody', null, el('tr', null, el('td', null, 'Cell')))), 'Title', 'Cell'],
+    ['ul', el('div', null, el('ul', null, 'Inner'), 'Tail'), 'Inner', 'Tail'],
+    ['ol', el('div', null, el('ol', null, 'Inner'), 'Tail'), 'Inner', 'Tail'],
+    ['thead/tbody/tfoot', el('table', null, el('thead', null, 'Head'), el('tbody', null, 'Body'), el('tfoot', null, 'Foot')), 'Head', 'Body'],
+  ];
+  for (const [name, root, first, second] of cases) {
+    const index = buildRichIndex(root);
+    assert.deepEqual(findRich(index, `${first}${second}`).list, [], `${name}：搜「${first}${second}」零命中`);
+    assert.equal(findRich(index, first).list.length, 1, name);
+    const sel = fakeSelection(t, root), all = root.textContent;
+    sel.select(root, 0, all.length);
+    assert.match(clippedRichSelection(root).text, new RegExp(`${first}\\n+(?:.*\\n)?${second}`), `${name}：选区提取保留换行`);
+  }
+  const dl = el('dl', null, el('dt', null, 'Alpha'), el('dd', null, 'Beta')), sel = fakeSelection(t, dl);
+  sel.select(dl, 0, 9);
+  assert.equal(clippedRichSelection(dl).text, 'Alpha\nBeta');
+});
+
 test('buildRichIndex：匹配可以跨行内节点（半句加粗）；顶层文本记下自己的下标', t => {
   const strong = el('strong', null, '加粗');
   const root = el('div', null, '前文', strong, el('p', null, '半句', el('em', null, '斜'), '尾'));

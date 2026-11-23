@@ -9,7 +9,11 @@ import { languageOf } from './languages.mjs';
 import { hasControl, joinRelative, mediaOf, splitRelative } from './protocol.mjs';
 
 // 块标签和单元格标签：块的边界对应换行，单元格的边界对应制表符，选区提取要分得开；查找里两种边界一样，都是匹配不能跨过的地方。
-export const BLOCK_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LI', 'BLOCKQUOTE', 'PRE', 'TR', 'HR', 'DIV', 'DETAILS', 'SUMMARY']);
+// 要覆盖 Markdown 和 renderHtml 能输出的所有块级元素（列表、定义列表、图文、表格的各层）。
+export const BLOCK_TAGS = new Set([
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'BLOCKQUOTE', 'PRE', 'HR', 'DIV', 'DETAILS', 'SUMMARY',
+  'UL', 'OL', 'LI', 'DL', 'DT', 'DD', 'FIGURE', 'FIGCAPTION', 'TABLE', 'CAPTION', 'THEAD', 'TBODY', 'TFOOT', 'TR',
+]);
 export const CELL_TAGS = new Set(['TD', 'TH']);
 
 // 标记富文本预览中不属于正文的操作控件（如「复制邮箱」按钮）：提取正文（标题锚点、选区复制/添加到聊天）和查找建索引时共用此区分。

@@ -4,6 +4,8 @@
 // 3) 正对照：合法的本地图片必须发起请求并显示，允许的 data: 位图必须显示，<p>正文</p> 原样留着，伪造的 data-rich-ui 被丢掉、内容仍能查找；
 // 4) 两种 CSP 各跑一遍：宿主等价 CSP（正常功能不受影响），不加 CSP（抓「错误地写进输出、只是被 CSP 挡住」的泄漏）；
 // 5) 性能：1 MiB、约 10 万节点，从解析到首次布局不超过 500 ms；对渲染结果建查找索引、找到第一处不超过 300 ms。
+// 6) 接入页（真实的 view/preview.mjs 和 style.css，不加 CSP）：宽窗口和窄窗口下正文铺满、表格和代码块不溢出；
+//    GBK 页面在预览和源码里都不乱码，开着查找来回切换，两边都找得到中文，高亮落在当前显示的那份正文里。
 // 被测模块（view/html.mjs、view/find.mjs 和它们的静态依赖）读出来合成一个内联模块写进测试页，不从服务器加载脚本；
 // 服务器只做「流式服务」的替身：统计探针路径、合法图片路径和其余一切请求。不是产品代码；自己起服务、Chrome 和临时目录，用完全部清理。
 // 用法：node test/harness/html-preview.mjs [Chrome 的路径]（也认 CHROME_PATH）；任何一条不符，退出码非 0。
@@ -320,6 +322,106 @@ const pageHtml = (bundle, css, config) => `<!doctype html><html><head><meta char
 ${scriptSafe(`${bundle}\n(${pageMain.toString()})(__MODULES__, ${JSON.stringify(config)});`)}
 </script></body></html>`;
 
+// ---- 接入页：真实的 preview.mjs 和 style.css ----
+
+const layoutPageHtml = `<!doctype html><html><head><meta charset="utf-8"><title>html-preview 接入页</title><link rel="stylesheet" href="/view/style.css"></head>
+<body style="margin:0;height:800px;display:flex;flex-direction:column">
+<div id="p" class="preview" style="flex:1;min-height:0"></div>
+<script type="module">
+import { mountPreview } from '/view/preview.mjs';
+let preview = null;
+const q = selector => document.querySelector(selector);
+window.__L = {
+  async open(name, b64) {
+    preview?.close();
+    const size = atob(b64).length;
+    preview = mountPreview(q('#p'), { read: async () => ({ kind: 'text', data: b64, offset: 0, size, mtimeMs: 1, eof: true }), copy: () => {} });
+    await preview.open(name);
+  },
+  find(term) {
+    if (!preview.findOpen) preview.openFind();
+    const field = q('.finput');
+    field.value = term;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  },
+  mode(label) { [...document.querySelectorAll('.pmode button')].find(button => button.textContent === label).click(); },
+  // 查找的高亮：数量、第一处的文字、它落在预览（.md）还是源码（.text）里。
+  highlight() {
+    const ranges = [...(CSS.highlights.get('find') ?? [])], first = ranges[0];
+    const host = first?.startContainer.parentElement;
+    return { count: ranges.length, text: first?.toString() ?? null, where: host?.closest('.md') ? 'preview' : host?.closest('.text') ? 'source' : null, counter: q('.fcount')?.textContent ?? null };
+  },
+  measure() {
+    const body = q('.pbody'), md = q('.md'), cs = getComputedStyle(body), box = el => el.getBoundingClientRect();
+    const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight), wraps = [...document.querySelectorAll('.md-table-wrap')], code = q('.md-code');
+    return {
+      body: body.clientWidth - pad, bodyScroll: body.scrollWidth, bodyClient: body.clientWidth, md: box(md).width, mdRight: box(md).right,
+      wraps: wraps.map(wrap => ({ right: box(wrap).right, width: wrap.clientWidth, scroll: wrap.scrollWidth, table: box(wrap.querySelector('table')).width })),
+      code: { right: box(code).right, width: box(code).width, scroll: code.scrollWidth, client: code.clientWidth },
+    };
+  },
+  text: () => q('.md')?.textContent ?? null,
+  source: () => q('.text')?.textContent ?? null,
+  meta: () => q('.pmeta').textContent,
+};
+</script></body></html>`;
+
+const bytesOf = text => Buffer.from(text).toString('base64');
+const WIDE_PAGE = bytesOf(`<h1>标题</h1><p>正文 ${'a'.repeat(300)}</p>
+<table><tr><th>名称</th><th>数量</th><th>备注</th></tr><tr><td>苹果</td><td>3</td><td>新鲜</td></tr></table>
+<table><tr>${Array.from({ length: 12 }, (_, i) => `<th>列${i}</th>`).join('')}</tr><tr>${Array.from({ length: 12 }, (_, i) => `<td>单元格内容很长的一格${i}</td>`).join('')}</tr></table>
+<pre>const padding = '${'x'.repeat(400)}';</pre>`);
+// 「中文」「编码」的 GBK 字节（Node 没有 GBK 编码器）。
+const GBK_PAGE = Buffer.concat([Buffer.from('<meta charset="gbk"><p>'), Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), Buffer.from('</p><p>'), Buffer.from([0xb1, 0xe0, 0xc2, 0xeb]), Buffer.from('</p>')]).toString('base64');
+
+async function runLayout(port) {
+  const nav = await send('Page.navigate', { url: `http://127.0.0.1:${port}/page/layout` });
+  if (nav.errorText) throw new Error(`接入页打不开：${nav.errorText}`);
+  await until('window.__L !== undefined', '接入页启动（真实的 preview.mjs 加载成功）');
+  const near = (actual, expected, what) => assert.ok(Math.abs(actual - expected) < 1, `${what}：${actual} 应约等于 ${expected}`);
+
+  for (const width of [1400, 360]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.__L.open('docs/wide.html', ${JSON.stringify(WIDE_PAGE)})`);
+    await until(`document.querySelector('.md') !== null`, `${width} 宽：预览出现`);
+    const m = await evaluate('window.__L.measure()');
+    const label = `${width} 宽`;
+    near(m.md, m.body, `${label}：正文铺满预览区`);
+    assert.ok(m.bodyScroll <= m.bodyClient, `${label}：页面没有横向溢出（${m.bodyScroll} > ${m.bodyClient}）`);
+    for (const [i, wrap] of m.wraps.entries()) assert.ok(wrap.right <= m.mdRight + 0.5, `${label}：第 ${i + 1} 张表没有超出正文`);
+    assert.ok(m.code.right <= m.mdRight + 0.5, `${label}：代码块没有超出正文`);
+    assert.ok(m.code.scroll > m.code.client, `${label}：长代码行在代码块自己的滚动区里`);
+    assert.ok(m.wraps[1].scroll > m.wraps[1].width, `${label}：宽表格在自己的滚动区里`);
+    if (width === 1400) {
+      assert.ok(m.md > 1300, `${label}：正文宽度 ${m.md}`);
+      near(m.wraps[0].table, m.wraps[0].width, `${label}：窄表格铺满`);
+      near(m.code.width, m.md - 32, `${label}：代码块随窗口变宽`);
+    } else assert.ok(m.wraps[0].scroll <= m.wraps[0].width, `${label}：窄表格不需要滚动`);
+    check(`接入页 ${label}：正文铺满、表格和代码块不溢出`, { md: fixed(m.md), body: fixed(m.body), 窄表: fixed(m.wraps[0].table), 宽表滚动: [m.wraps[1].width, m.wraps[1].scroll], 代码滚动: [m.code.client, m.code.scroll] });
+  }
+
+  // 编码联动：GBK 页面，预览和源码都不乱码；开着查找来回切换。
+  await send('Emulation.setDeviceMetricsOverride', { width: 800, height: 800, deviceScaleFactor: 1, mobile: false });
+  await evaluate(`window.__L.open('docs/gbk.html', ${JSON.stringify(GBK_PAGE)})`);
+  await until(`document.querySelector('.md') !== null`, 'GBK 页面预览出现');
+  const shown = await evaluate('window.__L.text()');
+  assert.equal(shown, '中文编码', 'GBK 页面的预览文字');
+  assert.ok((await evaluate('window.__L.meta()')).endsWith('静态预览'), '元信息写「静态预览」');
+  await evaluate(`window.__L.find('中文')`);
+  await until(`window.__L.highlight().where === 'preview' && window.__L.highlight().counter === '1/1'`, '预览里找到中文');
+  assert.equal((await evaluate('window.__L.highlight()')).text, '中文');
+  await evaluate(`window.__L.mode('源码')`);
+  await until(`window.__L.highlight().where === 'source' && window.__L.highlight().counter === '1/1'`, '源码里找到中文');
+  const source = await evaluate('window.__L.source()');
+  assert.equal(source, '<meta charset="gbk"><p>中文</p><p>编码</p>', 'GBK 页面的源码文字');
+  assert.equal((await evaluate('window.__L.highlight()')).text, '中文');
+  await evaluate(`window.__L.mode('预览')`);
+  await until(`window.__L.highlight().where === 'preview' && window.__L.highlight().counter === '1/1'`, '切回预览又找到中文');
+  assert.ok(!shown.includes('\ufffd') && !source.includes('\ufffd'), '没有乱码字符');
+  check('接入页：GBK 页面预览和源码文字一致、不乱码；开着查找来回切换，两边都找到「中文」，高亮落在当前显示的正文里');
+  assert.deepEqual(thrown, [], '接入页没有未接住的异常');
+}
+
 // ---- XSS 语料 ----
 
 // 每条：{ id, group, html, expect?, legit? }。URL 里的探针标记是 PROBE-<id>~，服务器按它归到这一条；任何一次请求都算泄漏。
@@ -479,6 +581,14 @@ function startServer(getPage) {
       return send(200, 'text/html; charset=utf-8', getPage.html(page[1]), csp ? { 'content-security-policy': csp } : {});
     }
     if (pathname === '/favicon.ico') return send(404, 'text/plain', 'no');
+    if (pathname === '/page/layout') return send(200, 'text/html; charset=utf-8', getPage.layout());
+    const view = /^\/view\/((?:[\w-]+\/)*[\w.-]+\.(?:mjs|js|css))$/.exec(pathname); // 接入页直接加载真实的 view/ 文件
+    if (view && !view[1].includes('..')) {
+      return readFile(path.join(viewDir, view[1])).then(
+        body => send(200, view[1].endsWith('.css') ? 'text/css' : 'text/javascript', body),
+        () => send(404, 'text/plain', 'not found'),
+      );
+    }
     const probe = PROBE_RE.exec(raw);
     if (probe) { bump(stats.probes, probe[1]); return send(200, 'image/png', PNG_BYTES); } // 泄漏的请求也答 200：让泄漏看得见
     if (pathname.startsWith('/img/legit/')) {
@@ -625,6 +735,7 @@ try {
   server = startServer({
     csp: mode => (mode === 'host' ? hostCsp(origin) : null),
     html: mode => pageHtml(bundle, css, { mode, origin, basePath: BASE_PATH }),
+    layout: () => layoutPageHtml,
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const port = server.address().port;
@@ -666,6 +777,7 @@ try {
   const done = [];
   for (const mode of MODES) done.push(await runMode(mode, cases, port));
   assert.deepEqual(thrown, [], '页面没有未接住的异常');
+  await runLayout(port);
   exitCode = 0;
   console.log(`html-preview 验收通过：语料 ${cases.length} 条（${[...groups].join('、')}），${done.map(d => `${d.mode}：解析到首次布局 ${fixed(d.render)} ms、查找 ${fixed(d.found)} ms`).join('；')}`);
 } catch (error) {
