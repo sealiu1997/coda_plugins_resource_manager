@@ -1758,3 +1758,136 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
 ### 25.4 已知问题
 
 见 `docs/backlog.md` 的「`0.9.x` 留下的问题」：打开方式、预览/源码选择的保存、相对链接出错时的处理、`html` 供应方式的安全评估（待真机验证）、3D 预览的若干样式和资源问题、Markdown 评审余项等。
+
+## 26. `0.9.8`（草案）：预览里直接查找，rtf 改回页内
+
+状态：设计草案，待评审和作者定。来源：作者在 `0.9.7` 真机验收后提出（⌘F 不想切到源码；rtf 交给 Coda 只显示源码）。
+
+### 26.1 先拆模式状态（`docs/backlog.md` S4）
+
+- `view/preview.mjs` 里「预览 / 源码」和「3D / 文本」两组模式的状态（`modeGroup`、`mode`、`offersText`、`lastResult`、`mdToken`）交织在一起，`0.10.0` 还要再加 HTML 一组。先把它抽成一个小模块（暂名 `view/modes.mjs`）：组的定义（哪些文件有哪一组、默认值）、切换、换文件时重置、后台刷新时保持、重载时回到默认，全写在这一处。
+- 这一步是纯重构，行为不变，现有测试原样通过就是验收。
+
+### 26.2 富文本预览里的查找
+
+- **入口**：Markdown（以及 `0.10.0` 的 HTML）在「预览」时，⌘F（Mac 侧栏和独立窗口）、iPhone「⋯」里的「查找」直接在预览里打开查找条，**不再切到源码**。已在「源码」时照旧。
+- **找什么**：渲染出来的文字，不是源码。复用 `view/find.mjs` 的 `findMatches`、`buildIndex`、`rangesFor`：对富文本容器建文本节点索引，匹配可以跨行内节点（如半句加粗），用 Range 和 CSS Highlight API 标出来。
+- **块边界**：索引在块级元素（段落、标题、列表项、表格单元格、代码块等）之间插一个不可匹配的分隔，匹配不跨块；块内软换行按空格算。
+- **不参与查找**：插件自己加的界面元素（`data-rich-ui`，如「复制邮箱」按钮）、图片占位文字之外的不可见内容。
+- **折叠内容**：匹配落在收起的 `<details>` 里时，导航到它就展开那个 `<details>`（HTML 预览会用到，Markdown 暂时没有折叠）。
+- **切换模式**：查找条开着时在「预览」和「源码」之间切换，查找条保持打开，用同一个词在新正文里重新找，当前位置回到第一处。
+- **上限和退路**：同第 18.6 节（最多 10000 处、分批标记；不支持 Highlight API 时只计数、导航、滚动）。
+
+### 26.3 rtf 改回页内文本
+
+- `rtf` 从 `document` 类移到 `text` 类：默认页内按文本显示，和图标表里的种类（文本）一致。Coda 对 RTF 只显示源码，交给它没有好处。
+- 流式服务仍能供应 `rtf`（改按 `text/plain; charset=utf-8`），所以行菜单里的「在 Coda 中打开」切换照旧可用（和 `txt` 一样）。
+- 之前把 `document` 类记成某种方式的用户，`rtf` 改跟 `text` 类的记忆，不迁移。
+
+### 26.4 实施
+
+- 三块：① 模式状态模块（纯重构）；② 预览内查找 + rtf；③ 文档和版本号。每块配回归测试；② 用 `test/harness/markdown-layout.mjs` 在真实 Chrome 里验证跨节点高亮。
+
+## 27. `0.10.0`（草案）：页内 HTML 预览
+
+状态：设计草案，待评审和作者定。作者 2026-11-23 定方向：把 HTML 安全地转成富文本，风格和 Markdown 预览一致，不执行脚本。
+
+### 27.1 为什么，以及调研结论
+
+- Coda 自己的文件预览对 HTML 只显示源码（上游 coda-console/coda#2533 已关闭，结论是 Markdown 渲染、HTML 显示源码），上游不会替插件渲染，只能自己做。
+- 做过一次性原型（不在仓库里），拿本机真实 HTML 各截了「原样」和「清洗后」两张图：
+  - **静态文档型**（报告导出、保存下来的网页、表格多的说明页）：正文、列表、表格基本都在，可读；丢的是卡片、配色、侧栏这类布局。
+  - **CSS 布局重的**（应用界面设计稿、仪表盘）：变成一长摞文字，本该靠样式隐藏的面板也会摊开。
+  - **脚本生成内容的**（body 几乎是空的，靠 JS 画）：几乎空白，或只剩「Loading...」。
+- **备选：把原 HTML 放进不许跑脚本的沙箱子框架**（保留作者的 CSS）。原型在 Chrome 和仿宿主的 WKWebView 里能工作，但宿主现在不允许插件页面再开子框架，要上游改契约；而且外层读不到框架里的内容，页内查找、选中加到聊天、链接拦截都接不上，高度和 iPhone 上的滚动也要另想。所以**这一版不走这条**；以后如果要「按原样看」，另提上游需求。
+- 两条路都救不了脚本生成的页面，只能提示。
+- 性能（原型，Mac）：1 MiB、约 10 万个节点的 HTML，解析加清洗重建加首次布局，Chrome 约 156 毫秒、WKWebView 约 198 毫秒。iPhone 未测。
+
+### 27.2 流程
+
+1. **读取**：同文本预览（最多 `TEXT_LIMIT` 1 MiB，超过的元信息行写「只显示前 1 MiB」；被截断的 HTML 由解析器自然补全）。
+2. **解码**：BOM 优先；没有 BOM 就按 latin1 预扫前 1024 字节找 `<meta charset>` 或 `http-equiv` 里的 charset，用 `TextDecoder` 按该标签解码（WebKit 支持 gbk、gb18030、big5、shift_jis、euc-jp、euc-kr 等）；标签不认识或没有就按 UTF-8。截在多字节字符中间时沿用现有的末尾修剪。
+3. **解析**：浏览器自带的 `DOMParser().parseFromString(text, 'text/html')`。解析出的文档没有浏览上下文：脚本不执行，资源不加载。
+4. **清洗重建**：显式栈迭代遍历解析出的树，按 27.3 的表**只用 `createElement`、`createTextNode`、`textContent` 在页面里重新建节点**。不 `importNode`、不克隆、不用 `innerHTML`、不把解析结果序列化再解析（这样不存在「序列化后再解析变形」一类的 XSS）。URL 一律用 `getAttribute` 读原文，不读 `.href`、`.src`（它们会按插件页面或 `<base>` 解析）。相邻文字先拼成一个字符串再建一个文本节点（WebKit 上大量相邻文本节点逐个追加很慢，原型实测 5 万个要 3 秒以上）。
+5. **挂载**：放进和 Markdown 共用的富文本容器（`.md`，查找、选中加到聊天、复制共用），`<title>` 写进元信息行。
+
+### 27.3 策略表
+
+**元素**（表外的未知元素：去掉标签、保留子内容）：
+
+| 处理 | 元素 |
+|---|---|
+| 原样保留（只带下表的属性） | `h1`–`h6`、`p`、`blockquote`、`pre`、`ul`、`ol`、`li`、`dl`、`dt`、`dd`、`table`、`caption`、`thead`、`tbody`、`tfoot`、`tr`、`th`、`td`、`hr`、`br`、`details`、`summary`、`figure`、`figcaption`、`a`、`img`、`strong`、`b`、`em`、`i`、`s`、`del`、`strike`、`u`、`ins`、`code`、`kbd`、`samp`、`var`、`sub`、`sup`、`mark`、`small`、`abbr`、`q`、`cite`、`dfn`、`time` |
+| 换成 `div`（保留子内容） | `div`、`section`、`article`、`main`、`header`、`footer`、`nav`、`aside`、`address`、`center`、`hgroup`、`search`、`form`、`fieldset`（`legend` 换成 `p`） |
+| 连内容一起丢 | `script`、`style`、`template`、`head` 里除 `title` 外的一切、`link`、`meta`、`base`、`map`、`area`、`input`、`select`、`textarea`、`option`、`datalist`、`output`、`progress`、`meter`、`dialog`、`portal` |
+| 换成占位文字 | `iframe`、`frame`、`frameset`、`object`、`embed`、`applet` →「[嵌入内容]」；`svg` →「[图形]」；`canvas` →「[画布]」；`video`、`audio` →「[视频]」「[音频]」（带文件名时写上）；`math` → 有 TeX 注释（`annotation[encoding="application/x-tex"]`）就按行内代码显示 TeX，否则显示它的文字 |
+| 只留文字 | `button`、`label` |
+| 显示内容 | `noscript`（我们不跑脚本，按浏览器关了脚本时的样子显示） |
+| 整个跳过 | 带 `hidden` 属性或 `aria-hidden="true"` 的元素（后者顺带去掉 KaTeX 等公式的重复视觉副本） |
+
+`picture` 取里面的 `img`，`source` 丢弃。
+
+**属性**（表外一律丢弃，包括 `style`、`class`、`on*`、`data-*`、`srcset`、`name` 以外的一切）：
+
+| 属性 | 用在 | 处理 |
+|---|---|---|
+| `href` | `a` | 按下面的 URL 表 |
+| `src`、`alt`、`title`、`width`、`height` | `img` | `src` 按 URL 表；宽高只认正整数，且不超过 4096 |
+| `id`、`a` 上的 `name` | 任意 | 加 `md-` 前缀（与 Markdown 标题共用一套前缀和重名规则），页内锚点先加前缀再查 |
+| `colspan`、`rowspan` | `td`、`th` | 正整数，分别不超过 100、1000 |
+| `align` | `p`、`div`、`td`、`th`、`h1`–`h6`、`img` | 只认 `left`、`center`、`right`，换成插件自己的对齐类 |
+| `start`、`reversed` | `ol` | `start` 为整数 |
+| `open` | `details` | 保留 |
+| `title` | 任意 | 保留文字 |
+| `lang`、`dir` | 任意 | 只认合法的语言标签和 `ltr`、`rtl`、`auto` |
+
+**URL**（链接、图片的总规则与 Markdown 相同，抽成共用模块，见 27.6）：
+
+| 写法 | 链接 `a[href]` | 图片 `img[src]` |
+|---|---|---|
+| `http`、`https` | 交给 `coda.open` | 占位「[外链图片：说明]」 |
+| `mailto` | 「复制邮箱」按钮 | 占位 |
+| `#锚点` | 页内滚动 | 占位 |
+| 工作目录内的相对路径 | 同 Markdown（侧栏按那一类的打开方式打开，独立窗口新开一个） | 经流式服务显示 |
+| `data:image/(png\|jpeg\|gif\|webp);base64,` | 降级成文字 | **显示**（待作者定，27.7） |
+| 其余（`javascript:`、`vbscript:`、`file:`、其他 `data:`、越出工作目录、绝对路径） | 降级成文字 | 占位 |
+
+### 27.4 上限和退路
+
+- 输出最多 10 万个节点、嵌套最多 256 层（更深的内容并入第 256 层）；到上限就停止并在正文末尾写「内容太多，后面没有显示，可以切到源码看」。
+- **几乎为空的页面**：清洗后可见文字少于 200 字且原文有 `<script>` 时，正文顶部写「这个页面的内容主要由脚本生成，富文本预览不运行脚本，所以看不到」，并给一个「看源码」按钮。
+- **元信息行**固定写一句「不运行脚本，不套用页面自己的样式」，提醒排版会和浏览器里不同。
+- 解码、解析或清洗抛错：退回源码模式并提示，不留白屏。
+
+### 27.5 界面与打开方式
+
+- 新类别 `html`（`html`、`htm`、`xhtml`），默认页内「预览」，头部「预览 / 源码」切换，规则同 Markdown（第 24.2 节；状态由第 26.1 节的模块统一管）。
+- 查找、选中加到聊天、复制同 Markdown 预览（第 26.2 节）。后台刷新、图片口令沿用同 Markdown。
+- **「在 Coda 中打开」**：Coda 对 HTML 只显示源码，这个切换对 HTML 没有意义，`html` 类不提供（待作者定，27.7）。
+- **X1**（`docs/backlog.md`）：流式服务把 `html`、`htm`、`xhtml`、`xml`、`plist` 改按 `text/plain; charset=utf-8` 供应，所有回答加 `X-Content-Type-Options: nosniff`。没有任何地方需要它们按网页类型供应（待作者定，27.7）。
+
+### 27.6 模块
+
+- `view/rich.mjs`（新，先做）：从 `view/markdown.mjs` 抽出链接、图片、锚点、「复制邮箱」的策略和建节点函数（`safeLinkTarget`、`resolveRelativePath`、前缀和重名规则等），Markdown 和 HTML 共用，安全策略只有一处。
+- `view/html.mjs`（新）：解码、解析、清洗重建，返回和 `renderMarkdown` 同样的结构。清洗器对「解析出的树」只用 `nodeType`、`tagName`、`getAttribute`、`childNodes` 这几样，方便测试时喂假树。
+- `view/protocol.mjs`：`OpenCategory.HTML`、`openCategoryOf`；`TEXT_SERVED_TYPES` 按 27.5 改。
+- `view/preview.mjs`、`view/modes.mjs`：接上新的一组模式。
+
+### 27.7 待作者定
+
+| 问题 | 选项 | 倾向 |
+|---|---|---|
+| 解析器 | 甲：浏览器自带 `DOMParser`，零依赖，但 Node 单测里没有它，安全用例要在真实浏览器的 harness 里跑；乙：原样复制一个 JS 解析库进 `view/vendor/`（像 three.js 那样），Node 里也能测，但多一份依赖和体积 | 甲。我们只重建、不序列化，解析器差异不构成安全问题；用 harness 兜住 |
+| `data:` 图片 | 显示位图（png、jpeg、gif、webp）；或一律占位 | 显示。自包含导出的报告常用它；页面的安全策略本来就放行 `data:` 图片，按图片渲染不执行任何东西。注意它们占在 1 MiB 文本上限里，大图多的页面会被截断 |
+| HTML 的「在 Coda 中打开」和 X1 | 去掉切换项，并把 html/xml 改按纯文本供应、加 `nosniff`；或都保持现状 | 都改 |
+| 版本安排 | `0.9.8`（第 26 节）后再 `0.10.0`；或合成一个版本 | 分开：查找先做，HTML 预览直接复用 |
+
+### 27.8 实施和验收
+
+- 四块：① 抽 `view/rich.mjs`（纯重构，Markdown 行为不变）；② `view/html.mjs` 清洗器、渲染、单测和 harness；③ 接进预览、类别、模式、查找、独立窗口、编码，以及 27.5 的供应改动；④ 文档、backlog、版本号。
+- **单测**（Node）：策略表逐行覆盖（喂假树），URL 表逐行覆盖，上限和退路。
+- **必跑的 harness**（真实 Chrome，新加 `test/harness/html-preview.mjs`；项目没有自动跑 harness 的检查，所以每块交付时执行者要贴出运行结果）：
+  - XSS 语料至少 40 条：`script`、各种 `on*`、`javascript:`（含实体和空白混淆）放在 `href`/`src`/`srcset`/`formaction`/`xlink:href`、`svg` 和 `math` 里的脚本、`iframe srcdoc`、`meta refresh`、`base href`、`style` 里的 `url()` 和 `@import`、`object data`、`embed`、`form action`、`noscript` 和 `template` 里的变形写法、注释和 CDATA 里藏标签等。断言：页面全局的信标没有被触发；harness 的服务器没有收到任何请求；输出里只有表内的元素和属性。
+  - 性能：1 MiB、10 万节点的样例清洗加挂载不超过 500 毫秒（Chrome）。
+  - 版面：宽窗口下正文铺满，表格、代码块不溢出。
+- **真机**：仓库里放一组探针样例（`test/fixtures/html/`：静态文档、表格、带 `data:` 图片、GBK 编码、脚本生成、XSS 语料汇总页），作者在 Mac 和 iPhone 上打开验收。
