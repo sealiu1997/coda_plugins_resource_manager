@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>本地图片</title></head>
+<body>
+<h1>本地图片</h1>
+<p>相对路径的图片经本机流式服务显示（先要拿到口令，拿到之前不显示，不影响正文）：</p>
+<p>PNG：<img src="img/swatch.png" alt="本地 PNG"></p>
+<p>JPEG：<img src="./img/swatch.jpg" alt="本地 JPEG"></p>
+<p>WebP：<img src="img/swatch.webp" alt="本地 WebP"></p>
+<p>文件不存在，应换成占位「[图片：不存在的图]」：<img src="img/missing.png" alt="不存在的图"></p>
+<p>不是图片扩展名，应是占位，且不发请求：<img src="static-doc.html" alt="不是图片"></p>
+<p>外链图片，应是占位「[外链图片：外链图]」，且不发请求：<img src="https://example.com/a.png" alt="外链图"></p>
+<p>越出工作目录，应是占位：<img src="../../../../etc/a.png" alt="越界图"></p>
+<p>图片之后的正文。</p>
+</body>
+</html>

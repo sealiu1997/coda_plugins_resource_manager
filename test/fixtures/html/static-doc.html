@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>静态文档样例</title>
+<style>body { background: #222; color: #0f0 } h1 { color: red }</style>
+</head>
+<body>
+<h1 id="top">静态文档样例</h1>
+<p>这是一份普通的静态文档，没有脚本。<code>style</code> 里的配色（深色背景、绿字、红标题）不会带到预览里，预览用的是和 Markdown 一样的样式。</p>
+<p><a href="#details">跳到「说明」一节</a>（页内锚点，应滚动过去，不是导航）。</p>
+
+<h2>行内格式</h2>
+<p><strong>加粗</strong>、<em>斜体</em>、<s>删除线</s>、<u>下划线</u>、<mark>标记</mark>、<kbd>⌘</kbd>+<kbd>F</kbd>、H<sub>2</sub>O、x<sup>2</sup>、<abbr title="HyperText Markup Language">HTML</abbr>、<q>行内引用</q>、<cite>引用来源</cite>、<time datetime="2026-11-24">2026-11-24</time>。</p>
+
+<h2>列表</h2>
+<ul>
+<li>无序一
+  <ul><li>无序一之一</li><li>无序一之二</li></ul>
+</li>
+<li>无序二</li>
+</ul>
+<ol start="3">
+<li>从 3 开始的有序列表</li>
+<li>第二项</li>
+</ol>
+<dl>
+<dt>术语</dt><dd>术语的说明。</dd>
+<dt>另一个术语</dt><dd>另一个说明。</dd>
+</dl>
+
+<h2 id="details">说明</h2>
+<blockquote>引用块：这一段应带左边的竖线，和 Markdown 的引用块一样。</blockquote>
+<figure>
+<pre><code class="language-js">// 代码块，语言取自 class
+function add(a, b) {
+  return a + b;
+}</code></pre>
+<figcaption>图注：上面是一段 JavaScript。</figcaption>
+</figure>
+<hr>
+<p>分隔线之后的最后一段。</p>
+</body>
+</html>

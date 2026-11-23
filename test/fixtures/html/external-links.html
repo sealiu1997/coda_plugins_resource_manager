@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>外链</title></head>
+<body>
+<h1>外链</h1>
+<p>验收：下面的 https、http 链接只能由插件交给 Coda 打开。点击、⌘ 点击（Mac）、中键点击（Mac）、长按（iPhone）后选「打开」，都不应在页面里直接导航，也不应打开系统浏览器绕过 Coda。</p>
+<ul>
+<li><a href="https://example.com/a?b=1#c">https 链接</a></li>
+<li><a href="http://example.com/plain">http 链接</a></li>
+<li><a href="https://example.com/target-blank" target="_blank" rel="noopener">带 target=_blank 的 https 链接（target 会被去掉）</a></li>
+<li><a href="https://example.com/下载" download="x.txt" ping="https://example.com/ping">带 download 和 ping 的链接（这两个属性会被去掉）</a></li>
+</ul>
+<p>下面这些不是外链，不应是可点击的外链：</p>
+<ul>
+<li><a href="mailto:someone@example.com">邮箱：应是「复制邮箱」按钮，不是链接</a></li>
+<li><a href="javascript:alert('XSS')">javascript: 链接：只留文字，不套链接样式</a></li>
+<li><a href="//example.com/协议相对">协议相对：只留文字</a></li>
+<li><a href="data:text/html;base64,PHA+eDwvcD4=">data: 链接：只留文字</a></li>
+</ul>
+<p>相对链接：<a href="static-doc.html">static-doc.html</a>（侧栏里应切到那个文件的预览，独立窗口里新开一个窗口）、<a href="nav-sidebar.html#top">带片段的相对链接</a>。</p>
+<p>页内锚点：<a href="#end">跳到页尾</a>。</p>
+<div style="height: 1200px"></div>
+<p id="end">页尾：页内锚点应滚到这里，不能整页导航。</p>
+</body>
+</html>
