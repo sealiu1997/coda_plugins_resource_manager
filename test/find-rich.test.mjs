@@ -64,6 +64,30 @@ test('buildRichIndex：块、<br>、单元格的边界各占一个虚拟字符�
   assert.deepEqual(findRich(index, '10').list, [[9, 11]]);
 });
 
+test('共用块标签（renderHtml 和 Markdown 都会输出的）：dl/dt/dd、figure/figcaption、caption、列表和表格各层都是边界，匹配不跨过，选区提取保留换行', async t => {
+  await withDom(t);
+  const cases = [
+    ['dl', el('dl', null, el('dt', null, 'Alpha'), el('dd', null, 'Beta')), 'Alpha', 'Beta'],
+    ['figure', el('figure', null, el('img'), '图', el('figcaption', null, 'Caption')), '图', 'Caption'],
+    ['figcaption 相邻 figure', el('div', null, el('figure', null, 'Pic'), el('figcaption', null, 'Cap')), 'Pic', 'Cap'],
+    ['caption', el('table', null, el('caption', null, 'Title'), el('tbody', null, el('tr', null, el('td', null, 'Cell')))), 'Title', 'Cell'],
+    ['ul', el('div', null, el('ul', null, 'Inner'), 'Tail'), 'Inner', 'Tail'],
+    ['ol', el('div', null, el('ol', null, 'Inner'), 'Tail'), 'Inner', 'Tail'],
+    ['thead/tbody/tfoot', el('table', null, el('thead', null, 'Head'), el('tbody', null, 'Body'), el('tfoot', null, 'Foot')), 'Head', 'Body'],
+  ];
+  for (const [name, root, first, second] of cases) {
+    const index = buildRichIndex(root);
+    assert.deepEqual(findRich(index, `${first}${second}`).list, [], `${name}：搜「${first}${second}」零命中`);
+    assert.equal(findRich(index, first).list.length, 1, name);
+    const sel = fakeSelection(t, root), all = root.textContent;
+    sel.select(root, 0, all.length);
+    assert.match(clippedRichSelection(root).text, new RegExp(`${first}\\n+(?:.*\\n)?${second}`), `${name}：选区提取保留换行`);
+  }
+  const dl = el('dl', null, el('dt', null, 'Alpha'), el('dd', null, 'Beta')), sel = fakeSelection(t, dl);
+  sel.select(dl, 0, 9);
+  assert.equal(clippedRichSelection(dl).text, 'Alpha\nBeta');
+});
+
 test('buildRichIndex：匹配可以跨行内节点（半句加粗）；顶层文本记下自己的下标', t => {
   const strong = el('strong', null, '加粗');
   const root = el('div', null, '前文', strong, el('p', null, '半句', el('em', null, '斜'), '尾'));
@@ -293,12 +317,12 @@ test('选区：clippedRichSelection 跳过被收起的 <details> 遮住的文字
 
 // ---- 查找条：导航、滚动、展开 ----
 
-async function fixture(t, root, { highlight = true, rich = true } = {}) {
+async function fixture(t, root, { highlight = true, rich = true, version } = {}) {
   await withDom(t);
   const env = installHighlights(t), body = el('div');
   body.append(root);
   const makeRange = () => { const range = env.makeRange(); range.getClientRects = () => env.rects?.(range) ?? [env.rectOf?.(range) ?? { top: 0, bottom: 20, left: 0, right: 10, height: 20, width: 10 }]; return range; };
-  const find = createFind({ body, makeRange });
+  const find = createFind({ body, makeRange, version });
   find.open();
   find.setContent(root, null, { rich, highlight });
   const type = term => { find.input.value = term; find.input.dispatch('input'); t.mock.timers.tick(150); };
@@ -431,6 +455,23 @@ test('分批标记：富文本里的 Highlight 一批批注册；换了正文后
   while (queue.size) { const [[handle, fn]] = queue; queue.delete(handle); fn(); }
   assert.equal(old.size, FIND_BATCH, '旧批次没有再动');
   assert.equal(fresh.size, FIND_BATCH + 10);
+});
+
+test('分批标记：正文版本由调用方给；版本变了，排着的批次不再往里加（不靠 setContent）', async t => {
+  const queue = new Map();
+  let id = 3_000_000, bodyVersion = 7;
+  const root = el('p', null, 'a '.repeat(FIND_BATCH * 2 + 5));
+  const { env, type } = await fixture(t, root, { version: () => bodyVersion });
+  const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms, ...args) => { if (ms !== 0) return realSet(fn, ms, ...args); queue.set(++id, fn); return id; };
+  globalThis.clearTimeout = handle => { if (queue.delete(handle)) return; realClear(handle); };
+  t.after(() => { globalThis.setTimeout = realSet; globalThis.clearTimeout = realClear; });
+  type('a');
+  const marks = env.registry.get('find');
+  assert.equal(marks.size, FIND_BATCH);
+  bodyVersion++;
+  while (queue.size) { const [[handle, fn]] = queue; queue.delete(handle); fn(); }
+  assert.equal(marks.size, FIND_BATCH, '版本变了：下一批不再动');
 });
 
 // ---- 和预览的接线 ----

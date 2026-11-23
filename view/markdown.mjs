@@ -1,61 +1,10 @@
 // 页内 Markdown 富文本渲染：纯 DOM 构建（零 innerHTML，原始 HTML 按文本安全转义），无外部依赖。
 // 支持 CommonMark / GFM 常用语法：ATX/Setext 标题（含页内锚点）、段落、粗体/斜体/删除线、行内代码、围栏与缩进代码块（围栏复用 highlight.mjs 高亮）、引用块、有序/无序/任务/松散列表（Tab 按 4 列制表位）、表格、分隔线、内联与引用式链接/图片；另外丢弃 HTML 注释、开头 YAML front matter 按代码块显示、<br> 转换行，其余原始 HTML 仍按文本显示。
 import { h } from './dom.mjs';
-import { HIGHLIGHT_LIMIT, appendAll, hasLanguage, hasLongLine, highlight } from './highlight.mjs';
-import { languageOf } from './languages.mjs';
-import { hasControl, joinRelative } from './protocol.mjs';
-import { RICH_UI_ATTR } from './rich.mjs';
+import { classifyImage, countsInHeadingId, createImageBudget, renderCodeBlock, renderImage, renderLink, resolveRelativePath, safeDecode, safeLinkTarget as richLinkTarget } from './rich.mjs';
 import { richTextContent } from './selection.mjs';
 
 const MAX_DEPTH = 16;
-
-// 解析 Markdown 里的相对路径：以 basePath 所在目录为基准，复用 protocol.mjs 的 joinRelative 合并 ./ 与 ../ 并禁止越出工作目录根。
-export function resolveRelativePath(basePath, rawTarget) {
-  if (typeof rawTarget !== 'string') return null;
-  let target = rawTarget.trim();
-  if (!target || hasControl(target)) return null;
-  if (target.startsWith('<') && target.endsWith('>')) target = target.slice(1, -1).trim();
-  const cut = target.search(/[?#]/);
-  if (cut >= 0) target = target.slice(0, cut);
-  if (!target || target.startsWith('/') || target.startsWith('\\')) return null;
-  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return null;
-  let decoded;
-  try { decoded = target.split('/').map(decodeURIComponent).join('/'); } catch { return null; }
-  if (hasControl(decoded)) return null;
-  const dir = String(basePath ?? '').includes('/') ? String(basePath).slice(0, String(basePath).lastIndexOf('/')) : '';
-  const joined = joinRelative(dir, decoded);
-  return joined ? joined : null;
-}
-
-// 链接安全校验：仅放行 http/https、mailto（单独归类为复制邮箱）、页内锚点 #... 与工作目录内相对路径；拒绝 javascript:/data:/vbscript:/file: 等危险协议。
-export function safeLinkTarget(rawHref, basePath = '') {
-  if (typeof rawHref !== 'string') return null;
-  let href = rawHref.trim();
-  if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1).trim();
-  if (!href || hasControl(href)) return null;
-  if (href.startsWith('#')) {
-    const slug = slugify(safeDecode(href.slice(1)));
-    return { kind: 'hash', href, id: slug ? headingId(slug) : '' };
-  }
-  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(href);
-  if (scheme) {
-    const proto = scheme[1].toLowerCase();
-    if (proto === 'http' || proto === 'https') return { kind: 'external', href };
-    if (proto === 'mailto') {
-      const rest = href.slice(7);
-      const q = rest.indexOf('?');
-      const email = safeDecode((q >= 0 ? rest.slice(0, q) : rest).trim());
-      return email && !hasControl(email) ? { kind: 'mailto', email, href } : null;
-    }
-    return null;
-  }
-  const rel = resolveRelativePath(basePath, href);
-  return rel ? { kind: 'relative', path: rel } : null;
-}
-
-function safeDecode(text) {
-  try { return decodeURIComponent(text); } catch { return text; }
-}
 
 // 标题锚点 slug：小写、去除标点、空白换连字符，保留中英文与数字。
 export function slugify(text) {
@@ -71,21 +20,19 @@ export function slugify(text) {
 // 标题元素 id：加 md- 前缀，避免与页面自身的 #tree、#stage 等 id 撞上。
 const headingId = slug => `md-${slug}`;
 
-// 图片地址校验：仅对工作目录内相对图片经 resolveImage 加载；远程 http(s) 图片在沙箱内会被 CSP 拦截，降级为明确占位；危险协议同样降级。
-function classifyImage(rawSrc, basePath, resolveImage) {
-  if (typeof rawSrc !== 'string') return { kind: 'invalid' };
-  let src = rawSrc.trim();
-  if (src.startsWith('<') && src.endsWith('>')) src = src.slice(1, -1).trim();
-  if (!src || hasControl(src)) return { kind: 'invalid' };
-  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(src);
-  if (scheme) {
-    const proto = scheme[1].toLowerCase();
-    return proto === 'http' || proto === 'https' ? { kind: 'remote', url: src } : { kind: 'invalid' };
-  }
-  const rel = resolveRelativePath(basePath, src);
-  if (!rel || typeof resolveImage !== 'function') return { kind: 'invalid' };
-  return { kind: 'local', src: resolveImage(rel) };
+// #片段对应的标题 id：片段先百分号解码（失败用原文）再 slugify；空片段没有 id。
+const fragmentId = fragment => {
+  const slug = slugify(safeDecode(fragment));
+  return slug ? headingId(slug) : '';
+};
+
+// 链接目标分类走 rich.mjs 的唯一策略；Markdown 只把 #片段 补上标题 id。
+export function safeLinkTarget(rawHref, basePath = '') {
+  const target = richLinkTarget(rawHref, basePath);
+  return target?.kind === 'hash' ? { kind: 'hash', href: target.href, id: fragmentId(target.fragment) } : target;
 }
+
+export { resolveRelativePath };
 
 // ---- 行内解析 ----
 
@@ -191,71 +138,9 @@ function resolveRef(text, closeBracket, fallbackLabel, defs) {
   return found ? { dest: found.dest, title: found.title, end: closeBracket + 1 } : null;
 }
 
-function renderImageNode(alt, dest, title, ctx) {
-  const info = classifyImage(dest, ctx.basePath, ctx.resolveImage);
-  if (info.kind === 'local') {
-    return h('img', { class: 'md-img', src: info.src, alt, title: title || null, draggable: 'false' });
-  }
-  if (info.kind === 'remote') {
-    return h('span', { class: 'md-img-fallback secondary', [RICH_UI_ATTR]: '', title: info.url }, alt ? `[外链图片：${alt}]` : '[外链图片]');
-  }
-  return h('span', { class: 'md-img-fallback secondary', [RICH_UI_ATTR]: '' }, alt ? `[图片：${alt}]` : '[图片]');
-}
+const renderImageNode = (alt, dest, title, ctx) => renderImage(classifyImage(dest, ctx.basePath, ctx.resolveImage, ctx.imageBudget), alt, title, ctx.isCurrent, ctx.onLocalImage);
 
-function renderLinkNode(labelNodes, dest, title, ctx) {
-  const target = safeLinkTarget(dest, ctx.basePath);
-  if (target?.kind === 'external') {
-    return [h('a', {
-      href: target.href,
-      title: title || target.href,
-      onclick: event => {
-        event?.preventDefault?.();
-        ctx.onOpenExternal?.(target.href);
-      },
-    }, ...labelNodes)];
-  }
-  if (target?.kind === 'mailto') {
-    return [h('span', { class: 'md-mailto-wrap' },
-      h('span', { class: 'md-mailto-label' }, ...labelNodes),
-      h('button', {
-        type: 'button',
-        class: 'md-copy-email',
-        [RICH_UI_ATTR]: '',
-        'data-email': target.email,
-        'aria-label': `复制邮箱 ${target.email}`,
-        title: `复制邮箱：${target.email}`,
-        onclick: event => {
-          event?.preventDefault?.();
-          ctx.onCopyEmail?.(target.email);
-        },
-      }, '复制邮箱'),
-    )];
-  }
-  if (target?.kind === 'hash') {
-    return [h('a', {
-      href: target.href,
-      title: title || null,
-      onclick: event => {
-        event?.preventDefault?.();
-        const heading = target.id ? ctx.headings.get(target.id) : null;
-        heading?.scrollIntoView?.({ block: 'start' });
-      },
-    }, ...labelNodes)];
-  }
-  if (target?.kind === 'relative') {
-    return [h('a', {
-      href: '#',
-      class: 'md-rel-link',
-      'data-rel-path': target.path,
-      title: title || target.path,
-      onclick: event => {
-        event?.preventDefault?.();
-        ctx.onOpenRelative?.(target.path);
-      },
-    }, ...labelNodes)];
-  }
-  return labelNodes;
-}
+const renderLinkNode = (labelNodes, dest, title, ctx) => renderLink(labelNodes, richLinkTarget(dest, ctx.basePath), title, ctx);
 
 const BR_RE = /<br[ \t]*\/?>/iy;
 
@@ -352,7 +237,7 @@ function parseInline(text, ctx, depth = 0) {
       if (close > i + 1) {
         const inner = text.slice(i + 1, close);
         if (!/\s/.test(inner)) {
-          const target = safeLinkTarget(inner, ctx.basePath);
+          const target = richLinkTarget(inner, ctx.basePath);
           if (target?.kind === 'external' || target?.kind === 'mailto') {
             flush();
             out.push(...renderLinkNode([inner], inner, '', ctx));
@@ -441,23 +326,6 @@ function parseAligns(sepLine) {
     const left = cell.startsWith(':'), right = cell.endsWith(':');
     return left && right ? 'center' : right ? 'right' : left ? 'left' : null;
   });
-}
-
-// 代码围栏语言解析：优先匹配 highlight.js 已注册语言名或别名（如 javascript、python），再退回文件名/扩展名表。
-function resolveFenceLang(info) {
-  const token = String(info ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
-  if (!token) return null;
-  if (hasLanguage(token)) return token;
-  return languageOf(`x.${token}`) ?? languageOf(token);
-}
-
-function renderCodeBlock(code, info) {
-  const lang = resolveFenceLang(info);
-  const codeEl = h('code', { class: lang ? `language-${lang}` : null });
-  const colored = lang && code.length <= HIGHLIGHT_LIMIT && !hasLongLine(code) ? highlight(code, lang) : null;
-  if (colored) appendAll(codeEl, colored);
-  else codeEl.append(code);
-  return h('pre', { class: 'md-code' }, codeEl);
 }
 
 // 行首 Tab 按 CommonMark 的制表位（4 列）展开为空格；只动行首空白，正文里的 Tab 保留。col 是这一行起点在原始行里的绝对列（剥过容器缩进的行不从 0 列算制表位）。
@@ -800,7 +668,7 @@ function renderBlockAst(blocks, ctx) {
       case 'heading': {
         const content = parseInline(block.text, ctx);
         const headingEl = h(`h${block.level}`, {}, ...content);
-        const base = slugify(richTextContent(headingEl, node => node.classList?.contains('md-img-fallback'))); // 图片占位的字照旧计入标题 ID（和加标记之前一致），只有按钮不计
+        const base = slugify(richTextContent(headingEl, countsInHeadingId)); // 基线里就有的图片占位照旧计入标题 ID，按钮和收紧新产生的占位不计
         if (base) {
           let id = headingId(base), n = 1;
           while (ctx.headings.has(id)) id = headingId(`${base}-${n++}`);
@@ -845,7 +713,7 @@ function renderBlockAst(blocks, ctx) {
 }
 
 // 渲染 Markdown 文本为 .md 容器节点；绝不解析原始 HTML。
-export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpenExternal = null, onOpenRelative = null, onCopyEmail = null } = {}) {
+export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpenExternal = null, onOpenRelative = null, onCopyEmail = null, isCurrent = () => true, onLocalImage = null } = {}) {
   const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
   const defs = new Map();
   const lines = normalized.split('\n');
@@ -854,6 +722,7 @@ export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpe
   const ast = front > 0
     ? [{ type: 'code', code: lines.slice(1, front).join('\n'), info: 'yaml' }, ...parseBlockAst(lines.slice(front + 1), defs)]
     : parseBlockAst(lines, defs);
-  const ctx = { basePath, resolveImage, onOpenExternal, onOpenRelative, onCopyEmail, defs, headings: new Map() };
+  const headings = new Map();
+  const ctx = { imageBudget: createImageBudget(), basePath, resolveImage, onOpenExternal, onOpenRelative, onCopyEmail, isCurrent, onLocalImage, defs, headings, lookupAnchor: fragment => headings.get(fragmentId(fragment)) ?? null };
   return h('div', { class: 'md selectable' }, ...renderBlockAst(ast, ctx));
 }

@@ -6,7 +6,7 @@
 // - 输入防抖：输入框 input 时开始，停顿 FIND_DEBOUNCE_MS 才找；找之前、关查找条、换正文时取消；到点只做一次。
 // - 分批标记：一次查找（runId）持有。找完匹配先同步标第一批，之后每批 BATCH 个，批间 setTimeout(0) 让出；
 //   每批开始时核对 runId 和正文版本，变了就停（关查找条、换词、换正文、清掉都会让它作废）。
-// - 正文版本 version：show() 换了正文后同步接着调 setContent（中间没有异步空档），clearContent 同样，都加一；之前的批次和待执行的防抖据此作废。富文本的索引和正文一一对应，随这一版持有。
+// - 正文版本 version：由预览持有（和图片口令、图片回调是同一个），挂载新正文、退场时才推进；查找只读它：每批开始时核对，变了就停。show() 挂好后同步接着调 setContent（中间没有异步空档）。富文本的索引和正文一一对应，随这一版持有。
 // - 高亮注册：find（全部匹配）和 find-current（当前这处，priority 更高）两个 Highlight，一次查找新建一份，关闭、换词、清掉时从 CSS.highlights 删掉。
 //   不支持 Highlight API、或正文有长行（hasLongLine，预览给的）时不注册，只计数、导航、滚动。
 // - 超时：没有；10000 处的上限和每批 2000 个让出就是它的界。
@@ -207,7 +207,7 @@ const mark = (name, options) => { try { globalThis.performance?.measure?.(name, 
 
 // body：正文滚动容器（.pbody）；gutterWidth()：行号列（sticky）的宽度，横向滚动要扣掉；
 // makeRange()：造 Range，测试可换。返回查找条（el）和控制它的方法。
-export function createFind({ body, gutterWidth = () => 0, makeRange = () => document.createRange() }) {
+export function createFind({ body, gutterWidth = () => 0, makeRange = () => document.createRange(), version = () => 0 }) {
   const input = h('input', { type: 'search', class: 'finput', placeholder: '查找', enterkeyhint: 'search', autocomplete: 'off', autocorrect: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': '在文件里查找' });
   const count = h('span', { class: 'fcount caption secondary', 'aria-live': 'polite' });
   const prev = h('button', { class: 'icon fprev', 'aria-label': '上一个', title: '上一个（⇧⌘G）' }, icon('chevron', 18));
@@ -217,7 +217,7 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
 
   let open = false, term = '';
   let content = null; // { el, text, index, highlight, rich }：现在显示的这一版正文
-  let version = 0, runId = 0, debounce = null, batch = null;
+  let runId = 0, debounce = null, batch = null;
   let list = [], more = false, current = -1;
   let marks = null; // { all, now }
 
@@ -283,7 +283,7 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
     cancelWork();
     clearMarks();
     list = []; more = false; current = -1;
-    const mine = runId, ver = version, began = globalThis.performance?.now?.() ?? 0;
+    const mine = runId, ver = version(), began = globalThis.performance?.now?.() ?? 0;
     if (term !== '' && content) {
       ({ list, more } = content.rich ? findRich(indexOf(), term) : findMatches(content.text, term));
       if (list.length) current = near !== null ? nearest(near) : first ? 0 : content.rich ? firstVisible(indexOf(), list, body.getBoundingClientRect().top, makeRange) : firstAfterTop();
@@ -302,7 +302,7 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
     if (!marks) { mark('find-run', { start: began }); globalThis.performance?.mark?.('find-done'); return; }
     let at = 0;
     const step = () => {
-      if (mine !== runId || ver !== version) return; // 换词、换正文、关闭：停
+      if (mine !== runId || ver !== version()) return; // 换词、换正文、关闭：停
       const t0 = globalThis.performance?.now?.() ?? 0, to = Math.min(list.length, at + FIND_BATCH);
       for (const range of rangesFor(indexOf(), list, at, to, makeRange)) marks.all.add(range);
       at = to;
@@ -369,7 +369,6 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
     // highlight 为假（有长行的文件）时不标颜色，只计数、导航、滚动，同浏览器不支持 Highlight API。
     setContent(textEl, text, { rich = false, highlight = true, keepPosition = true } = {}) {
       content = { el: textEl, text, index: null, highlight, rich };
-      version++;
       if (!open) return;
       if (keepPosition) run({ scroll: false, near: current >= 0 ? list[current][0] : null });
       else run({ first: true });
@@ -377,7 +376,6 @@ export function createFind({ body, gutterWidth = () => 0, makeRange = () => docu
     // 正文没了（读取中、文件没了、整页重读失败）：清掉标记，计数写「—」；之后再 setContent 就重新找。
     clearContent() {
       content = null;
-      version++;
       cancelWork();
       clearMarks();
       list = []; more = false; current = -1;

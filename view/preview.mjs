@@ -3,6 +3,7 @@ import { h } from './dom.mjs';
 import { createFind } from './find.mjs';
 import { formatDuration, formatSize } from './format.mjs';
 import { HIGHLIGHT_LIMIT, appendAll, hasLongLine, highlight } from './highlight.mjs';
+import { decodeHtmlBytes, renderHtml } from './html.mjs';
 import { icon, iconFor } from './icons.mjs';
 import { languageOf } from './languages.mjs';
 import { renderMarkdown } from './markdown.mjs';
@@ -54,6 +55,17 @@ export async function readFile(read, { prev = null, onProgress = () => {}, cance
   throw Object.assign(error, { code: ErrorCode.IO });
 }
 
+// 渲染出的正文里有没有不折行的超长行：代码块（pre）和表格单元格（表格是 max-content 宽，格子里的字不折行）。
+function hasLongCode(root) {
+  const todo = [root];
+  while (todo.length) {
+    const node = todo.pop();
+    if ((node.tagName === 'PRE' || node.tagName === 'TD' || node.tagName === 'TH') && hasLongLine(node.textContent)) return true;
+    for (const kid of node.children ?? []) todo.push(kid);
+  }
+  return false;
+}
+
 const formatTime = ms => new Date(ms).toLocaleString('zh-CN', { hour12: false });
 export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0));
 
@@ -68,6 +80,8 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // selectionMenu(event, { path, text, startLine, endLine })：给了就接管正文里选中文字的右键（只有 Mac 传）；预览不知道菜单里是什么。
 // 选区为空、或裁到正文里之后为空时不接管，走系统默认。内容和行号在这里取好，交出去之后和选区无关。
 // media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
+// HTML（html、htm、xhtml）读到字节后先 decodeHtmlBytes 解码，写回 result.text，预览和源码共用；解码失败退回源码（用读取时的 UTF-8 文本）并提示。
+// Markdown 和 HTML 正文先挂载，渲染结果里有本地图片才取口令，到了再给还没地址的图片补 src（第 27.2 节）；口令任务和图片回调由「正文版本」持有，换了正文或退场就作废。
 // 不传 media 就一律走分块读取（直接挂载预览的测试用）。
 // canOpenInCoda(path)、openInCoda(path)：「不预览」提示里的「在 Coda 中打开」按钮；canOpenInCoda 缺省为假，不放按钮，动作与行菜单的同名项一致，由页面给。
 // 3D 模型（第 21 节）：mountModel 挂查看器（默认 viewer3d.mjs，测试可换）。gltf、obj、stl、ply 的内容是文本时头部有「3D / 文本」切换，文本走分块读取。
@@ -84,7 +98,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const modeBar = h('div', { class: 'pmode', role: 'group', 'aria-label': '显示方式', hidden: true });
   const inspectSlot = h('div', { class: 'pinspect-slot', hidden: true });
   let gutterEl = null;
-  const find = createFind({ body, gutterWidth: () => gutterEl?.offsetWidth ?? 0 });
+  const find = createFind({ body, gutterWidth: () => gutterEl?.offsetWidth ?? 0, version: () => bodyVersion });
   const extra = actions.map(({ label, icon: glyph, run }) => { const button = action(label, glyph, () => path !== null && run(path, button)); return button; });
   el.replaceChildren(h('div', { class: 'phead' }, ...(back ? [action('返回', 'back', back)] : []), fileIcon, h('div', { class: 'grow' }, name, meta), inspectSlot, modeBar, retryButton,
     ...(copyInHead ? [action('复制路径', 'copy', copyPath)] : []), ...extra), find.el, body);
@@ -103,7 +117,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if (event.shiftKey) find.prev(); else find.next();
     }
   });
-  let textShown = false, pendingFind = null, longLine = false; // 现在显示的是不是文本（源码或富文本预览）；show() 换好的正文，等滚动位置设好再交给查找
+  let textShown = false, pendingFind = null; // 现在显示的是不是文本（源码或富文本预览）；show() 换好的正文，等滚动位置设好再交给查找
 
   let path = null, token = 0, shown = null, objectUrl = null; // shown：当前显示的 { size, mtimeMs }
   let opens = 0, stoppedAt = -1; // 打开次数和上一次停止时的次数：释放只在停止之后没有再打开过时才做（返回的退场还没结束又打开了）
@@ -123,6 +137,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   let player = null; // 正在显示的音视频或图片元素
   let viewer = null; // 正在显示的 3D 模型视图：revoke 释放它，stop 只停加载和动画
   let lastResult = null, richToken = null; // 富文本模式切换时复用已读正文和流式口令
+  let bodyVersion = 0; // 正文版本，只有这里持有：提交新正文（show 的 commit）和退场（revoke、stop）时加一；图片口令、图片回调、查找都引用它。读取代次是 token
   const paintMode = () => {
     const items = modes.buttons();
     if (items.length === 0) { modeBar.hidden = true; return; }
@@ -141,11 +156,12 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   // 把 show() 换好的正文交给查找（顺序：换正文 → 设好滚动位置 → 重建查找）。keepPosition：后台刷新沿用旧位置；预览和源码之间切换取第 1 处。
   const feedFind = keepPosition => { if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { rich: pendingFind.rich, highlight: pendingFind.highlight, keepPosition }); };
   function setMode(next) {
+    const before = modes.state().mode;
     if (path === null || !modes.select(next)) return;
     paintMode();
     if (modes.state().group === 'rich' && lastResult) {
       const prevStale = stale;
-      show(lastResult, richToken);
+      try { show(lastResult, richToken); } catch (error) { modes.select(before); paintMode(); setStale(error.message); return; } // 渲染失败：模式回到和画面一致
       if (prevStale !== null) setStale(prevStale);
       body.scrollTop = 0; body.scrollLeft = 0;
       feedFind(false);
@@ -158,58 +174,101 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     player.pause?.(); player.removeAttribute('src'); player.load?.();
     player = null;
   };
-  const revoke = () => { stopMedia(); viewer?.dispose(); viewer = null; inspectSlot.replaceChildren(); inspectSlot.hidden = true; if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
+  // retire 为假：show 的挂载，版本等挂载成功、提交时再加；其余调用（退场、换成别的画面）立即加。
+  const revoke = (retire = true) => { if (retire) bodyVersion++; stopMedia(); viewer?.dispose(); viewer = null; inspectSlot.replaceChildren(); inspectSlot.hidden = true; if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
   const codaAction = () => (canOpenInCoda(path) ? { label: '在 Coda 中打开', run: () => openInCoda(path) } : null); // 不预览的提示里给出路：交给 Coda 打开
   const notice = (title, detail, action) => body.replaceChildren(h('div', { class: 'empty' },
     h('p', {}, title), detail ? h('p', { class: 'secondary' }, detail) : null,
     action ? h('button', { class: 'link', onclick: action.run }, action.label) : null));
 
+  // 显示一份读到的内容（第 27.2 节）：先造好、挂上，挂载没抛错才一并提交 lastResult、shown、模式和元信息。
+  // 预览抛错就退回源码并提示；源码也抛错则什么都不提交，异常交给调用方（旧画面和旧元信息原样留着）。
+  // mediaToken：已有口令时图片立刻带地址（预览和源码之间切换）；没有就先挂正文，之后补（supplyImages）。
   function show(result, mediaToken = null) {
-    revoke();
-    lastResult = result;
-    const isMdPreview = result.kind === ContentKind.TEXT && modes.isRichPreview();
-    textShown = result.kind === ContentKind.TEXT;
-    pendingFind = null;
-    if (!textShown) find.close(); // 图片、二进制不能查找；源码和富文本预览都能
-    shown = { size: result.size, mtimeMs: result.mtimeMs };
-    // 元信息：目录 · 行数 · 大小；根目录下的文件没有目录，非文本没有行数。修改时间放进 title。
+    const isText = result.kind === ContentKind.TEXT;
     const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-    const lines = result.kind === ContentKind.TEXT ? `${lineCount(result.text)} 行` : '';
+    const lines = isText ? `${lineCount(result.text)} 行` : '';
+    const title = `修改于 ${formatTime(result.mtimeMs)}`;
+    const commit = (note, pending = null, gutter = null, hover = '') => {
+      bodyVersion++;
+      lastResult = result;
+      textShown = isText;
+      pendingFind = pending;
+      gutterEl = gutter;
+      if (!isText) find.close(); // 图片、二进制不能查找；源码和富文本预览都能
+      shown = { size: result.size, mtimeMs: result.mtimeMs };
+      // 元信息：目录 · 行数 · 大小；根目录下的文件没有目录，非文本没有行数。修改时间放进 title。
+      setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), hover ? `${title}\n${hover}` : title);
+    };
     // 有长行：上色按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行（源码和富文本里不折行的代码块都一样），所以只计数、导航、滚动。
-    longLine = result.kind === ContentKind.TEXT && hasLongLine(result.text);
-    if (isMdPreview) {
-      const note = result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '';
-      setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), `修改于 ${formatTime(result.mtimeMs)}`);
-      const resolveImage = mediaToken ? rel => serviceUrl(mediaToken, rel) : null;
-      const md = renderMarkdown(result.text, { basePath: path, resolveImage, onOpenExternal: openExternal, onOpenRelative: openRelative, onCopyEmail: copyEmail ?? (email => copy(email)) });
-      gutterEl = null;
-      pendingFind = { el: md, text: null, rich: true, highlight: !longLine };
-      if (selectionMenu) md.addEventListener('contextmenu', event => onSelect(event, md, false));
-      body.replaceChildren(md);
-      return;
+    const longLine = isText && hasLongLine(result.text);
+    const truncated = result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '';
+    let fellBack = isText && modes.isRichPreview() && result.decodeFailed === true;
+    if (isText && modes.isRichPreview() && !fellBack) {
+      try {
+        const mine = bodyVersion + 1, images = []; // mine：提交时正文版本加一后就是这一份
+        const resolveImage = media ? (mediaToken ? rel => serviceUrl(mediaToken, rel) : () => null) : null;
+        const options = {
+          basePath: path, resolveImage, onOpenExternal: openExternal, onOpenRelative: openRelative, onCopyEmail: copyEmail ?? (email => copy(email)),
+          isCurrent: () => bodyVersion === mine,
+        };
+        let md, note = truncated, hover = '', plainOnly = longLine;
+        if (openCategoryOf(path) === OpenCategory.HTML) {
+          const page = renderHtml(result.text, { ...options, onViewSource: () => { if (bodyVersion === mine) setMode('source'); } });
+          md = page.node;
+          images.push(...page.images.filter(({ img }) => img.getAttribute('src') === null));
+          note = [truncated, '静态预览'].filter(Boolean).join('，');
+          hover = ['静态预览：不运行脚本，不加载外部资源，样式和布局已简化，完整内容切到「源码」看。', page.title && `标题：${page.title}`].filter(Boolean).join('\n');
+          plainOnly = hasLongCode(md); // 不折行的只有代码块；HTML 源码常是压成一行的，不能按源码判断
+        } else md = renderMarkdown(result.text, { ...options, onLocalImage: entry => { if (entry.img.getAttribute('src') === null) images.push(entry); } });
+        if (selectionMenu) md.addEventListener('contextmenu', event => onSelect(event, md, false));
+        revoke(false);
+        body.replaceChildren(md);
+        commit(note, { el: md, text: null, rich: true, highlight: !plainOnly }, null, hover);
+        if (images.length > 0) supplyImages(mine, images);
+        return;
+      } catch { fellBack = true; }
     }
-    // 高亮：认得出语言才试；超过上限不试，库或解析出错就退回纯文本，都在元信息里注明。认不出语言的不加说明。
-    const language = result.kind === ContentKind.TEXT ? languageOf(path.split('/').pop()) : null;
-    // 先判大小，超过只写「不高亮」；没超再判行长。
-    const skip = !language ? '' : result.bytes.length > HIGHLIGHT_LIMIT ? '不高亮' : longLine ? '行太长，不高亮' : '';
-    const colored = language && !skip ? highlight(result.text, language) : null;
-    const plain = !language ? '' : skip || (colored ? '' : '没能高亮');
-    const note = [result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '', plain].filter(Boolean).join('，');
-    setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), `修改于 ${formatTime(result.mtimeMs)}`);
-    if (result.kind === ContentKind.TEXT) {
+    if (isText) {
+      // 高亮：认得出语言才试；超过上限不试，库或解析出错就退回纯文本，都在元信息里注明。认不出语言的不加说明。
+      const language = languageOf(path.split('/').pop());
+      // 先判大小，超过只写「不高亮」；没超再判行长。
+      const skip = !language ? '' : result.bytes.length > HIGHLIGHT_LIMIT ? '不高亮' : longLine ? '行太长，不高亮' : '';
+      const colored = language && !skip ? highlight(result.text, language) : null;
+      const plain = !language ? '' : skip || (colored ? '' : '没能高亮');
       const gutter = h('pre', { class: 'gutter', 'aria-hidden': 'true' }, Array.from({ length: lineCount(result.text) }, (_, i) => i + 1).join('\n'));
       const text = h('pre', { class: 'text selectable' }, ...(colored ? [] : [result.text]));
       if (colored) appendAll(text, colored);
-      gutterEl = gutter;
-      pendingFind = { el: text, text: result.text, rich: false, highlight: !longLine };
       if (selectionMenu) text.addEventListener('contextmenu', event => onSelect(event, text, true));
+      revoke(false);
       body.replaceChildren(h('div', { class: 'code' }, gutter, text));
+      commit([truncated, plain, fellBack ? '预览出错，改显示源码' : ''].filter(Boolean).join('，'), { el: text, text: result.text, rich: false, highlight: !longLine }, gutter);
+      if (fellBack) { modes.select('source'); paintMode(); } // 按钮和显示一致；再点「预览」就是重试
     } else if (result.kind === ContentKind.IMAGE && result.bytes.length > 0) {
-      objectUrl = URL.createObjectURL(new Blob([result.bytes], { type: imageType(path) }));
-      body.replaceChildren(h('div', { class: 'image' }, h('img', { src: objectUrl, alt: path, draggable: 'false' })));
+      const url = URL.createObjectURL(new Blob([result.bytes], { type: imageType(path) }));
+      revoke(false);
+      objectUrl = url;
+      body.replaceChildren(h('div', { class: 'image' }, h('img', { src: url, alt: path, draggable: 'false' })));
+      commit('');
     } else {
       const big = result.kind === ContentKind.IMAGE ? `图片超过 ${formatSize(IMAGE_LIMIT)}，不预览。` : '二进制文件，不预览。';
+      revoke(false);
       notice(big, `${formatSize(result.size)}，修改于 ${formatTime(result.mtimeMs)}`, codaAction());
+      commit('');
+    }
+  }
+
+  // 图片口令（第 27.2 节第 6 步）：正文已经挂上，这时才取口令，拿到后给这一版里还没设地址的图片补 src。
+  // 持有者是正文版本：换了正文、切了模式、停了，晚到的结果整个丢掉（也不记进 richToken）。
+  // 失败或超时：沿用上一次的口令，没有就换成占位。宿主没有流式服务（token 为 null）也是占位。
+  async function supplyImages(mine, images) {
+    let granted = null, failed = false;
+    try { granted = (await media(path))?.token ?? null; } catch { failed = true; }
+    if (bodyVersion !== mine) return;
+    if (!failed) richToken = granted;
+    for (const { img, path: rel, fail } of images) {
+      if (img.getAttribute('src') !== null) continue;
+      if (richToken !== null) img.setAttribute('src', serviceUrl(richToken, rel)); else fail();
     }
   }
 
@@ -321,18 +380,14 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       });
       if (!mark() || result.cancelled) return;
       if (result.same) return setStale(null);
+      if (result.kind === ContentKind.TEXT && openCategoryOf(path) === OpenCategory.HTML) {
+        try { result.text = decodeHtmlBytes(result.bytes, result.truncated); } catch { result.decodeFailed = true; }
+      }
       // 刷新留在原位；整页重读（打开、重载、重试）没有要恢复的位置就明确从头开始，不靠清空正文后滚动条自己归零。
       const keep = carry?.scroll ?? (silent ? { top: body.scrollTop, left: body.scrollLeft } : { top: 0, left: 0 });
-      const isMarkdown = result.kind === ContentKind.TEXT && openCategoryOf(path) === OpenCategory.MARKDOWN;
-      let nextToken = null;
-      if (isMarkdown && media && result.text.includes('![')) {
-        try { nextToken = (await media(path))?.token ?? null; } catch { nextToken = richToken; } // 取口令失败：沿用上一次的，已显示的图片不被换成占位
-        if (!mark()) return;
-      }
       modes.content(result.kind === ContentKind.TEXT);
-      richToken = isMarkdown ? nextToken : null;
       paintMode();
-      show(result, richToken);
+      show(result);
       body.scrollTop = keep.top; body.scrollLeft = keep.left;
       // 顺序：换正文 → 设好滚动位置 → 重建查找（刷新和换正文时查找不滚动，不盖掉恢复）
       feedFind(true);
@@ -362,7 +417,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     // 内容的来源变了（根目录换了位置）：旧正文不能留，也不能按元数据判断「没变」。
     reload() { find.close(); return path === null ? undefined : load(false); }, // 来源变了：查找也关
     // 停止（逻辑关闭，立即）：不再读、不再刷新，待恢复的位置结算；画面（正文、图片的 URL）留着，由 release 在退场结束时清掉。
-    stop() { settle(false); player?.pause?.(); viewer?.cancel(); token++; path = null; shown = null; lastResult = null; richToken = null; textShown = false; find.close(); stoppedAt = opens; },
+    stop() { settle(false); player?.pause?.(); viewer?.cancel(); token++; bodyVersion++; path = null; shown = null; lastResult = null; richToken = null; textShown = false; find.close(); stoppedAt = opens; },
     // 释放（画面）：停止之后又打开过就什么都不做。
     release() {
       if (stoppedAt !== opens) return; // 停止之后又打开过（打开次数变了）：这一屏是新的，不是退场的旧页

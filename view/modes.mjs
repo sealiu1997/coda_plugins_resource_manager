@@ -4,14 +4,14 @@
 import { OpenCategory } from './protocol.mjs';
 
 const GROUPS = {
-  model: { modes: [['3d', '3D'], ['text', '文本']], category: OpenCategory.MODEL },
-  rich: { modes: [['preview', '预览'], ['source', '源码']], category: OpenCategory.MARKDOWN },
+  model: { modes: [['3d', '3D'], ['text', '文本']], categories: [OpenCategory.MODEL] },
+  rich: { modes: [['preview', '预览'], ['source', '源码']], categories: [OpenCategory.MARKDOWN, OpenCategory.HTML] },
 };
 const DEFAULTS = { model: '3d', rich: 'preview' };
 
 export function createModes() {
   let group = null, mode = null, available = false;
-  const groupOf = category => Object.keys(GROUPS).find(name => GROUPS[name].category === category) ?? null;
+  const groupOf = category => Object.keys(GROUPS).find(name => GROUPS[name].categories.includes(category)) ?? null;
   return {
     // 打开一个文件（含同类别换文件）：按类别定组，模式回默认，可用性等内容和能力来了再定。
     open(category) { group = groupOf(category); mode = group && DEFAULTS[group]; available = false; },

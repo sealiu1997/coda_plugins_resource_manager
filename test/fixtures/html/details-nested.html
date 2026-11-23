@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>两层收起的 details</title></head>
+<body>
+<h1>两层收起的 details</h1>
+<p>可见段落里有一个嵌套词。</p>
+<details>
+<summary>外层（默认收起）</summary>
+<p>外层里的嵌套词。</p>
+<details>
+<summary>内层（默认收起）</summary>
+<p>内层里的嵌套词，要两层都展开才看得见。</p>
+</details>
+</details>
+<details open>
+<summary>另一个已展开的</summary>
+<p>这一段本来就看得见，里面没有查找词。</p>
+</details>
+<p>验收方法见 README。</p>
+</body>
+</html>

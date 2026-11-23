@@ -8,6 +8,7 @@ import { activate } from '../main.mjs';
 import { parseState } from '../view/model.mjs';
 import { loadApp, loadFileApp, visible } from './support/dom.mjs';
 import { checkoutOf, deferred, fakeCoda, flush, tempDir, waitFor } from './support/fake.mjs';
+import { installParser } from './support/htmlparser.mjs';
 import { rowNamed } from './support/treehost.mjs';
 
 const timersOn = new WeakSet();
@@ -145,6 +146,41 @@ test('rtf 跟 text 类的记忆走：document 类记了「在 Coda 中打开」�
   await dbl(viaText.page, 'note.rtf');
   assert.deepEqual(viaText.host.opened, ['coda-view://service/media/tokR/note.rtf'], 'text 类记了 coda，rtf 走 Coda');
   assert.equal(visible(viaText.page.preview), false);
+});
+
+test('text 类记了「在 Coda 中打开」：未知扩展名和 mkv 不能交给 Coda，仍在页内打开、不发 coda.open；html 是自己的类别，不受 text 的记忆影响，右键切换后才走 Coda', async t => {
+  installParser(t);
+  const roots = { '/A': { 'a.xyz': { text: 'abc' }, 'v.mkv': { text: 'x', kind: 'binary' }, 'page.html': { text: '<p>网页</p>' } } };
+  const { page, host, tick } = await open(t, { roots, mediaToken: 'tokH', state: savedCoda('text') });
+  host.session('s1');
+  await flush();
+  const back = async () => { page.preview.find(node => node.tagName === 'BUTTON' && node.getAttribute('aria-label') === '返回')[0].dispatch('click'); await flush(); };
+
+  await dbl(page, 'a.xyz');
+  assert.deepEqual(host.opened, [], '未知扩展名：流式服务不供应，不发请求');
+  assert.equal(visible(page.preview), true);
+  assert.equal(text(page), 'abc');
+  await back();
+  await dbl(page, 'v.mkv');
+  assert.deepEqual(host.opened, [], 'mkv 同样');
+  assert.equal(visible(page.preview), true);
+  await back();
+  rightClick(page, 'a.xyz');
+  assert.equal(menuButtons(page).some(b => b.textContent === '在 Coda 中打开' || b.textContent === '在资源管理器中打开'), false, '行菜单没有切换项');
+  page.menu.dispatch('keydown', { key: 'Escape' });
+
+  await dbl(page, 'page.html');
+  assert.deepEqual(host.opened, [], 'html 有自己的类别，默认页内预览');
+  assert.equal(text(page), '网页');
+  assert.equal(page.preview.find(node => node.classList.contains('md')).length, 1, '预览模式');
+  await back();
+  rightClick(page, 'page.html');
+  assert.ok(menuButtons(page).some(b => b.textContent === '在 Coda 中打开'), '行菜单里 html 的切换项可用');
+  await choose(page, '在 Coda 中打开');
+  tick(300);
+  assert.deepEqual(host.opened, ['coda-view://service/media/tokH/page.html']);
+  assert.equal(host.state.at(-1)?.openWith?.html, 'coda', '按 html 类别记住');
+  assert.equal(host.state.at(-1)?.openWith?.text, 'coda', 'text 类的记忆没动');
 });
 
 test('右键「在 Coda 中打开」立即用 Coda 打开并按类别记住默认习惯，反向选「在资源管理器中打开」可切回', async t => {

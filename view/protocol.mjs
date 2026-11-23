@@ -85,6 +85,7 @@ const COMPANION_TYPES = { bin: 'application/octet-stream', mtl: 'text/plain; cha
 // 文件打开偏好的类别（按类别记忆默认打开方式，初始全部走资源管理器页内预览）。
 export const OpenCategory = Object.freeze({
   MARKDOWN: 'markdown',
+  HTML: 'html',
   DOCUMENT: 'document', // PDF / Office / iWork
   IMAGE: 'image',
   AUDIO: 'audio',
@@ -95,6 +96,7 @@ export const OpenCategory = Object.freeze({
 export const OpenWith = Object.freeze({ INLINE: 'inline', CODA: 'coda' });
 // 经 Coda 的 coda.open 预览的文档类型：统一经插件本机流式服务供应，复用 resolveInRoot 与 O_NOFOLLOW 校验，防止越出工作目录。
 const MARKDOWN_TYPES = Object.fromEntries(MARKDOWN_EXTS.map(ext => [ext, 'text/markdown; charset=utf-8']));
+const HTML_EXTS = new Set(['html', 'htm', 'xhtml']);
 const DOCUMENT_TYPES = {
   pdf: 'application/pdf',
   doc: 'application/msword',
@@ -119,9 +121,9 @@ const TEXT_SERVED_TYPES = {
   json5: 'application/json; charset=utf-8',
   yaml: 'text/yaml; charset=utf-8',
   yml: 'text/yaml; charset=utf-8',
-  xml: 'application/xml; charset=utf-8',
+  xml: 'text/plain; charset=utf-8',
   xhtml: 'application/xhtml+xml; charset=utf-8',
-  plist: 'application/xml; charset=utf-8',
+  plist: 'text/plain; charset=utf-8',
   html: 'text/html; charset=utf-8',
   htm: 'text/html; charset=utf-8',
   css: 'text/css; charset=utf-8',
@@ -215,6 +217,7 @@ export function openCategoryOf(name) {
   const ext = extensionOf(name);
   if (ext) {
     if (Object.hasOwn(MARKDOWN_TYPES, ext)) return OpenCategory.MARKDOWN;
+    if (HTML_EXTS.has(ext)) return OpenCategory.HTML;
     if (Object.hasOwn(DOCUMENT_TYPES, ext)) return OpenCategory.DOCUMENT;
   }
   const media = mediaOf(name);
@@ -239,6 +242,9 @@ export function servedType(name) {
   if (isEnvName(base)) return 'text/plain; charset=utf-8';
   return null;
 }
+
+// 能不能交给 Coda 打开（行菜单的切换项、「不预览」页的按钮、独立窗口的退路、按记下的偏好自动打开）：流式服务肯供应才行。宿主有没有 coda.open、根目录是否就绪由各页面自己查。
+export const canOpenInCoda = path => servedType(path) !== null;
 
 // 相对路径的规则只在这一处：模块（lib/paths.mjs）校验请求，页面恢复保存的 cwd 时用同一个函数。
 // 空串是根目录；拒绝过长、控制字符、绝对路径和 `..`。返回 { segments }（去掉空段和 `.`）或 { problem }（给人看的原因）。

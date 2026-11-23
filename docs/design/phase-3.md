@@ -1895,7 +1895,7 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
 
 ## 27. `0.10.0`（草案）：页内 HTML 预览
 
-状态：设计草案定稿（第 5 稿加两处补充）。经过一轮思路评审和四轮挑错评审，作者 2026-11-23 定为全部采纳，第 4 轮复审结论是「可以进入实现」。方向是作者 2026-11-23 定的：把 HTML 安全地转成富文本，风格和 Markdown 预览一致，不执行脚本。
+状态：已实现（`0.10.0`）。经过一轮思路评审和四轮挑错评审，作者 2026-11-23 定为全部采纳，第 4 轮复审结论是「可以进入实现」。方向是作者 2026-11-23 定的：把 HTML 安全地转成富文本，风格和 Markdown 预览一致，不执行脚本。
 
 ### 27.1 为什么，以及调研结论
 
@@ -2085,14 +2085,16 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
   - `details`、`summary`；
   - `dl`、`dt`、`dd`；
   - `.md-chip`、`.md-align-*`、`.md-landmark`、`.md-img-box`。
-- **打开资格**（作者定，去掉 HTML 的「在 Coda 中打开」）：
-  - 新增共用函数 `canOpenInCoda(path)`，放在 `view/protocol.mjs`。它为真要同时满足两条：
-    - 产品资格：类别允许，`html` 类不允许；
-    - 服务能供应：`servedType(path)` 不为空。所以未知扩展名、`mkv` 都为假。
+- **打开资格**（作者 2026-11-23 改定：HTML **保留**「在 Coda 中打开」，给 Coda 以后自己支持 HTML 预览留接口）：
+  - `html` 类默认页内「预览」；行菜单的「在 Coda 中打开」切换照常可用，同其他类别。
+  - 新增共用函数 `canOpenInCoda(path)`，放在 `view/protocol.mjs`：`servedType(path)` 不为空才为真，所以未知扩展名、`mkv` 都为假。这一版没有按类别排除的项。
   - 以下入口都用它：行菜单的切换项、「不预览」页的按钮、独立窗口的退路、按记下的偏好自动打开时。
   - 宿主有没有 `coda.open`、根目录是否就绪，仍由两个页面各自检查。
   - 类别里记的是 `coda`、但这个文件 `canOpenInCoda` 为假时，就在页内打开，不发无效请求。
-- **X1 供应类型**（作者定）：流式服务把 `html`、`htm`、`xhtml`、`xml`、`plist` 改按 `text/plain; charset=utf-8` 供应；`rtf` 同样改，见第 26.3 节。
+- **X1 供应类型**（作者定）：
+  - `xml`、`plist` 改按 `text/plain; charset=utf-8` 供应；`rtf` 已在 `0.9.8` 改过，见第 26.3 节。
+  - `html`、`htm`、`xhtml` **照旧**按 `text/html`、`application/xhtml+xml` 供应（作者 2026-11-23 改定），这样以后 Coda 支持 HTML 预览时能直接渲染。
+  - **已知风险**（作者知情）：如果将来 Coda 在流式服务的地址下执行页面脚本，脚本能用同一口令读到工作目录里的其他文件（`x1-probe.html` 测的就是这个；`0.9.7` 实测 Coda 只显示源码，不执行）。Coda 支持 HTML 预览后，先用这个探针复测，再决定是否改按纯文本供应。
 - **`nosniff`**（作者定）：**所有**回答都加 `X-Content-Type-Options: nosniff`。范围包括成功、`206`、`304`、`HEAD`、`OPTIONS` 预检，以及 `400`/`403`/`404`/`405`/`416` 等错误。
 - **SVG 的 CSP**（作者定，有前提）：
   - `svg` 的回答另加 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`。
@@ -2110,7 +2112,7 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
 - **`view/html.mjs`**（新）：
   - 导出 `decodeHtmlBytes`；
   - 导出 `renderHtml(text, options)`，负责解析和清洗重建，返回的结构同 `renderMarkdown`，另加锚点 `Map`、本地图片清单、`script` 数、可见字数、是否触到上限。
-- **`view/protocol.mjs`**：`OpenCategory.HTML`、`openCategoryOf`、`canOpenInCoda`；`TEXT_SERVED_TYPES` 按 27.5 改。
+- **`view/protocol.mjs`**：`OpenCategory.HTML`、`openCategoryOf`、`canOpenInCoda`；`TEXT_SERVED_TYPES` 按 27.5 改（只改 `xml`、`plist`）。
 - **`lib/media.mjs`**：按 27.5 改响应头，覆盖所有分支。
 - **`view/preview.mjs`**：
   - 按 27.2 持有加载代次，挂载成功后才提交；
@@ -2122,7 +2124,7 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
 
 - **解析器**：用浏览器自带的 `DOMParser`。清洗输出在 CI 的真实 Chrome 里测；WebKit 解析阶段的资源行为，用 Mac 上的 WKWebView 探针和真机样例确认（27.8）。
 - **`data:` 图片**：显示 png、jpeg、gif、webp，按 27.3 加像素预算，阈值真机实测后定。
-- **HTML 的打开资格、X1 的供应类型和 `nosniff`、SVG 的 CSP**：三项都改，分别验收。
+- **HTML 的打开资格、X1 的供应类型和 `nosniff`、SVG 的 CSP**：分别验收。HTML 保留「在 Coda 中打开」并照旧按 `text/html` 供应（2026-11-23 改定，风险见 27.5）；`xml`、`plist` 改纯文本；`nosniff`、SVG 的 CSP 照做。
 - **版本**：分两版。`0.9.8` 是第 26 节，之后 `0.10.0` 是本节。
 
 ### 27.8 实施和验收
@@ -2159,7 +2161,7 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
   - 各扩展名的 MIME；
   - 各状态的回答都有 `nosniff`；
   - `svg` 的 CSP；
-  - `canOpenInCoda` 在各入口都生效。覆盖：`txt`、RTF、HTML、未知扩展名、`mkv`，以及记过 `text → coda` 偏好之后打开未知扩展名。
+  - `canOpenInCoda` 在各入口都生效。覆盖：`txt`、RTF、HTML（为真）、未知扩展名、`mkv`，以及记过 `text → coda` 偏好之后打开未知扩展名。
 
 **harness**（`test/harness/html-preview.mjs`，真实 Chrome，进 CI）
 - 启动和退出：要求同第 26.4 节，等待都限时，`finally` 里清理。

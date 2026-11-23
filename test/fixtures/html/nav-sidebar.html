@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>导航和侧栏</title></head>
+<body>
+<header><p>站点头部</p>
+<nav>
+  <a href="https://example.com/home">首页</a>
+  <a href="https://example.com/docs">文档</a>
+  <a href="https://example.com/blog">博客</a>
+  <a href="https://example.com/导航词">导航里的词</a>
+  <a href="https://example.com/about">关于</a>
+  <a href="https://example.com/contact">联系</a>
+</nav>
+</header>
+<nav aria-label="面包屑"><a href="https://example.com/">首页</a> / <a href="https://example.com/docs">文档</a></nav>
+<main>
+<article>
+<h1>导航和侧栏</h1>
+<p>页面有 <code>main</code> 和 <code>article</code>。顶部有 6 个链接的 <code>nav</code> 应折叠成「导航（6 项）」，默认收起；只有 2 个链接的面包屑 <code>nav</code> 不折叠，照常显示。</p>
+<p>验收方法见 README。</p>
+<aside><p>文章内的旁注：这个 <code>aside</code> 在 <code>article</code> 里面，不折叠。</p></aside>
+</article>
+</main>
+<aside>
+<h2>相关链接</h2>
+<p>侧栏里的词</p>
+<ul><li><a href="https://example.com/a">相关甲</a></li><li><a href="https://example.com/b">相关乙</a></li></ul>
+</aside>
+<footer><p>页脚</p></footer>
+</body>
+</html>

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import { createMedia } from '../lib/media.mjs';
-import { OpenCategory, mediaOf, openCategoryOf, servedType } from '../view/protocol.mjs';
+import { OpenCategory, canOpenInCoda, mediaOf, openCategoryOf, servedType } from '../view/protocol.mjs';
 import { tempDir } from './support/fake.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -271,4 +271,58 @@ test('打开偏好类别归类与嵌套 Markdown 相对链接：统一经流式�
     const fifo = await fetch(new URL('./pipe.txt', docBase), { signal: AbortSignal.timeout(2000) });
     assert.equal(fifo.status, 404, '命名管道（FIFO）必须以 O_NONBLOCK 及时拒绝，不能阻塞');
   }
+});
+
+test('供应类型：xml、plist、rtf 纯文本；html、htm、xhtml 照旧；这几类 Coda 仍可打开', () => {
+  for (const ext of ['xml', 'plist', 'rtf']) {
+    for (const name of [`a.${ext}`, `A.${ext.toUpperCase()}`]) {
+      assert.equal(servedType(name), 'text/plain; charset=utf-8', name);
+      assert.equal(canOpenInCoda(name), true, name);
+    }
+  }
+  assert.equal(servedType('a.html'), 'text/html; charset=utf-8');
+  assert.equal(servedType('a.htm'), 'text/html; charset=utf-8');
+  assert.equal(servedType('a.xhtml'), 'application/xhtml+xml; charset=utf-8');
+});
+
+test('nosniff：成功、206、304、HEAD、OPTIONS 预检和 400、403、404、405、415、416 都带', async t => {
+  const { root, get } = await serving(t);
+  await writeFile(join(root, 'a.html'), '<p>x</p>');
+  const etag = (await get('a.mp3')).res.headers.get('etag');
+  const cases = [
+    [200, 'a.mp3'], [200, 'a.html'], [206, 'a.mp3', { headers: { range: 'bytes=0-3' } }], [304, 'a.mp3', { headers: { 'if-none-match': etag } }],
+    [200, 'a.mp3', { method: 'HEAD' }], [204, 'a.mp3', { method: 'OPTIONS' }],
+    [400, '..%2Fsecret.mp3'], [400, '%E0%A4%A.mp3'], [403, 'leak.mp3'], [404, 'missing.mp3'], [404, 'a.mp3', { tok: 'wrong' }], [404, 'dir.mp3'],
+    [405, 'a.mp3', { method: 'POST' }], [415, 'archive.zip'], [416, 'a.mp3', { headers: { range: 'bytes=99-' } }],
+  ];
+  for (const [status, path, options] of cases) {
+    const { res } = await get(path, options);
+    assert.deepEqual([res.status, res.headers.get('x-content-type-options')], [status, 'nosniff'], `${options?.method ?? 'GET'} ${path}`);
+  }
+});
+
+test('SVG 的 CSP：200、206、304 各自带 MIME、CSP、nosniff，HEAD 同；别的类型不带 CSP', async t => {
+  const { root, get } = await serving(t);
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
+  await writeFile(join(root, 'a.svg'), svg);
+  await writeFile(join(root, 'Logo.SVG'), svg);
+  await writeFile(join(root, 'a.png'), 'x');
+  await writeFile(join(root, 'a.html'), '<p>x</p>');
+  const csp = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+  const etag = (await get('a.svg')).res.headers.get('etag');
+  const cases = [
+    ['a.svg', undefined, 200, svg], ['Logo.SVG', undefined, 200, svg],
+    ['a.svg', { method: 'HEAD' }, 200, ''],
+    ['a.svg', { headers: { range: 'bytes=0-3' } }, 206, svg.slice(0, 4)],
+    ['a.svg', { headers: { 'if-none-match': etag } }, 304, ''],
+  ];
+  for (const [path, options, status, body] of cases) {
+    const r = await get(path, options), label = `${options?.method ?? 'GET'} ${path} ${JSON.stringify(options?.headers ?? {})}`;
+    assert.equal(r.res.status, status, label);
+    assert.equal(r.body.toString(), body, label);
+    assert.equal(r.res.headers.get('content-security-policy'), csp, label);
+    assert.equal(r.res.headers.get('x-content-type-options'), 'nosniff', label);
+    assert.equal(r.res.headers.get('content-type'), status === 304 ? null : 'image/svg+xml', label); // 304 服务本来就不带 content-type
+  }
+  for (const name of ['a.png', 'a.html', 'a.mp3', 'missing.mp3']) assert.equal((await get(name)).res.headers.get('content-security-policy'), null, name);
 });

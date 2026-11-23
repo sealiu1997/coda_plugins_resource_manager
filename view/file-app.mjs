@@ -12,7 +12,7 @@ import { noticeText } from './model.mjs';
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
 import { mountPress } from './press.mjs';
-import { RootState, Type, servedType } from './protocol.mjs';
+import { RootState, Type, canOpenInCoda } from './protocol.mjs';
 
 const coda = window.coda;
 const $ = id => document.getElementById(id);
@@ -65,7 +65,7 @@ const preview = mountPreview($('preview'), {
       () => { if (want.session === mine) hint.show('没能复制邮箱'); },
     );
   },
-  canOpenInCoda: path => typeof coda.open === 'function' && servedType(path) !== null,
+  canOpenInCoda: path => typeof coda.open === 'function' && canOpenInCoda(path),
   openInCoda: path => { hint.hide(); external.request({ path }); },
   openRelative: relPath => {
     const mine = want.session;

@@ -78,7 +78,7 @@ test('renderMarkdown：支持 GFM 块级与行内语法，代码块复用语法�
   assert.equal(byClass(md, 'md-inline-code')[0]?.textContent, '行内代码');
 
   const link = byTag(md, 'a')[0];
-  assert.equal(link.getAttribute('href'), 'https://example.com');
+  assert.equal(link.getAttribute('href'), 'https://example.com/');
   assert.equal(link.getAttribute('target'), null, '不使用沙箱禁止的 target=_blank');
 
   assert.equal(byTag(md, 'blockquote').length, 1);
@@ -286,7 +286,7 @@ test('Setext 标题、有序列表任务清单与引用式相对图片/链接回
   assert.equal(byClass(md, 'md-img-fallback').length, 1);
 
   const link = byTag(md, 'a')[0];
-  assert.equal(link?.getAttribute('href'), 'https://example.com');
+  assert.equal(link?.getAttribute('href'), 'https://example.com/');
   assert.equal(link?.textContent, '官网');
   assert.equal(md.textContent.includes('[logo]:'), false, '引用定义行不应显示在正文中');
 });
@@ -507,7 +507,7 @@ test('表格空单元格选区、ATX # C#、全名围栏高亮、列表后顶层
   links.find(a => a.textContent === '外链').dispatch('click');
   links.find(a => a.textContent === 'https://auto.example').dispatch('click');
   links.find(a => a.textContent === '相对').dispatch('click');
-  assert.deepEqual(extOpened, ['https://example.com', 'https://auto.example']);
+  assert.deepEqual(extOpened, ['https://example.com/', 'https://auto.example/']);
   assert.deepEqual(relOpened, ['docs/other.md']);
   byTag(md, 'h1')[0].scrollIntoView = () => { scrolledId = byTag(md, 'h1')[0].getAttribute('id'); };
   links.find(a => a.textContent === '跳标题').dispatch('click');
@@ -631,7 +631,7 @@ test('独立文件窗口：相对链接经 coda.open 新开 file 视图、mailto
 
   links.find(a => a.textContent === '外链').dispatch('click');
   await flush();
-  assert.equal(opened.at(-1), 'https://example.com');
+  assert.equal(opened.at(-1), 'https://example.com/');
   assert.match(page.hint.textContent, /打不开链接：禁止打开外链/, '外链打开失败应给出明确原因');
 });
 
