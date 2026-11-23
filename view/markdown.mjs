@@ -1,5 +1,5 @@
 // 页内 Markdown 富文本渲染：纯 DOM 构建（零 innerHTML，原始 HTML 按文本安全转义），无外部依赖。
-// 支持 CommonMark / GFM 常用语法：ATX/Setext 标题（含页内锚点）、段落、粗体/斜体/删除线、行内代码、围栏代码块（复用 highlight.mjs 高亮）、引用块、有序/无序/任务列表、表格、分隔线、内联与引用式链接/图片。
+// 支持 CommonMark / GFM 常用语法：ATX/Setext 标题（含页内锚点）、段落、粗体/斜体/删除线、行内代码、围栏与缩进代码块（围栏复用 highlight.mjs 高亮）、引用块、有序/无序/任务/松散列表（Tab 按 4 列制表位）、表格、分隔线、内联与引用式链接/图片；另外丢弃 HTML 注释、开头 YAML front matter 按代码块显示、<br> 转换行，其余原始 HTML 仍按文本显示。
 import { h } from './dom.mjs';
 import { HIGHLIGHT_LIMIT, appendAll, hasLanguage, hasLongLine, highlight } from './highlight.mjs';
 import { languageOf } from './languages.mjs';
@@ -32,7 +32,10 @@ export function safeLinkTarget(rawHref, basePath = '') {
   let href = rawHref.trim();
   if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1).trim();
   if (!href || hasControl(href)) return null;
-  if (href.startsWith('#')) return { kind: 'hash', href, id: slugify(safeDecode(href.slice(1))) };
+  if (href.startsWith('#')) {
+    const slug = slugify(safeDecode(href.slice(1)));
+    return { kind: 'hash', href, id: slug ? headingId(slug) : '' };
+  }
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(href);
   if (scheme) {
     const proto = scheme[1].toLowerCase();
@@ -64,6 +67,9 @@ export function slugify(text) {
     .replace(/^-|-$/g, '');
 }
 
+// 标题元素 id：加 md- 前缀，避免与页面自身的 #tree、#stage 等 id 撞上。
+const headingId = slug => `md-${slug}`;
+
 // 图片地址校验：仅对工作目录内相对图片经 resolveImage 加载；远程 http(s) 图片在沙箱内会被 CSP 拦截，降级为明确占位；危险协议同样降级。
 function classifyImage(rawSrc, basePath, resolveImage) {
   if (typeof rawSrc !== 'string') return { kind: 'invalid' };
@@ -82,10 +88,41 @@ function classifyImage(rawSrc, basePath, resolveImage) {
 
 // ---- 行内解析 ----
 
+const ESCAPABLE_RE = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
+
+// 行内「原子」片段的结尾（不含）：反斜杠转义、完整的代码跨度、HTML 注释，按这个顺序识别；不是返回 -1。
+// parseInline 和所有闭合前瞻（强调、删除线、链接、图片）共用，识别顺序只此一份。
+function atomEnd(text, i) {
+  const ch = text[i];
+  if (ch === '\\') return i + 1 < text.length && ESCAPABLE_RE.test(text[i + 1]) ? i + 2 : -1;
+  if (ch === '`') {
+    let ticks = 1;
+    while (text[i + ticks] === '`') ticks++;
+    const close = text.indexOf('`'.repeat(ticks), i + ticks);
+    return close >= 0 ? close + ticks : -1;
+  }
+  if (text.startsWith('<!--', i)) {
+    const end = text.indexOf('-->', i + 4);
+    return end >= 0 ? end + 3 : -1;
+  }
+  return -1;
+}
+
+// 从 from 起找 needle，跳过原子片段内部（转义、代码跨度、注释里的 * _ ~ 不参与配对）。
+function findClose(text, needle, from) {
+  for (let i = from; i < text.length; i++) {
+    const end = atomEnd(text, i);
+    if (end > 0) i = end - 1;
+    else if (text.startsWith(needle, i)) return i;
+  }
+  return -1;
+}
+
 function findMatching(text, start, open, close) {
   let depth = 0;
   for (let i = start; i < text.length; i++) {
-    if (text[i] === '\\' && i + 1 < text.length) { i++; continue; }
+    const end = atomEnd(text, i);
+    if (end > 0) { i = end - 1; continue; }
     if (text[i] === open) depth++;
     else if (text[i] === close) { if (depth === 0) return i; depth--; }
   }
@@ -212,6 +249,8 @@ function renderLinkNode(labelNodes, dest, title, ctx) {
   return labelNodes;
 }
 
+const BR_RE = /<br[ \t]*\/?>/iy;
+
 function parseInline(text, ctx, depth = 0) {
   if (depth > MAX_DEPTH || !text) return text ? [text] : [];
   const out = [];
@@ -222,10 +261,19 @@ function parseInline(text, ctx, depth = 0) {
   while (i < text.length) {
     const ch = text[i];
 
-    // 反斜杠转义 ASCII 标点
-    if (ch === '\\' && i + 1 < text.length && /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.test(text[i + 1])) {
-      buf += text[i + 1];
-      i += 2;
+    // 转义、代码跨度、HTML 注释（识别顺序与闭合前瞻共用 atomEnd）
+    const atom = atomEnd(text, i);
+    if (atom > 0) {
+      if (ch === '\\') buf += text[i + 1];
+      else if (ch === '`') {
+        let ticks = 1;
+        while (text[i + ticks] === '`') ticks++;
+        flush();
+        let code = text.slice(i + ticks, atom - ticks).replace(/\n/g, ' ');
+        if (code.length >= 2 && code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);
+        out.push(h('code', { class: 'md-inline-code' }, code));
+      } else flush(); // 行内注释整段丢弃（可跨段内软换行，不跨块）
+      i = atom;
       continue;
     }
 
@@ -240,22 +288,6 @@ function parseInline(text, ctx, depth = 0) {
       }
       i++;
       continue;
-    }
-
-    // 行内代码（支持多反引号）
-    if (ch === '`') {
-      let ticks = 1;
-      while (text[i + ticks] === '`') ticks++;
-      const marker = '`'.repeat(ticks);
-      const close = text.indexOf(marker, i + ticks);
-      if (close >= 0) {
-        flush();
-        let code = text.slice(i + ticks, close).replace(/\n/g, ' ');
-        if (code.length >= 2 && code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code)) code = code.slice(1, -1);
-        out.push(h('code', { class: 'md-inline-code' }, code));
-        i = close + ticks;
-        continue;
-      }
     }
 
     // 图片：内联 ![alt](src) 或引用式 ![alt][ref] / ![alt][] / ![alt]
@@ -293,6 +325,18 @@ function parseInline(text, ctx, depth = 0) {
       }
     }
 
+    // <br> 转换行；其余原始 HTML 仍按文本显示
+    if (ch === '<') {
+      BR_RE.lastIndex = i;
+      const br = BR_RE.exec(text);
+      if (br) {
+        flush();
+        out.push(h('br'));
+        i += br[0].length;
+        continue;
+      }
+    }
+
     // 自动链接 <https://...> / <mailto:...>
     if (ch === '<') {
       const close = text.indexOf('>', i + 1);
@@ -312,7 +356,7 @@ function parseInline(text, ctx, depth = 0) {
 
     // 删除线 ~~text~~
     if (ch === '~' && text[i + 1] === '~') {
-      const close = text.indexOf('~~', i + 2);
+      const close = findClose(text, '~~', i + 2);
       if (close > i + 2) {
         flush();
         out.push(h('del', {}, ...parseInline(text.slice(i + 2, close), ctx, depth + 1)));
@@ -328,9 +372,9 @@ function parseInline(text, ctx, depth = 0) {
       const prevWord = i > 0 && /\w/.test(text[i - 1]);
       if (!(ch === '_' && prevWord)) {
         const marker = ch.repeat(run);
-        let close = text.indexOf(marker, i + run);
+        let close = findClose(text, marker, i + run);
         while (close > i + run && ch === '_' && close + run < text.length && /\w/.test(text[close + run])) {
-          close = text.indexOf(marker, close + 1);
+          close = findClose(text, marker, close + 1);
         }
         if (close > i + run && text[i + run] !== ' ' && text[close - 1] !== ' ') {
           flush();
@@ -361,6 +405,7 @@ const QUOTE_RE = /^ {0,3}> ?(.*)$/;
 const LIST_RE = /^( *)([-*+]|(\d+)[.)])[ \t]+(.*)$/;
 const TASK_RE = /^\[( |x|X)\][ \t]+(.*)$/;
 const TABLE_SEP_RE = /^\|?(?:[ \t]*:?-{3,}:?[ \t]*\|)+[ \t]*:?-{3,}:?[ \t]*\|?$|^\|[ \t]*:?-{3,}:?[ \t]*\|$/;
+const COMMENT_START_RE = /^ {0,3}<!--/;
 const LINK_DEF_RE = /^ {0,3}\[([^\]]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"([^"\n]*)"|'([^'\n]*)'|\(([^)\n]*)\)))?[ \t]*$/;
 
 function stripClosingHashes(raw) {
@@ -406,85 +451,249 @@ function renderCodeBlock(code, info) {
   return h('pre', { class: 'md-code' }, codeEl);
 }
 
-function isBlockStart(lines, i) {
-  const line = lines[i];
-  if (line.trim() === '') return true;
-  if (FENCE_RE.test(line) || HEADING_RE.test(line) || HR_RE.test(line) || QUOTE_RE.test(line) || LIST_RE.test(line)) return true;
-  if (i + 1 < lines.length && line.includes('|') && TABLE_SEP_RE.test(lines[i + 1].trim())) return true;
-  return false;
+// 行首 Tab 按 CommonMark 的制表位（4 列）展开为空格；只动行首空白，正文里的 Tab 保留。col 是这一行起点在原始行里的绝对列（剥过容器缩进的行不从 0 列算制表位）。
+function expandLead(line, col = 0) {
+  if (!line.includes('\t')) return line;
+  const lead = /^[ \t]*/.exec(line)[0];
+  if (!lead.includes('\t')) return line;
+  let width = 0;
+  for (const ch of lead) width += ch === '\t' ? 4 - ((col + width) % 4) : 1;
+  return ' '.repeat(width) + line.slice(lead.length);
 }
 
-function lastBlockEndsWithParagraph(blocks) {
-  const last = blocks.at(-1);
-  if (!last) return false;
-  if (last.type === 'paragraph') return true;
-  if (last.type === 'list') return lastBlockEndsWithParagraph(last.items.at(-1)?.blocks ?? []);
-  return false;
+// 去掉行首 n 列空白，col 同上；Tab 被剥掉一部分时，剩下的列补成空格（部分 Tab），没动到的 Tab 与正文原样保留。
+function dropColumns(line, n, col = 0) {
+  let width = 0, at = 0;
+  while (width < n && (line[at] === ' ' || line[at] === '\t')) { width += line[at] === '\t' ? 4 - ((col + width) % 4) : 1; at++; }
+  return ' '.repeat(Math.max(0, width - n)) + line.slice(at);
 }
 
-// 用实际块解析状态判断列表项（含最内层嵌套列表）末尾是否处于开放段落（空行或未闭合围栏直接为假），确保列表内表格、Setext/ATX 标题等之后的无缩进行不会被吞入列表。
-function endsWithOpenParagraph(itemLines, openFence, depth) {
-  if (openFence || itemLines.length === 0 || itemLines.at(-1).trim() === '') return false;
-  const parsed = parseBlockAst(itemLines, new Map(), depth + 1);
-  return lastBlockEndsWithParagraph(parsed);
+const leadWidth = line => line.length - line.trimStart().length;
+const closerOf = marker => new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \\t]*$`);
+const isTableRow = line => line.trim() !== '' && line.includes('|') && !FENCE_RE.test(line);
+
+// HTML 注释块在 `-->` 所在行结束（起始行从 `<!--` 之后找），返回 `-->` 之后的剩余文本，没有闭合返回 null。
+const commentRest = (line, from) => { const at = line.indexOf('-->', from); return at < 0 ? null : line.slice(at + 3); };
+
+// 以 line 为起点（next 是其后一行，没有则 undefined）会开启哪种块，按 CommonMark 的优先级判定。
+// 块解析（parseBlockAst）、段落打断判断（interrupts）和列表项末尾跟踪（openTracker）都用它，三处不各写一份规则。
+function blockKind(line, next, afterBlank) {
+  if (afterBlank && line.startsWith('    ')) return 'code';
+  if (COMMENT_START_RE.test(line)) return 'comment';
+  if (FENCE_RE.test(line)) return 'fence';
+  if (HEADING_RE.test(line)) return 'heading';
+  if (HR_RE.test(line)) return 'hr';
+  if (QUOTE_RE.test(line)) return 'quote';
+  if (next !== undefined && line.includes('|') && TABLE_SEP_RE.test(next.trim())) return 'table';
+  if (LIST_RE.test(line)) return 'list';
+  return LINK_DEF_RE.test(line) ? 'def' : 'para';
+}
+
+// 非空行 line 能否打断正在进行的段落。
+const interrupts = (line, next) => { const kind = blockKind(line, next, false); return kind !== 'para' && kind !== 'def'; };
+
+const isBlockStart = (lines, i) => lines[i].trim() === '' || interrupts(lines[i], lines[i + 1]);
+
+const sameMarker = (a, b) => (a[3] !== undefined ? a[2].slice(-1) === b[2].slice(-1) : a[2] === b[2]);
+
+// 列表容器如何处理一行：sibling 同一列表的下一项；end 列表在此结束；indent 属于当前项（有缩进）；flush 无缩进的非列表行（至多是段落续行）。
+// 同一列表的条目必须同标记（无序列表的标记字符相同、有序列表的分隔符相同），换了标记就另起一个列表，有没有空行都一样。形如 `* * *` 的分隔线不算列表项。
+function listLineKind(line, list) {
+  const next = LIST_RE.exec(line);
+  if (next && next[1].length <= list.base) {
+    const same = next[1].length === list.base && (next[3] !== undefined) === list.ordered && !HR_RE.test(line) && sameMarker(next, list.first);
+    return same ? 'sibling' : 'end';
+  }
+  return line.startsWith(' ') ? 'indent' : 'flush';
+}
+
+// 增量维护「当前容器（列表项内容）末尾是否为开放段落」，决定无缩进的行能否作为段落续行留在列表项里，避免对每一行重解析整个列表项。
+// 逐行喂入容器内的行，块类型、打断、列表归属都用上面的共用判定；表格需要看下一行，所以每行等后一行到了再处理（held）。
+// 嵌套列表由子跟踪器接力，每行只做常数次判断。
+function openTracker(depth) {
+  if (depth > MAX_DEPTH) return { push() {}, open() { return true; } };
+  let mode = 'idle'; // idle | para | fence | code | comment | quote | table | list
+  let held = null, fenceRe = null, list = null, pending = false, eatSep = false, afterBlank = true;
+
+  const feedList = (line, next) => {
+    const kind = listLineKind(line, list);
+    if (kind === 'sibling') {
+      const m = LIST_RE.exec(line);
+      list.content = m[1].length + m[2].length + 1;
+      list.item = openTracker(depth + 1);
+      list.item.push(m[4]);
+      pending = false;
+      return true;
+    }
+    if (kind === 'indent') {
+      if (pending) { list.item.push(''); pending = false; }
+      list.item.push(line.slice(Math.min(leadWidth(line), list.content)));
+      return true;
+    }
+    if (kind === 'flush' && !pending && !interrupts(line, next) && list.item.open(line)) {
+      list.item.push(line);
+      return true;
+    }
+    return false;
+  };
+
+  const begin = (line, next) => {
+    switch (blockKind(line, next, afterBlank)) {
+      case 'code': mode = 'code'; break;
+      case 'comment': {
+        const rest = commentRest(line, COMMENT_START_RE.exec(line)[0].length);
+        mode = rest === null ? 'comment' : 'idle';
+        if (rest !== null && rest.trim() !== '') begin(rest, next);
+        break;
+      }
+      case 'fence': mode = 'fence'; fenceRe = closerOf(FENCE_RE.exec(line)[1]); break;
+      case 'quote': mode = 'quote'; break;
+      case 'table': mode = 'table'; eatSep = true; break;
+      case 'list': {
+        const m = LIST_RE.exec(line);
+        mode = 'list';
+        pending = false;
+        list = { base: m[1].length, ordered: m[3] !== undefined, first: m, content: m[1].length + m[2].length + 1, item: openTracker(depth + 1) };
+        list.item.push(m[4]);
+        break;
+      }
+      case 'para': mode = 'para'; break;
+      default: mode = 'idle';
+    }
+  };
+
+  const step = (line, next) => {
+    const blank = line.trim() === '';
+    if (mode === 'fence') {
+      if (fenceRe.test(line)) mode = 'idle';
+    } else if (mode === 'comment') {
+      const rest = blank ? null : commentRest(line, 0);
+      if (rest !== null) {
+        mode = 'idle';
+        if (rest.trim() !== '') begin(rest, next);
+      }
+    } else if (blank) {
+      if (mode === 'list') pending = true;
+      else if (mode !== 'code') mode = 'idle';
+    } else if (eatSep) {
+      eatSep = false;
+    } else if (mode === 'list' && feedList(line, next)) {
+      // 已并入当前列表项
+    } else {
+      if (mode === 'list') { mode = 'idle'; list = null; pending = false; }
+      if (mode === 'para' && SETEXT_RE.test(line)) mode = 'idle';
+      else if (mode === 'para' && !interrupts(line, next)) { /* 段落续行 */ }
+      else if (mode === 'table' && isTableRow(line)) { /* 表格数据行 */ }
+      else if (mode === 'quote' && QUOTE_RE.test(line)) { /* 引用续行 */ }
+      else if (mode === 'code' && line.startsWith('    ')) { /* 代码续行 */ }
+      else begin(line, next);
+    }
+    afterBlank = blank;
+  };
+
+  const settle = next => {
+    if (held === null) return;
+    const line = held;
+    held = null;
+    step(line, next);
+  };
+
+  return {
+    push(line) { settle(line); held = line; },
+    // next 是紧随其后、准备作为无缩进续行并入的那一行（也是 held 那一行的「下一行」）。
+    open(next) {
+      settle(next);
+      return mode === 'para' || (mode === 'list' && !pending && list.item.open(next));
+    },
+  };
 }
 
 // 第一阶段：块级解析生成 AST，仅在合法块起始位置（含顶层、引用块、列表项内，排除代码块与段落续行）收集引用定义。
-function parseBlockAst(lines, defs, depth = 0) {
-  if (depth > MAX_DEPTH) return [{ type: 'paragraph', text: lines.join('\n') }];
+// rawLines 保留行首 Tab（代码正文用），lines 是行首 Tab 已展开的同一批行（结构判断用），cols 是每行起点的绝对列（剥过容器缩进的行，缺省为 0）；三者按行对齐。
+function parseBlockAst(rawLines, defs, depth = 0, lines = rawLines.map(line => expandLead(line)), cols = []) {
+  if (depth > MAX_DEPTH) return [{ type: 'paragraph', text: rawLines.join('\n') }];
   const blocks = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     if (line.trim() === '') { i++; continue; }
+    const kind = blockKind(line, lines[i + 1], i === 0 || lines[i - 1].trim() === '');
+
+    // 缩进代码块：前面是空行或文档开头、行首 4 列以上缩进的连续行（列表项内的缩进内容已在列表分支里被消费）
+    if (kind === 'code') {
+      const codeLines = [];
+      let last = 0;
+      while (i < lines.length && (lines[i].trim() === '' || lines[i].startsWith('    '))) {
+        codeLines.push(dropColumns(rawLines[i], 4, cols[i] ?? 0));
+        if (lines[i].trim() !== '') last = codeLines.length;
+        i++;
+      }
+      blocks.push({ type: 'code', code: codeLines.slice(0, last).join('\n'), info: '' });
+      continue;
+    }
+
+    // HTML 注释块：到含 `-->` 的行结束，中间可跨空行，整块不显示；没有闭合则到容器末尾。
+    // 闭合行 `-->` 之后若还有正文，该正文作为新的一行继续解析（不丢内容）。
+    if (kind === 'comment') {
+      let rest = commentRest(line, COMMENT_START_RE.exec(line)[0].length), j = i;
+      while (rest === null && ++j < lines.length) rest = commentRest(lines[j], 0);
+      if (rest === null) i = lines.length;
+      else if (rest.trim() === '') i = j + 1;
+      else { lines[j] = rawLines[j] = rest; i = j; }
+      continue;
+    }
 
     // 围栏代码块
-    const fence = FENCE_RE.exec(line);
-    if (fence) {
-      const markerChar = fence[1][0], markerLen = fence[1].length, info = fence[2];
+    if (kind === 'fence') {
+      const marker = FENCE_RE.exec(line);
       const codeLines = [];
       i++;
-      const closeRe = new RegExp(`^ {0,3}${markerChar}{${markerLen},}[ \\t]*$`);
-      while (i < lines.length && !closeRe.test(lines[i])) { codeLines.push(lines[i]); i++; }
+      const closeRe = closerOf(marker[1]);
+      while (i < lines.length && !closeRe.test(lines[i])) { codeLines.push(rawLines[i]); i++; }
       if (i < lines.length) i++;
-      blocks.push({ type: 'code', code: codeLines.join('\n'), info });
+      blocks.push({ type: 'code', code: codeLines.join('\n'), info: marker[2] });
       continue;
     }
 
     // ATX 标题（CommonMark：仅空白分隔的尾随 # 为闭合序列，# C# 保留为 C#）
-    const heading = HEADING_RE.exec(line);
-    if (heading) {
+    if (kind === 'heading') {
+      const heading = HEADING_RE.exec(line);
       blocks.push({ type: 'heading', level: heading[1].length, text: stripClosingHashes(heading[2] ?? '') });
       i++;
       continue;
     }
 
     // 分隔线
-    if (HR_RE.test(line)) {
+    if (kind === 'hr') {
       blocks.push({ type: 'hr' });
       i++;
       continue;
     }
 
     // 引用块
-    if (QUOTE_RE.test(line)) {
-      const inner = [];
+    if (kind === 'quote') {
+      const inner = [], innerLines = [], innerCols = [];
       while (i < lines.length) {
         const m = QUOTE_RE.exec(lines[i]);
-        if (m) { inner.push(m[1]); i++; }
-        else break;
+        if (!m) break;
+        const raw = QUOTE_RE.exec(rawLines[i])?.[1] ?? m[1];
+        const col = (cols[i] ?? 0) + rawLines[i].length - raw.length;
+        inner.push(raw);
+        innerLines.push(expandLead(raw, col));
+        innerCols.push(col);
+        i++;
       }
-      blocks.push({ type: 'blockquote', children: parseBlockAst(inner, defs, depth + 1) });
+      blocks.push({ type: 'blockquote', children: parseBlockAst(inner, defs, depth + 1, innerLines, innerCols) });
       continue;
     }
 
     // GFM 表格
-    if (i + 1 < lines.length && line.includes('|') && TABLE_SEP_RE.test(lines[i + 1].trim())) {
+    if (kind === 'table') {
       const headers = splitTableRow(line);
       const aligns = parseAligns(lines[i + 1].trim());
       i += 2;
       const rows = [];
-      while (i < lines.length && lines[i].trim() !== '' && lines[i].includes('|') && !FENCE_RE.test(lines[i])) {
+      while (i < lines.length && isTableRow(lines[i])) {
         rows.push(splitTableRow(lines[i]));
         i++;
       }
@@ -492,55 +701,57 @@ function parseBlockAst(lines, defs, depth = 0) {
       continue;
     }
 
-    // 有序 / 无序 / 任务列表（按当前打开的块决定列表容器是否结束，只允许段落续行省略缩进）
-    const listStart = LIST_RE.exec(line);
-    if (listStart) {
-      const ordered = listStart[3] !== undefined;
-      const baseIndent = listStart[1].length;
-      const startNum = ordered ? Number(listStart[3]) : 1;
+    // 有序 / 无序 / 任务列表（按当前打开的块决定列表容器是否结束，只允许段落续行省略缩进；条目之间的空行不结束同类列表）
+    if (kind === 'list') {
+      const first = LIST_RE.exec(line);
+      const list = { base: first[1].length, ordered: first[3] !== undefined, first };
       const items = [];
-      while (i < lines.length) {
+      while (i < lines.length && listLineKind(lines[i], list) === 'sibling') {
         const m = LIST_RE.exec(lines[i]);
-        if (!m || m[1].length !== baseIndent || (m[3] !== undefined) !== ordered) break;
         const contentIndent = m[1].length + m[2].length + 1;
-        const firstLine = m[4];
-        const itemLines = [firstLine];
-        const firstFence = FENCE_RE.exec(firstLine);
-        let openFence = firstFence ? new RegExp(`^ {0,3}${firstFence[1][0]}{${firstFence[1].length},}[ \\t]*$`) : null;
+        const itemLines = [m[4]], itemRaw = [m[4]], itemCols = [(cols[i] ?? 0) + contentIndent];
+        const tracker = openTracker(depth + 1);
+        tracker.push(m[4]);
         i++;
         while (i < lines.length) {
           if (lines[i].trim() === '') {
-            if (i + 1 < lines.length && /^ +/.test(lines[i + 1])) {
-              itemLines.push('');
-              i++;
+            let next = i + 1;
+            while (next < lines.length && lines[next].trim() === '') next++;
+            if (next < lines.length && listLineKind(lines[next], list) === 'indent') {
+              for (; i < next; i++) { itemLines.push(''); itemRaw.push(''); itemCols.push(0); tracker.push(''); }
               continue;
             }
             break;
           }
-          const nextList = LIST_RE.exec(lines[i]);
-          if (nextList && nextList[1].length <= baseIndent) break;
-          if (/^ +/.test(lines[i])) {
-            const strip = Math.min(lines[i].match(/^ */)[0].length, contentIndent);
+          const kindHere = listLineKind(lines[i], list);
+          if (kindHere === 'indent') {
+            const strip = Math.min(leadWidth(lines[i]), contentIndent);
             const sub = lines[i].slice(strip);
             itemLines.push(sub);
-            if (openFence) {
-              if (openFence.test(sub)) openFence = null;
-            } else {
-              const subFence = FENCE_RE.exec(sub);
-              if (subFence) openFence = new RegExp(`^ {0,3}${subFence[1][0]}{${subFence[1].length},}[ \\t]*$`);
-            }
+            itemRaw.push(dropColumns(rawLines[i], strip, cols[i] ?? 0));
+            itemCols.push((cols[i] ?? 0) + strip);
+            tracker.push(sub);
             i++;
-          } else if (!isBlockStart(lines, i) && endsWithOpenParagraph(itemLines, openFence, depth)) {
+          } else if (kindHere === 'flush' && !isBlockStart(lines, i) && tracker.open(lines[i])) {
             itemLines.push(lines[i]);
+            itemRaw.push(rawLines[i]);
+            itemCols.push(cols[i] ?? 0);
+            tracker.push(lines[i]);
             i++;
           } else {
             break;
           }
         }
         // 先完成块解析，再在渲染阶段识别首段的任务清单标记，避免任务文本里的 `1.` / `>` 被重新解析为块。
-        items.push({ blocks: parseBlockAst(itemLines, defs, depth + 1) });
+        items.push({ blocks: parseBlockAst(itemRaw, defs, depth + 1, itemLines, itemCols) });
+        // 空行之后紧跟同类列表项：松散列表，继续同一个列表
+        if (i < lines.length && lines[i].trim() === '') {
+          let next = i;
+          while (next < lines.length && lines[next].trim() === '') next++;
+          if (next < lines.length && listLineKind(lines[next], list) === 'sibling') i = next;
+        }
       }
-      blocks.push({ type: 'list', ordered, startNum, items });
+      blocks.push({ type: 'list', ordered: list.ordered, startNum: list.ordered ? Number(first[3]) : 1, items });
       continue;
     }
 
@@ -582,8 +793,8 @@ function renderBlockAst(blocks, ctx) {
         const headingEl = h(`h${block.level}`, {}, ...content);
         const base = slugify(richTextContent(headingEl));
         if (base) {
-          let id = base, n = 1;
-          while (ctx.headings.has(id)) id = `${base}-${n++}`;
+          let id = headingId(base), n = 1;
+          while (ctx.headings.has(id)) id = headingId(`${base}-${n++}`);
           headingEl.setAttribute('id', id);
           ctx.headings.set(id, headingEl);
         }
@@ -628,7 +839,12 @@ function renderBlockAst(blocks, ctx) {
 export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpenExternal = null, onOpenRelative = null, onCopyEmail = null } = {}) {
   const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
   const defs = new Map();
-  const ast = parseBlockAst(normalized.split('\n'), defs);
+  const lines = normalized.split('\n');
+  // 文件开头的 YAML front matter（首行 --- 到下一个 --- 或 ...）按代码块显示，不当分隔线和标题
+  const front = lines[0] === '---' ? lines.findIndex((line, at) => at > 0 && (line === '---' || line === '...')) : -1;
+  const ast = front > 0
+    ? [{ type: 'code', code: lines.slice(1, front).join('\n'), info: 'yaml' }, ...parseBlockAst(lines.slice(front + 1), defs)]
+    : parseBlockAst(lines, defs);
   const ctx = { basePath, resolveImage, onOpenExternal, onOpenRelative, onCopyEmail, defs, headings: new Map() };
   return h('div', { class: 'md selectable' }, ...renderBlockAst(ast, ctx));
 }
