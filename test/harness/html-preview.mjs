@@ -369,7 +369,7 @@ window.__L = {
 const bytesOf = text => Buffer.from(text).toString('base64');
 const WIDE_PAGE = bytesOf(`<h1>标题</h1><p>正文 ${'a'.repeat(300)}</p>
 <table><tr><th>名称</th><th>数量</th><th>备注</th></tr><tr><td>苹果</td><td>3</td><td>新鲜</td></tr></table>
-<table><tr>${Array.from({ length: 12 }, (_, i) => `<th>列${i}</th>`).join('')}</tr><tr>${Array.from({ length: 12 }, (_, i) => `<td>单元格内容很长的一格${i}</td>`).join('')}</tr></table>
+<table><tr>${Array.from({ length: 12 }, (_, i) => `<th>列${i}</th>`).join('')}</tr><tr>${Array.from({ length: 12 }, (_, i) => `<td>${'w'.repeat(40)}${i}</td>`).join('')}</tr></table>
 <pre>const padding = '${'x'.repeat(400)}';</pre>`);
 // 「中文」「编码」的 GBK 字节（Node 没有 GBK 编码器）。
 const GBK_PAGE = Buffer.concat([Buffer.from('<meta charset="gbk"><p>'), Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), Buffer.from('</p><p>'), Buffer.from([0xb1, 0xe0, 0xc2, 0xeb]), Buffer.from('</p>')]).toString('base64');
