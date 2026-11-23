@@ -293,12 +293,12 @@ test('选区：clippedRichSelection 跳过被收起的 <details> 遮住的文字
 
 // ---- 查找条：导航、滚动、展开 ----
 
-async function fixture(t, root, { highlight = true, rich = true } = {}) {
+async function fixture(t, root, { highlight = true, rich = true, version } = {}) {
   await withDom(t);
   const env = installHighlights(t), body = el('div');
   body.append(root);
   const makeRange = () => { const range = env.makeRange(); range.getClientRects = () => env.rects?.(range) ?? [env.rectOf?.(range) ?? { top: 0, bottom: 20, left: 0, right: 10, height: 20, width: 10 }]; return range; };
-  const find = createFind({ body, makeRange });
+  const find = createFind({ body, makeRange, version });
   find.open();
   find.setContent(root, null, { rich, highlight });
   const type = term => { find.input.value = term; find.input.dispatch('input'); t.mock.timers.tick(150); };
@@ -431,6 +431,23 @@ test('分批标记：富文本里的 Highlight 一批批注册；换了正文后
   while (queue.size) { const [[handle, fn]] = queue; queue.delete(handle); fn(); }
   assert.equal(old.size, FIND_BATCH, '旧批次没有再动');
   assert.equal(fresh.size, FIND_BATCH + 10);
+});
+
+test('分批标记：正文版本由调用方给；版本变了，排着的批次不再往里加（不靠 setContent）', async t => {
+  const queue = new Map();
+  let id = 3_000_000, bodyVersion = 7;
+  const root = el('p', null, 'a '.repeat(FIND_BATCH * 2 + 5));
+  const { env, type } = await fixture(t, root, { version: () => bodyVersion });
+  const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms, ...args) => { if (ms !== 0) return realSet(fn, ms, ...args); queue.set(++id, fn); return id; };
+  globalThis.clearTimeout = handle => { if (queue.delete(handle)) return; realClear(handle); };
+  t.after(() => { globalThis.setTimeout = realSet; globalThis.clearTimeout = realClear; });
+  type('a');
+  const marks = env.registry.get('find');
+  assert.equal(marks.size, FIND_BATCH);
+  bodyVersion++;
+  while (queue.size) { const [[handle, fn]] = queue; queue.delete(handle); fn(); }
+  assert.equal(marks.size, FIND_BATCH, '版本变了：下一批不再动');
 });
 
 // ---- 和预览的接线 ----

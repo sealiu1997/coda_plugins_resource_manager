@@ -71,8 +71,8 @@ test('相对路径校验：逐行覆盖（第 27.3 节的 6 步）', () => {
 test('URL 表（图片）：只有图片扩展名的相对路径才显示，非图片不调 resolveImage、不发请求', () => {
   const requested = [];
   const resolve = rel => { requested.push(rel); return `svc/${rel}`; };
-  assert.deepEqual(classifyImage('a.png', 'docs/R.md', resolve), { kind: 'local', src: 'svc/docs/a.png' });
-  assert.deepEqual(classifyImage('./A.PNG?v=1', 'docs/R.md', resolve), { kind: 'local', src: 'svc/docs/A.PNG' });
+  assert.deepEqual(classifyImage('a.png', 'docs/R.md', resolve), { kind: 'local', path: 'docs/a.png', src: 'svc/docs/a.png' });
+  assert.deepEqual(classifyImage('./A.PNG?v=1', 'docs/R.md', resolve), { kind: 'local', path: 'docs/A.PNG', src: 'svc/docs/A.PNG' });
   for (const skipped of ['a.txt', 'a', 'a.md', 'a.mp4', 'a.glb']) {
     assert.deepEqual(classifyImage(skipped, 'docs/R.md', resolve), { kind: 'invalid', skipped: true }, `${skipped}：基线里是 <img>，收紧后出占位`);
   }

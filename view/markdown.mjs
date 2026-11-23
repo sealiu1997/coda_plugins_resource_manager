@@ -138,7 +138,7 @@ function resolveRef(text, closeBracket, fallbackLabel, defs) {
   return found ? { dest: found.dest, title: found.title, end: closeBracket + 1 } : null;
 }
 
-const renderImageNode = (alt, dest, title, ctx) => renderImage(classifyImage(dest, ctx.basePath, ctx.resolveImage), alt, title, ctx.isCurrent);
+const renderImageNode = (alt, dest, title, ctx) => renderImage(classifyImage(dest, ctx.basePath, ctx.resolveImage), alt, title, ctx.isCurrent, ctx.onLocalImage);
 
 const renderLinkNode = (labelNodes, dest, title, ctx) => renderLink(labelNodes, richLinkTarget(dest, ctx.basePath), title, ctx);
 
@@ -713,7 +713,7 @@ function renderBlockAst(blocks, ctx) {
 }
 
 // 渲染 Markdown 文本为 .md 容器节点；绝不解析原始 HTML。
-export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpenExternal = null, onOpenRelative = null, onCopyEmail = null, isCurrent = () => true } = {}) {
+export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpenExternal = null, onOpenRelative = null, onCopyEmail = null, isCurrent = () => true, onLocalImage = null } = {}) {
   const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
   const defs = new Map();
   const lines = normalized.split('\n');
@@ -723,6 +723,6 @@ export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpe
     ? [{ type: 'code', code: lines.slice(1, front).join('\n'), info: 'yaml' }, ...parseBlockAst(lines.slice(front + 1), defs)]
     : parseBlockAst(lines, defs);
   const headings = new Map();
-  const ctx = { basePath, resolveImage, onOpenExternal, onOpenRelative, onCopyEmail, isCurrent, defs, headings, lookupAnchor: fragment => headings.get(fragmentId(fragment)) ?? null };
+  const ctx = { basePath, resolveImage, onOpenExternal, onOpenRelative, onCopyEmail, isCurrent, onLocalImage, defs, headings, lookupAnchor: fragment => headings.get(fragmentId(fragment)) ?? null };
   return h('div', { class: 'md selectable' }, ...renderBlockAst(ast, ctx));
 }

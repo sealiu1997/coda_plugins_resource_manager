@@ -104,7 +104,7 @@ export function safeLinkTarget(rawHref, basePath = '') {
 }
 
 // 图片地址分类（URL 表的「图片」一列）：
-//   { kind: 'local', src }  只有相对路径且是图片扩展名（mediaOf 的种类是 image），经 resolveImage 给出流式服务地址；
+//   { kind: 'local', path, src }  只有相对路径且是图片扩展名（mediaOf 的种类是 image），经 resolveImage 给出流式服务地址；resolveImage 返回 null 表示口令还没到，地址之后由调用方补；
 //   { kind: 'remote', url } 外链图片，只出占位；其余 { kind: 'invalid' }。
 //   非图片的相对路径：不调 resolveImage，不发请求；其中基线里本来会显示成 <img> 的（路径合法、有流式地址），多带 skipped: true。
 // data: 位图的显示和像素预算不在这里（html.mjs 的事），现在一律按 invalid。
@@ -116,7 +116,7 @@ export function classifyImage(rawSrc, basePath, resolveImage) {
   const path = resolveRelativePath(basePath, src);
   if (!path || typeof resolveImage !== 'function') return { kind: 'invalid' };
   if (mediaOf(path)?.kind !== 'image') return { kind: 'invalid', skipped: true };
-  return { kind: 'local', src: resolveImage(path) };
+  return { kind: 'local', path, src: resolveImage(path) };
 }
 
 // ---- 建节点 ----
@@ -190,21 +190,17 @@ const imagePlaceholder = (text, title, skipped = false) => h('span', { class: `m
 
 // 按 classifyImage 的结果建图片节点。能显示的是稳定的包装 span.md-img-box，里面放 img.md-img；
 // 加载失败时只在包装里面加占位（包装外和已有的文本节点不动，查找索引不用重建）；isCurrent() 为假（正文已换）的回调直接忽略。
-export function renderImage(info, alt, title, isCurrent = () => true) {
+// onLocal({ img, path, fail })：本地图片的清单项，调用方在口令到了之后补 src，口令拿不到就调 fail() 换成占位（同样受 isCurrent 约束）。
+export function renderImage(info, alt, title, isCurrent = () => true, onLocal = null) {
   if (info.kind === 'local') {
-    const img = h('img', {
-      class: 'md-img',
-      src: info.src,
-      alt,
-      title: title || null,
-      draggable: 'false',
-      onerror: () => {
-        if (!isCurrent()) return;
-        img.remove();
-        box.append(imagePlaceholder(alt ? `[图片：${alt}]` : '[图片]'));
-      },
-    });
+    const fail = () => {
+      if (!isCurrent()) return;
+      img.remove();
+      box.append(imagePlaceholder(alt ? `[图片：${alt}]` : '[图片]'));
+    };
+    const img = h('img', { class: 'md-img', src: info.src, alt, title: title || null, draggable: 'false', onerror: fail });
     const box = h('span', { class: 'md-img-box' }, img);
+    onLocal?.({ img, path: info.path, fail });
     return box;
   }
   if (info.kind === 'remote') return imagePlaceholder(alt ? `[外链图片：${alt}]` : '[外链图片]', info.url);
