@@ -15,6 +15,7 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "test:webgl": "node test/harness/inspect3d.mjs",
+    "test:rich-find": "node test/harness/rich-find.mjs",
     "check:coda": "npx --yes @coda-console/plugin-check@0.8.31 . --manifest"
   },
   "engines": { "coda": 3 },

@@ -63,8 +63,8 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // back：给了就在头部最左边放「返回」（Mac 侧栏预览：原生工具栏项目只能在右侧）；文件页和 iPhone 不传。
 // open(path, scroll) 带了要恢复的位置时，返回的 Promise 在「位置用上了」时变 true（正文到了、已设好位置；读取失败不算，位置留着等重试），
 // 在「位置作废」时变 false（预览关了、改看别的文件）。读取被刷新、重载或 changed 作废时位置不丢：接替它的那次读取接着带上，用上才算完。
-// 文件内查找（第 18.6 节）是预览自己的一部分，接在预览已有的生命周期上：open 换了文件、reload、stop、close 关查找；refresh 保留；release 不碰。
-// 页面只负责入口：canFind（有显示着的文本才有）、openFind()（⌘F、iPhone 的「查找」菜单项）。consumed(event)：这个按键已经被菜单消费了（菜单开着时的 Esc）。
+// 文件内查找（第 18.6 节、第 26.2 节）是预览自己的一部分，接在预览已有的生命周期上：open 换了文件、reload、stop、close 关查找；refresh 保留；release 不碰。
+// 页面只负责入口：canFind（有显示着的文本才有，富文本预览也有）、openFind()（⌘F、iPhone 的「查找」菜单项）。consumed(event)：这个按键已经被菜单消费了（菜单开着时的 Esc）。
 // selectionMenu(event, { path, text, startLine, endLine })：给了就接管正文里选中文字的右键（只有 Mac 传）；预览不知道菜单里是什么。
 // 选区为空、或裁到正文里之后为空时不接管，走系统默认。内容和行号在这里取好，交出去之后和选区无关。
 // media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
@@ -103,7 +103,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       if (event.shiftKey) find.prev(); else find.next();
     }
   });
-  let textShown = false, pendingFind = null, longLine = false; // 现在显示的是不是文本；show() 换好的正文，等滚动位置设好再交给查找
+  let textShown = false, pendingFind = null, longLine = false; // 现在显示的是不是文本（源码或富文本预览）；show() 换好的正文，等滚动位置设好再交给查找
 
   let path = null, token = 0, shown = null, objectUrl = null; // shown：当前显示的 { size, mtimeMs }
   let opens = 0, stoppedAt = -1; // 打开次数和上一次停止时的次数：释放只在停止之后没有再打开过时才做（返回的退场还没结束又打开了）
@@ -138,6 +138,8 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     modeBar.hidden = false;
     for (const { value, pressed } of items) modeButtons.find(entry => entry.value === value).button.setAttribute('aria-pressed', String(pressed));
   };
+  // 把 show() 换好的正文交给查找（顺序：换正文 → 设好滚动位置 → 重建查找）。keepPosition：后台刷新沿用旧位置；预览和源码之间切换取第 1 处。
+  const feedFind = keepPosition => { if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { rich: pendingFind.rich, highlight: pendingFind.highlight, keepPosition }); };
   function setMode(next) {
     if (path === null || !modes.select(next)) return;
     paintMode();
@@ -146,12 +148,11 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       show(lastResult, richToken);
       if (prevStale !== null) setStale(prevStale);
       body.scrollTop = 0; body.scrollLeft = 0;
-      if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { highlight: pendingFind.highlight });
+      feedFind(false);
       return;
     }
     load(false);
   }
-  const inRichPreview = () => modes.isRichPreview() && lastResult?.kind === ContentKind.TEXT;
   const stopMedia = () => {
     if (!player) return;
     player.pause?.(); player.removeAttribute('src'); player.load?.();
@@ -167,19 +168,22 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     revoke();
     lastResult = result;
     const isMdPreview = result.kind === ContentKind.TEXT && modes.isRichPreview();
-    textShown = result.kind === ContentKind.TEXT && !isMdPreview;
+    textShown = result.kind === ContentKind.TEXT;
     pendingFind = null;
-    if (!textShown) find.close(); // 图片、二进制、Markdown 富文本预览不启用源码查找（切到「源码」即可查找）
+    if (!textShown) find.close(); // 图片、二进制不能查找；源码和富文本预览都能
     shown = { size: result.size, mtimeMs: result.mtimeMs };
     // 元信息：目录 · 行数 · 大小；根目录下的文件没有目录，非文本没有行数。修改时间放进 title。
     const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
     const lines = result.kind === ContentKind.TEXT ? `${lineCount(result.text)} 行` : '';
+    // 有长行：上色按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行（源码和富文本里不折行的代码块都一样），所以只计数、导航、滚动。
+    longLine = result.kind === ContentKind.TEXT && hasLongLine(result.text);
     if (isMdPreview) {
       const note = result.truncated ? `只显示前 ${formatSize(TEXT_LIMIT)}` : '';
       setMeta([dir, lines, formatSize(result.size), note].filter(Boolean).join(' · '), `修改于 ${formatTime(result.mtimeMs)}`);
       const resolveImage = mediaToken ? rel => serviceUrl(mediaToken, rel) : null;
       const md = renderMarkdown(result.text, { basePath: path, resolveImage, onOpenExternal: openExternal, onOpenRelative: openRelative, onCopyEmail: copyEmail ?? (email => copy(email)) });
       gutterEl = null;
+      pendingFind = { el: md, text: null, rich: true, highlight: !longLine };
       if (selectionMenu) md.addEventListener('contextmenu', event => onSelect(event, md, false));
       body.replaceChildren(md);
       return;
@@ -187,8 +191,6 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     // 高亮：认得出语言才试；超过上限不试，库或解析出错就退回纯文本，都在元信息里注明。认不出语言的不加说明。
     const language = result.kind === ContentKind.TEXT ? languageOf(path.split('/').pop()) : null;
     // 先判大小，超过只写「不高亮」；没超再判行长。
-    // 有长行：上色已经按它判断，查找也用同一个结果（不再扫一遍正文）：长行里注册高亮会让浏览器同步重画整行，所以只计数、导航、滚动。
-    longLine = result.kind === ContentKind.TEXT && hasLongLine(result.text);
     const skip = !language ? '' : result.bytes.length > HIGHLIGHT_LIMIT ? '不高亮' : longLine ? '行太长，不高亮' : '';
     const colored = language && !skip ? highlight(result.text, language) : null;
     const plain = !language ? '' : skip || (colored ? '' : '没能高亮');
@@ -199,7 +201,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       const text = h('pre', { class: 'text selectable' }, ...(colored ? [] : [result.text]));
       if (colored) appendAll(text, colored);
       gutterEl = gutter;
-      pendingFind = { el: text, text: result.text, highlight: !longLine };
+      pendingFind = { el: text, text: result.text, rich: false, highlight: !longLine };
       if (selectionMenu) text.addEventListener('contextmenu', event => onSelect(event, text, true));
       body.replaceChildren(h('div', { class: 'code' }, gutter, text));
     } else if (result.kind === ContentKind.IMAGE && result.bytes.length > 0) {
@@ -333,7 +335,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       show(result, richToken);
       body.scrollTop = keep.top; body.scrollLeft = keep.left;
       // 顺序：换正文 → 设好滚动位置 → 重建查找（刷新和换正文时查找不滚动，不盖掉恢复）
-      if (pendingFind) find.setContent(pendingFind.el, pendingFind.text, { highlight: pendingFind.highlight });
+      feedFind(true);
       settle(true);
     } catch (error) {
       if (mark()) failure(error, silent, () => load(false)); // 失败不算用上：待恢复的位置留着，重试或之后的刷新成功才用、才清
@@ -374,12 +376,11 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     scroll: () => (path === null ? { top: 0, left: 0 } : { top: body.scrollTop, left: body.scrollLeft }),
     onScroll: fn => body.addEventListener('scroll', fn, { passive: true }),
     get path() { return path; },
-    // 文件内查找的入口：有显示着的文本（或查找条已经开着）才有；Markdown 预览里没有可查找的源码，打开查找时先切到「源码」。
-    get canFind() { return path !== null && (textShown || find.isOpen || inRichPreview()); },
+    // 文件内查找的入口：有显示着的文本（或查找条已经开着）才有；Markdown 预览里直接在渲染后的正文里找，不切模式。
+    get canFind() { return path !== null && (textShown || find.isOpen); },
     get findOpen() { return find.isOpen; },
     openFind() {
       if (!this.canFind) return false;
-      if (inRichPreview()) setMode('source');
       find.open();
       return true;
     },

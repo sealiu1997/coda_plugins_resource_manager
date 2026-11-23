@@ -1,4 +1,6 @@
 // 预览里选中的文字：裁到正文元素里面，算出覆盖的行。DOM 的部分只用 Range 的标准方法，行号是纯函数。
+import { BLOCK_TAGS, CELL_TAGS, RICH_UI_ATTR, hiddenByDetails } from './rich.mjs';
+
 const START_TO_START = 0, END_TO_END = 2; // Range.START_TO_START、Range.END_TO_END
 
 // el 是正文（一个 pre，里面是文本节点，上色后还有嵌套的 span）。选区为空或和 el 不相交返回 null；
@@ -20,29 +22,23 @@ export function clippedSelection(el, selection = globalThis.getSelection?.()) {
   return { text, start: before.toString().length };
 }
 
-const BLOCK_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'LI', 'BLOCKQUOTE', 'PRE', 'TR', 'HR', 'DIV']);
-const CELL_TAGS = new Set(['TD', 'TH']);
-
-// 标记富文本预览中不属于正文的操作控件（如「复制邮箱」按钮）：提取正文（标题锚点、选区复制/添加到聊天）时共用此区分。
-export const RICH_UI_ATTR = 'data-rich-ui';
-
 export function isRichUiControl(node) {
   return Boolean(node?.getAttribute?.(RICH_UI_ATTR) != null || node?.dataset?.richUi !== undefined);
 }
 
-// 提取富文本节点的纯正文文本（跳过带 RICH_UI_ATTR 的操作控件）。
-export function richTextContent(node) {
+// 提取富文本节点的纯正文文本（跳过带 RICH_UI_ATTR 的操作控件；counted(控件) 为真的控件，字照样计入）。
+export function richTextContent(node, counted = () => false) {
   if (!node) return '';
   if (typeof node === 'string' || typeof node.data === 'string' || node.nodeType === 3) {
     return typeof node === 'string' ? node : (node.data ?? node.textContent ?? '');
   }
-  if (isRichUiControl(node)) return '';
+  if (isRichUiControl(node) && !counted(node)) return '';
   let out = '';
-  for (const child of node.childNodes ?? node.children ?? []) out += richTextContent(child);
+  for (const child of node.childNodes ?? node.children ?? []) out += richTextContent(child, counted);
   return out;
 }
 
-// 富文本预览（如 Markdown）的选区提取：复用 clippedSelection 的选区裁剪，按可见块级结构与 <br> 保留换行、跨越的表格单元格（含空单元格）保留完整制表符，并跳过操作控件文字同时保持字符偏移准确。
+// 富文本预览（如 Markdown）的选区提取：复用 clippedSelection 的选区裁剪，按可见块级结构与 <br> 保留换行、跨越的表格单元格（含空单元格）保留完整制表符，并跳过操作控件和收起的 <details> 遮住的文字，同时保持字符偏移准确。
 export function clippedRichSelection(el, selection = globalThis.getSelection?.()) {
   const picked = clippedSelection(el, selection);
   if (!picked) return null;
@@ -52,7 +48,7 @@ export function clippedRichSelection(el, selection = globalThis.getSelection?.()
     if (typeof node === 'string' || typeof node.data === 'string' || node.nodeType === 3) {
       const str = typeof node === 'string' ? node : (node.data ?? node.textContent ?? '');
       const len = str.length;
-      if (!skip) {
+      if (!skip && hiddenByDetails(node) === null) {
         const lo = Math.max(0, selStart - pos), hi = Math.min(len, selEnd - pos);
         if (hi > lo) {
           if (out !== '') {
@@ -70,7 +66,7 @@ export function clippedRichSelection(el, selection = globalThis.getSelection?.()
       pos += len;
       return;
     }
-    const nextSkip = skip || isRichUiControl(node);
+    const nextSkip = skip || isRichUiControl(node) || hiddenByDetails(node) !== null;
     const tag = node.tagName?.toUpperCase?.() ?? '';
     if (tag === 'BR') {
       if (!nextSkip && pos > selStart && pos < selEnd) pendingBreak = true;
