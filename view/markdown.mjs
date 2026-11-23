@@ -1,7 +1,7 @@
 // 页内 Markdown 富文本渲染：纯 DOM 构建（零 innerHTML，原始 HTML 按文本安全转义），无外部依赖。
 // 支持 CommonMark / GFM 常用语法：ATX/Setext 标题（含页内锚点）、段落、粗体/斜体/删除线、行内代码、围栏与缩进代码块（围栏复用 highlight.mjs 高亮）、引用块、有序/无序/任务/松散列表（Tab 按 4 列制表位）、表格、分隔线、内联与引用式链接/图片；另外丢弃 HTML 注释、开头 YAML front matter 按代码块显示、<br> 转换行，其余原始 HTML 仍按文本显示。
 import { h } from './dom.mjs';
-import { classifyImage, countsInHeadingId, renderCodeBlock, renderImage, renderLink, resolveRelativePath, safeDecode, safeLinkTarget as richLinkTarget } from './rich.mjs';
+import { classifyImage, countsInHeadingId, createImageBudget, renderCodeBlock, renderImage, renderLink, resolveRelativePath, safeDecode, safeLinkTarget as richLinkTarget } from './rich.mjs';
 import { richTextContent } from './selection.mjs';
 
 const MAX_DEPTH = 16;
@@ -138,7 +138,7 @@ function resolveRef(text, closeBracket, fallbackLabel, defs) {
   return found ? { dest: found.dest, title: found.title, end: closeBracket + 1 } : null;
 }
 
-const renderImageNode = (alt, dest, title, ctx) => renderImage(classifyImage(dest, ctx.basePath, ctx.resolveImage), alt, title, ctx.isCurrent, ctx.onLocalImage);
+const renderImageNode = (alt, dest, title, ctx) => renderImage(classifyImage(dest, ctx.basePath, ctx.resolveImage, ctx.imageBudget), alt, title, ctx.isCurrent, ctx.onLocalImage);
 
 const renderLinkNode = (labelNodes, dest, title, ctx) => renderLink(labelNodes, richLinkTarget(dest, ctx.basePath), title, ctx);
 
@@ -723,6 +723,6 @@ export function renderMarkdown(text, { basePath = '', resolveImage = null, onOpe
     ? [{ type: 'code', code: lines.slice(1, front).join('\n'), info: 'yaml' }, ...parseBlockAst(lines.slice(front + 1), defs)]
     : parseBlockAst(lines, defs);
   const headings = new Map();
-  const ctx = { basePath, resolveImage, onOpenExternal, onOpenRelative, onCopyEmail, isCurrent, onLocalImage, defs, headings, lookupAnchor: fragment => headings.get(fragmentId(fragment)) ?? null };
+  const ctx = { imageBudget: createImageBudget(), basePath, resolveImage, onOpenExternal, onOpenRelative, onCopyEmail, isCurrent, onLocalImage, defs, headings, lookupAnchor: fragment => headings.get(fragmentId(fragment)) ?? null };
   return h('div', { class: 'md selectable' }, ...renderBlockAst(ast, ctx));
 }

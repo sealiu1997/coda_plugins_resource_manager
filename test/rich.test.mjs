@@ -4,7 +4,7 @@ import test from 'node:test';
 import { h } from '../view/dom.mjs';
 import { renderMarkdown } from '../view/markdown.mjs';
 import { mountPreview } from '../view/preview.mjs';
-import { classifyImage, renderLink, resolveRelativePath, safeLinkTarget } from '../view/rich.mjs';
+import { MAX_IMAGES, classifyImage, createImageBudget, dataImageSize, renderImage, renderLink, resolveRelativePath, safeLinkTarget } from '../view/rich.mjs';
 import { Element, loadFileApp } from './support/dom.mjs';
 import { flush } from './support/fake.mjs';
 import { open } from './support/filepage.mjs';
@@ -84,6 +84,63 @@ test('URL 表（图片）：只有图片扩展名的相对路径才显示，非�
   assert.deepEqual(requested, ['docs/a.png', 'docs/A.PNG'], '只有放行的才调 resolveImage');
 });
 
+const pngOf = (width, height) => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, ...Buffer.from('IHDR'), width >>> 24, (width >> 16) & 255, (width >> 8) & 255, width & 255, height >>> 24, (height >> 16) & 255, (height >> 8) & 255, height & 255, 8, 6, 0, 0, 0, 0, 0, 0, 0]).toString('base64');
+const dataPng = (width, height) => `data:image/png;base64,${pngOf(width, height)}`;
+
+test('URL 表（图片）：data: 位图只有给了预算才放行，先去掉所有空白再整串校验；读头部取宽高，按像素预算放行', () => {
+  const url = dataPng(30, 20);
+  assert.deepEqual(classifyImage(url, 'R.md', null), { kind: 'invalid' }, '不给预算一律按 invalid');
+  const budget = createImageBudget();
+  assert.deepEqual(classifyImage(url, 'R.md', null, budget), { kind: 'data', src: url, width: 30, height: 20 });
+  const folded = `  data:image/PNG;base64,\n${pngOf(3, 4).slice(0, 8)}\r\n\t${pngOf(3, 4).slice(8)}  `;
+  assert.deepEqual(classifyImage(folded, 'R.md', null, budget), { kind: 'data', src: `data:image/PNG;base64,${pngOf(3, 4)}`, width: 3, height: 4 });
+  for (const bad of ['data:image/svg+xml;base64,PHN2Zz4=', 'data:text/html;base64,PGI+', 'data:image/png,AAAA', 'data:image/png;base64,AAAA', `${url}!`, `data:image/png;base64,${pngOf(0, 4)}`, 'data:', 'DATA:image/gif;base64,@@@@']) {
+    assert.deepEqual(classifyImage(bad, 'R.md', null, budget), { kind: 'invalid' }, bad);
+  }
+  assert.equal(dataImageSize(pngOf(7, 8)).width, 7);
+  assert.equal(dataImageSize('!!!'), null, '不是 base64');
+  assert.equal(budget.images, 2);
+  assert.equal(budget.pixels, 30 * 20 + 12);
+});
+
+test('URL 表（图片）：data: 位图的像素预算——单张超过 1600 万、整页累计超过 6400 万的按 invalid，不计入累计；每页最多 200 张', () => {
+  const budget = createImageBudget();
+  const kinds = [dataPng(4000, 4000), dataPng(4001, 4000), dataPng(4000, 4000), dataPng(4000, 4000), dataPng(4000, 4000), dataPng(1, 1)].map(url => classifyImage(url, 'R.md', null, budget).kind);
+  assert.deepEqual(kinds, ['data', 'invalid', 'data', 'data', 'data', 'invalid']);
+  assert.equal(budget.pixels, 64_000_000);
+  const counted = createImageBudget();
+  const resolve = rel => rel;
+  const results = Array.from({ length: MAX_IMAGES + 2 }, (_, index) => classifyImage(index % 2 ? dataPng(1, 1) : `a${index}.png`, 'R.md', resolve, counted).kind);
+  assert.equal(results.filter(kind => kind !== 'invalid').length, MAX_IMAGES, '本地图和 data: 图合计 200 张');
+  assert.deepEqual(results.slice(-2), ['invalid', 'invalid']);
+  assert.equal(classifyImage('a.txt', 'R.md', resolve, counted).skipped, true, '非图片不受 200 张的限制');
+  assert.equal(classifyImage('https://example.com/a.png', 'R.md', resolve, counted).kind, 'remote', '外链图片只出占位，不占名额');
+});
+
+test('Markdown：data: 位图按 URL 表放行（Markdown 和 HTML 共用同一张表），带 loading="lazy"、decoding="async"；非位图和读不出头部的出占位', async t => {
+  await withDom(t);
+  const md = renderMarkdown(`![点](${dataPng(2, 2)}) ![坏](data:image/png;base64,AAAA) ![页](data:text/html;base64,PGI+) ![图](a.png)`, { basePath: 'R.md', resolveImage: rel => `svc/${rel}` });
+  const images = byTag(md, 'img');
+  assert.deepEqual(images.map(img => img.getAttribute('src')), [dataPng(2, 2), 'svc/a.png']);
+  assert.deepEqual(images.map(img => [img.getAttribute('loading'), img.getAttribute('decoding'), img.getAttribute('draggable')]), [['lazy', 'async', 'false'], ['lazy', 'async', 'false']]);
+  assert.deepEqual(byClass(md, 'md-img-fallback').map(n => n.textContent), ['[图片：坏]', '[图片：页]']);
+  const locals = [];
+  renderMarkdown(`![点](${dataPng(2, 2)}) ![图](a.png)`, { basePath: 'R.md', resolveImage: rel => rel, onLocalImage: entry => locals.push(entry.path) });
+  assert.deepEqual(locals, ['a.png'], 'data: 图不进本地图片清单');
+  const big = renderMarkdown(Array.from({ length: MAX_IMAGES + 1 }, (_, index) => `![i${index}](a${index}.png)`).join(' '), { basePath: 'R.md', resolveImage: rel => rel });
+  assert.equal(byTag(big, 'img').length, MAX_IMAGES);
+  assert.equal(byClass(big, 'md-img-fallback')[0].textContent, `[图片：i${MAX_IMAGES}]`);
+});
+
+test('图片包装：data: 图加载失败同样只在包装里面换成占位', async t => {
+  await withDom(t);
+  const box = renderImage({ kind: 'data', src: dataPng(1, 1) }, '点', '', () => true);
+  assert.equal(box.className, 'md-img-box');
+  byTag(box, 'img')[0].dispatch('error');
+  assert.equal(byTag(box, 'img').length, 0);
+  assert.equal(box.textContent, '[图片：点]');
+});
+
 test('Markdown：相对图片 .png 放行，.txt 出占位且不取地址', async t => {
   await withDom(t);
   const requested = [];
@@ -135,6 +192,15 @@ test('约 140 KiB 的相对链接（预览层）：只留文字，点击之后�
   const image = renderMarkdown(`![长图](${'b'.repeat(140 * 1024)}.png)`, { basePath: 'R.md', resolveImage: rel => { requested.push(rel); return rel; } });
   assert.deepEqual([byTag(image, 'img').length, requested.length, byClass(image, 'md-img-fallback')[0].textContent], [0, 0, '[图片：长图]'], '过长的图片地址出占位，不取地址');
   assert.deepEqual([calls.media, calls.copy, calls.external, calls.relative, calls.email, calls.open], [0, [], [], [], [], []], '没有口令请求，也没有交给宿主的动作');
+});
+
+test('renderLink：链接包着很多节点时分批挂标签（append 的参数个数有上限）', async t => {
+  await withDom(t);
+  const labels = () => Array.from({ length: 200_000 }, () => document.createTextNode('x'));
+  const [link] = renderLink(labels(), { kind: 'external', href: 'https://example.com/' }, '', {});
+  assert.equal(link.children.length, 200_000);
+  const [wrap] = renderLink(labels(), { kind: 'mailto', email: 'a@b.c', href: 'mailto:a@b.c' }, '', {});
+  assert.equal(byClass(wrap, 'md-mailto-label')[0].children.length, 200_000);
 });
 
 test('图片包装：失败占位加在包装里面，已有文本节点原样不动；旧正文的 error 回调被忽略', async t => {
