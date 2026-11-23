@@ -68,8 +68,9 @@ export const lineCount = text => (text === '' ? 1 : text.split('\n').length - (t
 // 选区为空、或裁到正文里之后为空时不接管，走系统默认。内容和行号在这里取好，交出去之后和选区无关。
 // media(path) → Promise<{ token, size, mtimeMs }>（第 20 节）：音视频和图片经模块的本机流式服务显示，token 是这个视图的口令；token 为 null 表示宿主没有流式服务。
 // 不传 media 就一律走分块读取（直接挂载预览的测试用）。
+// canOpenInCoda(path)、openInCoda(path)：「不预览」提示里的「在 Coda 中打开」按钮；canOpenInCoda 缺省为假，不放按钮，动作与行菜单的同名项一致，由页面给。
 // 3D 模型（第 21 节）：mountModel 挂查看器（默认 viewer3d.mjs，测试可换）。gltf、obj、stl、ply 的内容是文本时头部有「3D / 文本」切换，文本走分块读取。
-export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null, mountModel = mountViewer, openExternal = null, openRelative = null, copyEmail = null }) {
+export function mountPreview(el, { read, copy, actions = [], copyInHead = true, back = null, selectionMenu = null, consumed = () => false, media = null, mountModel = mountViewer, openExternal = null, openRelative = null, copyEmail = null, canOpenInCoda = () => false, openInCoda = null }) {
   const name = h('div', { class: 'pname truncate' }), meta = h('div', { class: 'pmeta caption secondary truncate' }, ' ');
   const fileIcon = h('span', { class: 'pico', 'aria-hidden': 'true' });
   // 图标按钮：可访问名称和 Mac 的悬停提示都是 label；没有图标的退回文字。
@@ -153,12 +154,14 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     }
     load(false);
   }
+  const inMarkdownPreview = () => modeGroup === 'markdown' && mode === 'preview' && lastResult?.kind === ContentKind.TEXT;
   const stopMedia = () => {
     if (!player) return;
     player.pause?.(); player.removeAttribute('src'); player.load?.();
     player = null;
   };
   const revoke = () => { stopMedia(); viewer?.dispose(); viewer = null; inspectSlot.replaceChildren(); inspectSlot.hidden = true; if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; };
+  const codaAction = () => (canOpenInCoda(path) ? { label: '在 Coda 中打开', run: () => openInCoda(path) } : null); // 不预览的提示里给出路：交给 Coda 打开
   const notice = (title, detail, action) => body.replaceChildren(h('div', { class: 'empty' },
     h('p', {}, title), detail ? h('p', { class: 'secondary' }, detail) : null,
     action ? h('button', { class: 'link', onclick: action.run }, action.label) : null));
@@ -207,7 +210,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       body.replaceChildren(h('div', { class: 'image' }, h('img', { src: objectUrl, alt: path, draggable: 'false' })));
     } else {
       const big = result.kind === ContentKind.IMAGE ? `图片超过 ${formatSize(IMAGE_LIMIT)}，不预览。` : '二进制文件，不预览。';
-      notice(big, `${formatSize(result.size)}，修改于 ${formatTime(result.mtimeMs)}`);
+      notice(big, `${formatSize(result.size)}，修改于 ${formatTime(result.mtimeMs)}`, codaAction());
     }
   }
 
@@ -242,7 +245,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
   const setMetaText = (text, title) => { metaText = text; metaTitle = title; paintMeta(); }; // 只换文字（时长到了），不清更新失败和文件已变化的提示
   const unplayable = (size, mtimeMs, title) => {
     stopMedia();
-    notice(title, `${formatSize(size)}，修改于 ${formatTime(mtimeMs)}`);
+    notice(title, `${formatSize(size)}，修改于 ${formatTime(mtimeMs)}`, codaAction());
   };
 
   // 图片和音视频：地址指向模块的流式服务，元素自己按需取，不经分块读取（第 20 节）。
@@ -323,7 +326,7 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
       const isMarkdown = result.kind === ContentKind.TEXT && openCategoryOf(path) === OpenCategory.MARKDOWN;
       let nextToken = null;
       if (isMarkdown && media && result.text.includes('![')) {
-        try { nextToken = (await media(path))?.token ?? null; } catch { nextToken = null; }
+        try { nextToken = (await media(path))?.token ?? null; } catch { nextToken = mdToken; } // 取口令失败：沿用上一次的，已显示的图片不被换成占位
         if (!mark()) return;
       }
       if (isMarkdown) {
@@ -379,10 +382,15 @@ export function mountPreview(el, { read, copy, actions = [], copyInHead = true, 
     scroll: () => (path === null ? { top: 0, left: 0 } : { top: body.scrollTop, left: body.scrollLeft }),
     onScroll: fn => body.addEventListener('scroll', fn, { passive: true }),
     get path() { return path; },
-    // 文件内查找的入口：有显示着的文本（或查找条已经开着）才有。
-    get canFind() { return path !== null && (textShown || find.isOpen); },
+    // 文件内查找的入口：有显示着的文本（或查找条已经开着）才有；Markdown 预览里没有可查找的源码，打开查找时先切到「源码」。
+    get canFind() { return path !== null && (textShown || find.isOpen || inMarkdownPreview()); },
     get findOpen() { return find.isOpen; },
-    openFind() { if (this.canFind) find.open(); return this.canFind; },
+    openFind() {
+      if (!this.canFind) return false;
+      if (inMarkdownPreview()) setMode('source');
+      find.open();
+      return true;
+    },
     closeFind() { find.close(); },
     find,
   };

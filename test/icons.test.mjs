@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { KINDS, SHAPES, icon, iconFor, kindOf } from '../view/icons.mjs';
+import { mediaOf } from '../view/protocol.mjs';
 
 const label = name => kindOf({ kind: 'file', name }).label;
 
@@ -137,4 +138,31 @@ test('text 图标：语言类是淡底加字母，字母放在 text 元素里，
 test('带字母的图标只有语言类、Markdown、PDF 和字体（C 只有一个字母，PDF 三个），别的种类不画字', () => {
   const badged = Object.entries(SHAPES).filter(([, { shapes }]) => shapes.some(([tag]) => tag === 'text')).map(([name]) => name).sort();
   assert.deepEqual(badged, ['c', 'font', 'go', 'java', 'js', 'md', 'pdf', 'py', 'rs', 'ruby', 'swift', 'ts']);
+});
+
+// ---- 格式图标和种类名：和预览实际支持的格式一致 ----
+
+test('3D 模型自成一类，带自己的图标；音频补上 opus、caf、aif', t => {
+  withSvg(t);
+  for (const ext of ['glb', 'gltf', 'stl', 'obj', 'ply', '3mf', 'GLB']) assert.equal(label(`a.${ext}`), '3D 模型', ext);
+  for (const ext of ['opus', 'caf', 'aif', 'aiff', 'mp3']) assert.equal(label(`a.${ext}`), '音频', ext);
+  const model = kindOf({ kind: 'file', name: 'robot.glb' });
+  assert.equal(model.glyph, 'model3d');
+  assert.notEqual(model.glyph, 'doc');
+  assert.ok(Object.values(KINDS).filter(kind => kind.glyph === 'model3d').length === 1, '图标只给 3D 模型用');
+  assert.equal(icon('model3d').attrs.class, `tone-${model.tone}`, '色调走现有的 --tone-*');
+  assert.equal(label('Makefile'), '其他文件', '没有扩展名的仍是其他文件');
+});
+
+test('预览认得的媒体格式，种类名都对得上（图片、视频、音频、3D 模型）', () => {
+  const expected = {
+    图片: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'heic', 'heif', 'bmp', 'tif', 'tiff'],
+    视频: ['mp4', 'm4v', 'mov', 'webm'],
+    音频: ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'opus', 'aiff', 'aif', 'caf'],
+    '3D 模型': ['glb', 'gltf', 'stl', 'obj', 'ply', '3mf'],
+  };
+  for (const [text, exts] of Object.entries(expected)) for (const ext of exts) {
+    assert.notEqual(mediaOf(`a.${ext}`), null, `${ext} 是预览认得的格式`);
+    assert.equal(label(`a.${ext}`), text, ext);
+  }
 });

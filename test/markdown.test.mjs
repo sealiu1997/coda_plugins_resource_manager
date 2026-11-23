@@ -146,7 +146,7 @@ test('mountPreview：Markdown 默认进入「预览」模式，支持「预览 /
   assert.equal(byClass(el, 'md').length, 1, '默认进入富文本预览');
   assert.equal(byTag(el, 'h1')[0]?.textContent, '标题');
   assert.equal(byTag(el, 'img')[0]?.getAttribute('src'), 'coda-view://service/media/tok99/assets/a%20b.png');
-  assert.equal(preview.canFind, false, '预览模式不开启源码查找');
+  assert.equal(preview.canFind, true, '预览模式下查找入口可用，打开时切到源码');
 
   const modeBar = byClass(el, 'pmode')[0];
   assert.equal(modeBar.hidden, false);
@@ -164,10 +164,41 @@ test('mountPreview：Markdown 默认进入「预览」模式，支持「预览 /
   assert.equal(preview.canFind, true, '源码模式可查找');
   assert.equal(buttons[1].getAttribute('aria-pressed'), 'true');
 
-  // 切回「预览」模式
+  // 切回「预览」模式：查找条还开着时仍可查找
   buttons[0].dispatch('click');
   assert.equal(byClass(el, 'md').length, 1);
-  assert.equal(preview.canFind, false);
+});
+
+test('mountPreview：Markdown 预览里 openFind 自动切到「源码」并打开查找条，非 Markdown 预览不受影响', async t => {
+  await withDom(t);
+  const el = new Element('div');
+  const content = '# 标题\n\n正文\n';
+  const data = Buffer.from(content).toString('base64');
+  const preview = mountPreview(el, {
+    read: async () => ({ kind: 'text', data, offset: 0, size: Buffer.byteLength(content), mtimeMs: 100, eof: true }),
+    copy: () => {},
+  });
+  assert.equal(preview.canFind, false, '没打开文件：没有查找');
+  assert.equal(preview.openFind(), false);
+
+  await preview.open('docs/README.md');
+  await flush();
+  assert.equal(byClass(el, 'md').length, 1);
+  assert.equal(preview.findOpen, false);
+  assert.equal(preview.canFind, true);
+
+  assert.equal(preview.openFind(), true);
+  assert.equal(byClass(el, 'md').length, 0, '已切到源码');
+  assert.equal(byClass(el, 'text')[0]?.textContent, content);
+  assert.equal(preview.findOpen, true, '查找条已打开');
+  const pressed = byTag(byClass(el, 'pmode')[0], 'button').map(b => b.getAttribute('aria-pressed'));
+  assert.deepEqual(pressed, ['false', 'true'], '模式条跟着切到「源码」');
+
+  // 读不到文件的页面不能查找
+  const broken = mountPreview(new Element('div'), { read: async () => { throw Object.assign(new Error('坏了'), { code: 'io' }); }, copy: () => {} });
+  await broken.open('docs/README.md');
+  await flush();
+  assert.equal(broken.canFind, false);
 });
 
 test('chat.selectionItems：Markdown 预览选区无行号时只提供「添加到聊天（内容）」和「复制」', () => {

@@ -92,7 +92,9 @@ const savedCoda = (...categories) => ({
   sessions: {},
 });
 
-test('初始默认全部走资源管理器页内预览，不调 coda.open', async t => {
+const savedInline = (...categories) => ({ ...savedCoda(), openWith: Object.fromEntries(categories.map(c => [c, 'inline'])) });
+
+test('初始默认：文档类（PDF、Office、iWork）走 Coda，其余类别走资源管理器页内预览', async t => {
   const roots = {
     '/A': {
       'README.md': { text: '# hi\n' },
@@ -100,7 +102,7 @@ test('初始默认全部走资源管理器页内预览，不调 coda.open', asyn
       'app.js': { text: 'const x = 1;\n' },
     },
   };
-  const { page, host } = await open(t, { roots });
+  const { page, host } = await open(t, { roots, mediaToken: 'tokD' });
   host.session('s1');
   await flush();
 
@@ -109,8 +111,18 @@ test('初始默认全部走资源管理器页内预览，不调 coda.open', asyn
   assert.equal(visible(page.preview), true);
   assert.equal(text(page), 'hi');
 
-  // 返回目录树后打开 PDF，初始也默认走页内预览
+  // 返回目录树后打开 PDF：页内没有预览，没选过时默认交给 Coda
   page.preview.find(node => node.tagName === 'BUTTON' && node.getAttribute('aria-label') === '返回')[0].dispatch('click');
+  await flush();
+  await dbl(page, 'report.pdf');
+  assert.deepEqual(host.opened, ['coda-view://service/media/tokD/report.pdf']);
+  assert.equal(visible(page.preview), false);
+  assert.equal(host.state.at(-1)?.openWith?.document ?? null, null, '默认值不写进保存状态，只有用户切过才记');
+});
+
+test('用户在行菜单选过「在资源管理器中打开」的文档类，仍按记下的走页内预览', async t => {
+  const { page, host } = await open(t, { roots: { '/A': { 'report.pdf': { text: '%PDF', kind: 'binary' } } }, state: savedInline('document') });
+  host.session('s1');
   await flush();
   await dbl(page, 'report.pdf');
   assert.deepEqual(host.opened, []);
@@ -126,11 +138,11 @@ test('右键「在 Coda 中打开」立即用 Coda 打开并按类别记住默�
       'README.md': { text: '# hi\n' },
     },
   };
-  const { page, host, tick } = await open(t, { roots, mediaToken: 'abc999' });
+  const { page, host, tick } = await open(t, { roots, mediaToken: 'abc999', state: savedInline('document') });
   host.session('s1', { state: 'ready', path: '/work/my repo' });
   await flush();
 
-  // 初始默认走资源管理器：右键菜单显示「在 Coda 中打开」
+  // 用户记下的是页内预览：右键菜单显示「在 Coda 中打开」
   rightClick(page, 'report #1.pdf');
   assert.ok(menuButtons(page).some(b => b.textContent === '在 Coda 中打开'));
   await choose(page, '在 Coda 中打开');
@@ -213,7 +225,7 @@ test('跨会话与重建页面连贯回归：会话 A 经菜单设定偏好后�
     '/A': { 'report.pdf': { text: '%PDF', kind: 'binary' } },
     '/B': { 'slides.pptx': { text: 'PK', kind: 'binary' }, 'notes.md': { text: '# b' } },
   };
-  const first = await open(t, { roots, mediaToken: 'tokA' });
+  const first = await open(t, { roots, mediaToken: 'tokA', state: savedInline('document') });
   first.host.session('sA', { state: 'ready', path: '/A' });
   await flush();
   rightClick(first.page, 'report.pdf');
@@ -465,7 +477,7 @@ test('防竞态：coda.open 期间根目录变更，晚到失败不回退到页�
 
 test('iPhone 长按「在 Coda 中打开」立即打开并记住偏好，后续轻点同类别文件自动跟随', async t => {
   const roots = { '/A': { 'a.pdf': { text: '%PDF' }, 'b.docx': { text: 'PK' }, 'c.md': { text: '# md' } } };
-  const { page, host, tick } = await open(t, { roots, platform: 'ios', mediaToken: 'iostok' });
+  const { page, host, tick } = await open(t, { roots, platform: 'ios', mediaToken: 'iostok', state: savedInline('document') });
   host.session('s1');
   await flush();
 
