@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>带统计脚本的静态长文</title>
+<script>window.dataLayer = window.dataLayer || [];</script>
+</head>
+<body>
+<h1>带统计脚本的静态长文</h1>
+<p>这一页有统计脚本，但静态正文足够长（超过 80 个字），所以预览顶部不应出现「静态预览里内容很少」的提示。这一页用来对照 script-generated.html：同样有脚本，那一页几乎没有静态文字，应该出现提示和「看源码」按钮。</p>
+<script>window.dataLayer.push({ event: 'page_view' });</script>
+</body>
+</html>

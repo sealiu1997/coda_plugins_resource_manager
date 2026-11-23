@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>表格样例</title></head>
+<body>
+<h1>表格样例</h1>
+
+<h2>带表头、表尾和标题的表</h2>
+<table>
+<caption>季度数据</caption>
+<thead><tr><th>季度</th><th>收入</th><th>支出</th></tr></thead>
+<tbody>
+<tr><td>第一季度</td><td>120</td><td>80</td></tr>
+<tr><td>第二季度</td><td>150</td><td>95</td></tr>
+</tbody>
+<tfoot><tr><td>合计</td><td>270</td><td>175</td></tr></tfoot>
+</table>
+
+<h2>跨行跨列</h2>
+<table>
+<tr><th rowspan="2">分组</th><th colspan="2">指标</th></tr>
+<tr><th>甲</th><th>乙</th></tr>
+<tr><td>一组</td><td>1</td><td>2</td></tr>
+<tr><td>二组</td><td colspan="2">3（跨两列）</td></tr>
+</table>
+
+<h2>很宽的表（12 列）：不应撑破页面，宽窗口和手机上都应能横向滚动或放得下</h2>
+<table>
+<tr><th>列 1</th><th>列 2</th><th>列 3</th><th>列 4</th><th>列 5</th><th>列 6</th><th>列 7</th><th>列 8</th><th>列 9</th><th>列 10</th><th>列 11</th><th>列 12</th></tr>
+<tr><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td><td>一二三四五六七八</td></tr>
+</table>
+
+<h2>嵌套表格：前三层是表，第四层整张降级成文字</h2>
+<table><tr><td>第 1 层
+<table><tr><td>第 2 层
+<table><tr><td>第 3 层
+<table><tr><td>第 4 层甲</td><td>第 4 层乙</td></tr></table>
+</td></tr></table>
+</td></tr></table>
+</td></tr></table>
+<p>表格之后的正文。</p>
+</body>
+</html>

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>公式</title></head>
+<body>
+<h1>公式</h1>
+<p>KaTeX 风格的行内公式：质能方程
+<span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>E</mi><mo>=</mo><mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">E = mc^2</annotation></semantics></math></span><span class="katex-html" aria-hidden="true">E=mc2</span></span>
+，应显示成行内代码 <code>E = mc^2</code>，不应重复出现一遍 <code>E=mc2</code>。</p>
+<p>块级公式（<code>display="block"</code>），应显示成独立的代码块：</p>
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mo>∑</mo><mi>i</mi></mrow><annotation encoding="application/x-tex">\sum_{i=1}^{n} i = \frac{n(n+1)}{2}</annotation></semantics></math>
+<p>没有 TeX 注释的 MathML，退回取文字（应能看到「x 加 y」里的 x、+、y）：<math><mi>x</mi><mo>+</mo><mi>y</mi></math></p>
+<p>MathJax 旧写法 <code>script type="math/tex"</code> 里的内容属于脚本，预览里不应出现：<script type="math/tex">a^2 + b^2 = c^2</script>（这句话后面应没有公式）</p>
+</body>
+</html>

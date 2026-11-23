@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>XSS 语料汇总</title></head>
+<body>
+<h1>XSS 语料汇总</h1>
+<p>这是小型汇总页，每一条如果被当成真的 HTML 执行，会弹出提示框或发出 xss-probe-N.png 的请求。预览里应该一条都不触发：不弹框，页面里只看到文字或占位。完整的 60 多条语料在 <code>test/harness/html-preview.mjs</code> 里，由真实 Chrome 在 CI 里测。</p>
+<ol>
+<li><script>alert('XSS 1：script')</script>条目一：script 被丢掉</li>
+<li><img src="x" onerror="alert('XSS 2：onerror')">条目二：on* 属性被丢掉，图片因没有合法地址成了占位</li>
+<li><a href="javascript:alert('XSS 3：javascript')">条目三：javascript: 链接只剩文字</a></li>
+<li><a href="jav&#x0A;ascript:alert('XSS 4')">条目四：换行打断的 javascript: 链接只剩文字</a></li>
+<li><iframe srcdoc="&lt;script&gt;alert('XSS 5')&lt;/script&gt;"></iframe>条目五：iframe 成了占位「[嵌入内容]」</li>
+<li><object data="xss-probe-6.png"></object><embed src="xss-probe-7.png">条目六、七：object 和 embed 成了占位</li>
+<li><svg onload="alert('XSS 8')"><script>alert('XSS 8b')</script><image href="xss-probe-8.png"/></svg>条目八：svg 只留占位或丢掉</li>
+<li><math><mtext><img src="xss-probe-9.png" onerror="alert('XSS 9')"></mtext></math>条目九：math 里的 HTML 不放行</li>
+<li><style>body { background: url(xss-probe-10.png) }</style><div style="background:url(xss-probe-10b.png)">条目十：style 和内联样式被丢掉</div></li>
+<li><meta http-equiv="refresh" content="0;url=javascript:alert('XSS 11')">条目十一：meta refresh 被丢掉</li>
+<li><form action="javascript:alert('XSS 12')"><button formaction="javascript:alert('XSS 12b')">提交</button></form>条目十二：表单只留文字</li>
+<li><input autofocus onfocus="alert('XSS 13')">条目十三：input 被丢掉</li>
+<li><img src="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' onload='alert(14)'/&gt;" alt="data svg">条目十四：data: SVG 图片是占位</li>
+<li><a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxNSk8L3NjcmlwdD4=">条目十五：data:text/html 链接只剩文字</a></li>
+<li><div id="coda" name="stage">条目十六：id 和 name 不会进输出，不会覆盖页面的全局对象</div></li>
+<li><base href="https://example.com/"><img src="xss-probe-17.png" alt="base 之后的相对图">条目十七：base 被丢掉，相对图按文件位置解析（文件不存在，是占位）</li>
+</ol>
+<p>全部看完：没弹出过提示框，没有任何东西跳走，页面还能正常滚动和点击，才算通过。</p>
+</body>
+</html>
