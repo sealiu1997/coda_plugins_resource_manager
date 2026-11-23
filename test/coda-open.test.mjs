@@ -129,6 +129,24 @@ test('用户在行菜单选过「在资源管理器中打开」的文档类，�
   assert.equal(visible(page.preview), true);
 });
 
+test('rtf 跟 text 类的记忆走：document 类记了「在 Coda 中打开」不影响 rtf，text 类记了就影响', async t => {
+  const roots = { '/A': { 'note.rtf': { text: '{\\rtf1 hi}' } } };
+  const viaDocument = await open(t, { roots, mediaToken: 'tokR', state: savedCoda('document') });
+  viaDocument.host.session('s1');
+  await flush();
+  await dbl(viaDocument.page, 'note.rtf');
+  assert.deepEqual(viaDocument.host.opened, [], 'document 类记了 coda，rtf 仍走页内预览');
+  assert.equal(visible(viaDocument.page.preview), true);
+  assert.equal(text(viaDocument.page), '{\\rtf1 hi}', '按纯文本显示');
+
+  const viaText = await open(t, { roots, mediaToken: 'tokR', state: savedCoda('text') });
+  viaText.host.session('s1');
+  await flush();
+  await dbl(viaText.page, 'note.rtf');
+  assert.deepEqual(viaText.host.opened, ['coda-view://service/media/tokR/note.rtf'], 'text 类记了 coda，rtf 走 Coda');
+  assert.equal(visible(viaText.page.preview), false);
+});
+
 test('右键「在 Coda 中打开」立即用 Coda 打开并按类别记住默认习惯，反向选「在资源管理器中打开」可切回', async t => {
   const roots = {
     '/work/my repo': {
