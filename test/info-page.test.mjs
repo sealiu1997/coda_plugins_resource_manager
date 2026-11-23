@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { formatFullDate } from '../view/format.mjs';
+import { iconFor } from '../view/icons.mjs';
 import { visible } from './support/dom.mjs';
 import { flush } from './support/fake.mjs';
 import { openTree, rowNamed } from './support/treehost.mjs';
@@ -74,6 +75,19 @@ test('子目录里的文件：位置是它所在的相对目录', async t => {
   assert.equal(rows(ctx.page).完整路径, '/work/src/app.ts');
   assert.equal(rows(ctx.page).种类, 'TypeScript');
   assert.equal(rows(ctx.page).大小, '10 字节');
+});
+
+test('属性页的种类名：3D 模型、音频的新扩展名和目录树图标用同一张种类表', async t => {
+  const ctx = await start(t, { listing: { '': ['robot.glb', 'voice.opus'] } });
+  for (const [name, kind, glyph] of [['robot.glb', '3D 模型', 'model3d'], ['voice.opus', '音频', 'audio']]) {
+    await openInfo(ctx, name);
+    const [request] = (await ctx.host.requests('stat')).slice(-1);
+    ctx.host.answer(request, { name, kind: 'file', size: 10 });
+    await flush();
+    assert.equal(rows(ctx.page).种类, kind, name);
+    assert.equal(iconFor({ kind: 'file', name }), glyph, name);
+    await closeByHead(ctx);
+  }
 });
 
 test('iPhone 原生返回：进入声明一层，头部没有返回；on(back) 关闭属性页，重新声明根层；目录树的滚动位置和展开状态不丢', async t => {

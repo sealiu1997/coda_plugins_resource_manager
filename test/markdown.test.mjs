@@ -32,7 +32,7 @@ test('resolveRelativePath：基于当前文件目录解析相对路径，拒绝�
 test('safeLinkTarget：只放行 http/https/mailto、页内锚点与工作目录内相对路径，拒绝危险协议', () => {
   assert.deepEqual(safeLinkTarget('https://example.com/x', 'README.md'), { kind: 'external', href: 'https://example.com/x' });
   assert.deepEqual(safeLinkTarget('mailto:a@b.com', 'README.md'), { kind: 'mailto', email: 'a@b.com', href: 'mailto:a@b.com' });
-  assert.deepEqual(safeLinkTarget('#section-1', 'README.md'), { kind: 'hash', href: '#section-1', id: 'section-1' });
+  assert.deepEqual(safeLinkTarget('#section-1', 'README.md'), { kind: 'hash', href: '#section-1', id: 'md-section-1' });
   assert.deepEqual(safeLinkTarget('./guide.md', 'docs/README.md'), { kind: 'relative', path: 'docs/guide.md' });
   assert.equal(safeLinkTarget('javascript:alert(1)', 'README.md'), null);
   assert.equal(safeLinkTarget('data:text/html,<script>alert(1)</script>', 'README.md'), null);
@@ -146,7 +146,7 @@ test('mountPreview：Markdown 默认进入「预览」模式，支持「预览 /
   assert.equal(byClass(el, 'md').length, 1, '默认进入富文本预览');
   assert.equal(byTag(el, 'h1')[0]?.textContent, '标题');
   assert.equal(byTag(el, 'img')[0]?.getAttribute('src'), 'coda-view://service/media/tok99/assets/a%20b.png');
-  assert.equal(preview.canFind, false, '预览模式不开启源码查找');
+  assert.equal(preview.canFind, true, '预览模式下查找入口可用，打开时切到源码');
 
   const modeBar = byClass(el, 'pmode')[0];
   assert.equal(modeBar.hidden, false);
@@ -164,10 +164,41 @@ test('mountPreview：Markdown 默认进入「预览」模式，支持「预览 /
   assert.equal(preview.canFind, true, '源码模式可查找');
   assert.equal(buttons[1].getAttribute('aria-pressed'), 'true');
 
-  // 切回「预览」模式
+  // 切回「预览」模式：查找条还开着时仍可查找
   buttons[0].dispatch('click');
   assert.equal(byClass(el, 'md').length, 1);
-  assert.equal(preview.canFind, false);
+});
+
+test('mountPreview：Markdown 预览里 openFind 自动切到「源码」并打开查找条，非 Markdown 预览不受影响', async t => {
+  await withDom(t);
+  const el = new Element('div');
+  const content = '# 标题\n\n正文\n';
+  const data = Buffer.from(content).toString('base64');
+  const preview = mountPreview(el, {
+    read: async () => ({ kind: 'text', data, offset: 0, size: Buffer.byteLength(content), mtimeMs: 100, eof: true }),
+    copy: () => {},
+  });
+  assert.equal(preview.canFind, false, '没打开文件：没有查找');
+  assert.equal(preview.openFind(), false);
+
+  await preview.open('docs/README.md');
+  await flush();
+  assert.equal(byClass(el, 'md').length, 1);
+  assert.equal(preview.findOpen, false);
+  assert.equal(preview.canFind, true);
+
+  assert.equal(preview.openFind(), true);
+  assert.equal(byClass(el, 'md').length, 0, '已切到源码');
+  assert.equal(byClass(el, 'text')[0]?.textContent, content);
+  assert.equal(preview.findOpen, true, '查找条已打开');
+  const pressed = byTag(byClass(el, 'pmode')[0], 'button').map(b => b.getAttribute('aria-pressed'));
+  assert.deepEqual(pressed, ['false', 'true'], '模式条跟着切到「源码」');
+
+  // 读不到文件的页面不能查找
+  const broken = mountPreview(new Element('div'), { read: async () => { throw Object.assign(new Error('坏了'), { code: 'io' }); }, copy: () => {} });
+  await broken.open('docs/README.md');
+  await flush();
+  assert.equal(broken.canFind, false);
 });
 
 test('chat.selectionItems：Markdown 预览选区无行号时只提供「添加到聊天（内容）」和「复制」', () => {
@@ -434,7 +465,7 @@ test('表格空单元格选区、ATX # C#、全名围栏高亮、列表后顶层
   });
 
   assert.equal(byTag(md, 'h1')[0]?.textContent, 'C#', '# C# 必须保留尾随 #');
-  assert.equal(byTag(md, 'h1')[0]?.getAttribute('id'), 'c');
+  assert.equal(byTag(md, 'h1')[0]?.getAttribute('id'), 'md-c');
   assert.equal(byTag(md, 'h2')[0]?.textContent, 'Title', '空白分隔的闭合 ### 去掉');
 
   // 两个顶层引用定义均生效
@@ -473,7 +504,7 @@ test('表格空单元格选区、ATX # C#、全名围栏高亮、列表后顶层
   assert.deepEqual(relOpened, ['docs/other.md']);
   byTag(md, 'h1')[0].scrollIntoView = () => { scrolledId = byTag(md, 'h1')[0].getAttribute('id'); };
   links.find(a => a.textContent === '跳标题').dispatch('click');
-  assert.equal(scrolledId, 'c');
+  assert.equal(scrolledId, 'md-c');
 
   // 2. 跨空单元格表格选区：| 左 |  | 右 | → '左\t\t右'
   const table = byTag(md, 'table')[0];
@@ -602,7 +633,7 @@ test('复制邮箱按钮不影响标题锚点，且富文本选区跳过按钮�
   const src = '# [Contact](mailto:a@example.com)\n\n[Go](#contact)\n\n前文 [联系](mailto:a@example.com) 后文\n';
   const md = renderMarkdown(src, { basePath: 'README.md' });
   const h1 = byTag(md, 'h1')[0];
-  assert.equal(h1.getAttribute('id'), 'contact', '标题锚点 ID 不得混入「复制邮箱」按钮文案');
+  assert.equal(h1.getAttribute('id'), 'md-contact', '标题锚点 ID 不得混入「复制邮箱」按钮文案');
   assert.equal(byClass(h1, 'md-copy-email').length, 1, '标题内的可见「复制邮箱」按钮仍保留');
 
   let scrolled = false;
@@ -650,4 +681,382 @@ test('复制邮箱按钮不影响标题锚点，且富文本选区跳过按钮�
   menuItems[1].run();
   assert.deepEqual(added, [{ text: '前文 联系 后文', block: true }], '添加到聊天不得混入「复制邮箱」');
   assert.deepEqual(copied, ['前文 联系 后文'], '右键复制不得混入「复制邮箱」');
+});
+
+// ---- 0.9.7 解析与渲染修正 ----
+
+// 渲染并返回耗时（毫秒）。
+function timed(src) {
+  const start = performance.now();
+  const md = renderMarkdown(src, { basePath: 'README.md' });
+  return { md, ms: performance.now() - start };
+}
+
+test('性能：嵌套列表后接大量无缩进续行时整体接近线性（10 层 × 1000 行、单层 × 8000 行各 < 200 ms）', async t => {
+  await withDom(t);
+  const nest = (depth, rows) => [
+    ...Array.from({ length: depth }, (_, k) => `${'  '.repeat(k)}- 第${k}层`),
+    ...Array.from({ length: rows }, (_, k) => `续行 ${k}`),
+  ].join('\n');
+
+  // 先跑一个小规模的哨兵：旧解析在这里要 1.4 秒，回退时在此处断言失败，而不是在大规模用例上卡住
+  const canary = timed(nest(2, 500));
+  assert.ok(canary.ms < 200, `2 层嵌套 + 500 行续行应在 200 ms 内，实际 ${canary.ms.toFixed(0)} ms`);
+
+  const deep = timed(nest(10, 1000));
+  assert.ok(deep.ms < 200, `10 层嵌套 + 1000 行续行应在 200 ms 内，实际 ${deep.ms.toFixed(0)} ms`);
+  assert.equal(byTag(deep.md, 'ul').length, 10, '10 层列表结构不变');
+  const innermost = byTag(deep.md, 'li').at(-1);
+  assert.ok(innermost.textContent.startsWith('第9层\n续行 0\n') && innermost.textContent.endsWith('续行 999'), '续行全部留在最内层列表项里');
+
+  const flat = timed(nest(1, 8000));
+  assert.ok(flat.ms < 200, `单层 + 8000 行续行应在 200 ms 内，实际 ${flat.ms.toFixed(0)} ms`);
+  assert.equal(byTag(flat.md, 'li').length, 1);
+  assert.ok(byTag(flat.md, 'li')[0].textContent.endsWith('续行 7999'));
+
+  // 缩进行与无缩进续行交替、列表项里带表格或围栏时，续行归属判断保持不变
+  const mixed = timed(['- 项', ...Array.from({ length: 2000 }, (_, k) => `  缩进 ${k}\n续行 ${k}`)].join('\n'));
+  assert.ok(mixed.ms < 400, `交替缩进与续行应保持线性，实际 ${mixed.ms.toFixed(0)} ms`);
+  assert.equal(byTag(mixed.md, 'li').length, 1);
+
+  const afterFence = renderMarkdown('- a\n  ```\n  code\n  ```\nlazy after fence', { basePath: 'README.md' });
+  assert.equal(byClass(byTag(afterFence, 'li')[0], 'md-code')[0].textContent, 'code');
+  assert.equal(byTag(afterFence, 'li')[0].textContent.includes('lazy'), false, '围栏结束后的无缩进行不属于列表项');
+  assert.equal(afterFence.children.at(-1).textContent, 'lazy after fence');
+});
+
+test('行首 Tab 按 4 列制表位展开：Tab 缩进的嵌套列表正确嵌套，围栏里的 Tab 原样保留', async t => {
+  await withDom(t);
+  const md = renderMarkdown('- a\n\t- b\n\t- c\n- d', { basePath: 'README.md' });
+  const outer = byTag(md, 'ul')[0];
+  assert.equal(outer.children.length, 2, '外层只有 a 和 d 两项');
+  const inner = byTag(outer.children[0], 'ul')[0];
+  assert.deepEqual(inner.children.map(li => li.textContent), ['b', 'c'], 'b、c 嵌套在 a 下');
+  assert.equal(outer.children[1].textContent, 'd');
+
+  const mixed = renderMarkdown('1. a\n  \t- b\n    - c', { basePath: 'README.md' });
+  assert.deepEqual(byTag(mixed, 'ul').map(ul => ul.children.length), [2], '2 空格 + Tab 展开到 4 列，与 4 空格缩进同级');
+
+  const fenced = renderMarkdown('```go\nfunc main() {\n\tprintln(1)\n}\n```', { basePath: 'README.md' });
+  assert.equal(byClass(fenced, 'md-code')[0].textContent, 'func main() {\n\tprintln(1)\n}', '围栏代码里的 Tab 不展开');
+});
+
+test('松散列表：条目之间的空行不拆列表，仍是同一个 ol / ul', async t => {
+  await withDom(t);
+  const ol = renderMarkdown('1. a\n\n1. b\n\n1. c', { basePath: 'README.md' });
+  assert.equal(byTag(ol, 'ol').length, 1);
+  assert.deepEqual(byTag(ol, 'li').map(li => li.textContent), ['a', 'b', 'c']);
+
+  const ul = renderMarkdown('- a\n\n- b', { basePath: 'README.md' });
+  assert.equal(byTag(ul, 'ul').length, 1);
+  assert.deepEqual(byTag(ul, 'li').map(li => li.textContent), ['a', 'b']);
+
+  const multi = renderMarkdown('- a\n\n\n- b\n  - n1\n\n  - n2\n\n- c', { basePath: 'README.md' });
+  assert.equal(byTag(multi, 'ul').length, 2, '多个空行与嵌套松散列表也不拆');
+  assert.deepEqual(byTag(multi, 'ul')[0].children.map(li => li.children[0]?.textContent ?? li.textContent).length, 3);
+
+  const split = renderMarkdown('- a\n\n1. b\n\n* * *\n\n- c', { basePath: 'README.md' });
+  assert.deepEqual(split.children.map(n => n.tagName), ['UL', 'OL', 'HR', 'UL'], '不同类列表、分隔线仍然各自独立');
+  const rule = renderMarkdown('- a\n\n- - -\n\n- b', { basePath: 'README.md' });
+  assert.deepEqual(rule.children.map(n => n.tagName), ['UL', 'HR', 'UL'], '空行后的「- - -」是分隔线而不是列表项');
+});
+
+test('缩进代码块：空行或文档开头后 4 列缩进的连续行按代码块渲染，列表项内的缩进内容不误判', async t => {
+  await withDom(t);
+  const md = renderMarkdown('说明：\n\n    npm install\n\n      --flag\n\n后文', { basePath: 'README.md' });
+  assert.deepEqual(md.children.map(n => n.tagName), ['P', 'PRE', 'P']);
+  const code = byClass(md, 'md-code')[0];
+  assert.equal(code.textContent, 'npm install\n\n  --flag', '保留相对缩进与块内空行，去掉前 4 列');
+  assert.equal(byTag(code, 'code').length, 1, '与围栏代码块同样的 pre.md-code > code 结构');
+
+  const first = renderMarkdown('    first line code\n\npara', { basePath: 'README.md' });
+  assert.equal(byClass(first, 'md-code')[0]?.textContent, 'first line code', '文档开头的缩进行也是代码块');
+
+  const tab = renderMarkdown('x\n\n\tfoo\n\t\tbar', { basePath: 'README.md' });
+  assert.equal(byClass(tab, 'md-code')[0]?.textContent, 'foo\n\tbar', 'Tab 缩进同样识别，去掉前 4 列后其余 Tab 原样保留');
+
+  const para = renderMarkdown('段落\n    仍是续行', { basePath: 'README.md' });
+  assert.equal(byClass(para, 'md-code').length, 0, '没有空行隔开时不是代码块');
+  assert.equal(byTag(para, 'p')[0].textContent, '段落\n    仍是续行');
+
+  const inItem = renderMarkdown('- a\n    - b\n\n- c\n\n  继续段落\n\n      列表内代码', { basePath: 'README.md' });
+  assert.equal(byClass(inItem, 'md-code').length, 1, '只有列表项内相对缩进够深的才是代码');
+  assert.equal(byClass(inItem, 'md-code')[0].textContent, '列表内代码');
+  assert.deepEqual(byTag(inItem, 'ul')[0].children.length, 2);
+  assert.deepEqual(byTag(inItem, 'ul')[1].children.map(li => li.textContent), ['b'], '嵌套列表项 b 不被当成代码');
+
+  const fenceFirst = renderMarkdown('```\n\n    inside fence\n```', { basePath: 'README.md' });
+  assert.equal(byClass(fenceFirst, 'md-code').length, 1);
+  assert.equal(byClass(fenceFirst, 'md-code')[0].textContent, '\n    inside fence');
+});
+
+test('README 杂项：HTML 注释丢弃（代码里不受影响）、开头 front matter 按代码块显示、<br> 转换行', async t => {
+  await withDom(t);
+  const src = [
+    '前文 <!-- 行内注释 --> 后文',
+    '',
+    '<!-- 单行注释 -->',
+    '',
+    '<!--',
+    '跨行注释',
+    '-->',
+    '',
+    '段落一',
+    '<!-- 紧跟的注释 -->',
+    '段落二',
+    '',
+    '```html',
+    '<!-- 围栏里保留 -->',
+    '```',
+    '',
+    '`<!-- 行内代码里保留 -->`',
+  ].join('\n');
+  const md = renderMarkdown(src, { basePath: 'README.md' });
+  const text = md.textContent;
+  assert.ok(!text.includes('行内注释') && !text.includes('单行注释') && !text.includes('跨行注释') && !text.includes('紧跟的注释'));
+  assert.equal(byTag(md, 'p')[0].textContent, '前文  后文');
+  assert.equal(byTag(md, 'p').filter(p => p.textContent.trim() === '').length, 0, '纯注释不留下空段落');
+  assert.deepEqual(byTag(md, 'p').slice(1, 3).map(p => p.textContent), ['段落一', '段落二'], '整行注释把前后文字分成两段，注释本身不显示');
+  assert.equal(byClass(md, 'md-code')[0].textContent, '<!-- 围栏里保留 -->');
+  assert.equal(byClass(md, 'md-inline-code')[0].textContent, '<!-- 行内代码里保留 -->');
+
+  const front = renderMarkdown('---\ntitle: 示例\ntags: [a, b]\n---\n# 正文', { basePath: 'README.md' });
+  assert.deepEqual(front.children.map(n => n.tagName), ['PRE', 'H1']);
+  assert.equal(front.children[0].textContent, 'title: 示例\ntags: [a, b]');
+  assert.equal(byTag(front, 'hr').length, 0);
+  const dots = renderMarkdown('---\na: 1\n...\n正文', { basePath: 'README.md' });
+  assert.deepEqual(dots.children.map(n => n.tagName), ['PRE', 'P'], '以 ... 结束也认');
+  const later = renderMarkdown('# 标题\n\n---\nfoo\n---', { basePath: 'README.md' });
+  assert.equal(byClass(later, 'md-code').length, 0, '不在文件开头的 --- 不是 front matter');
+  assert.deepEqual(later.children.map(n => n.tagName), ['H1', 'HR', 'H2']);
+  const open = renderMarkdown('---\n正文没有结束行', { basePath: 'README.md' });
+  assert.equal(byClass(open, 'md-code').length, 0, '没有结束行不算 front matter');
+  assert.equal(byTag(open, 'hr').length, 1);
+
+  const br = renderMarkdown('甲<br>乙<BR/>丙<br />丁\n\n<br>\n\n| 列 |\n| --- |\n| 一<br>二 |', { basePath: 'README.md' });
+  const firstP = byTag(br, 'p')[0];
+  assert.deepEqual(firstP.children.map(n => n.tagName ?? n.textContent), ['甲', 'BR', '乙', 'BR', '丙', 'BR', '丁'], '行内 <br> 三种写法都转成换行');
+  assert.equal(byTag(byTag(br, 'p')[1], 'br').length, 1, '单独成行的 <br> 是一个换行');
+  assert.equal(byTag(byTag(br, 'td')[0], 'br').length, 1, '表格单元格里的 <br> 也转换行');
+  const raw = renderMarkdown('<div>仍是文本</div> <span onclick="x()">y</span>', { basePath: 'README.md' });
+  assert.deepEqual(raw.children.map(n => n.tagName), ['P'], '其它原始 HTML 仍按文本显示，不生成 div/span 元素');
+  assert.equal(byTag(raw, 'span').length, 0);
+  assert.equal(byTag(raw, 'p')[0].textContent, '<div>仍是文本</div> <span onclick="x()">y</span>');
+});
+
+test('标题 id 加 md- 前缀，避开页面自身的 #tree / #stage / #panes，页内锚点仍能跳转，重复标题照旧加后缀', async t => {
+  await withDom(t);
+  const md = renderMarkdown('# Tree\n\n## Stage\n\n### Panes\n\n## Tree\n\n[到 Tree](#tree) [到第二个](#tree-1) [到 Panes](#Panes) [空](#)', { basePath: 'README.md' });
+  const ids = byTag(md, 'h1').concat(byTag(md, 'h2'), byTag(md, 'h3')).map(el => el.getAttribute('id'));
+  assert.deepEqual(ids.sort(), ['md-panes', 'md-stage', 'md-tree', 'md-tree-1']);
+  assert.equal(ids.some(id => ['tree', 'stage', 'panes'].includes(id)), false);
+
+  const scrolled = [];
+  for (const el of byTag(md, 'h1').concat(byTag(md, 'h2'), byTag(md, 'h3'))) el.scrollIntoView = () => scrolled.push(el.getAttribute('id'));
+  const click = label => byTag(md, 'a').find(a => a.textContent === label).dispatch('click');
+  click('到 Tree'); click('到第二个'); click('到 Panes'); click('空');
+  assert.deepEqual(scrolled, ['md-tree', 'md-tree-1', 'md-panes'], '锚点跳到对应标题，空锚点不跳');
+  assert.deepEqual(safeLinkTarget('#Stage', 'README.md'), { kind: 'hash', href: '#Stage', id: 'md-stage' });
+  assert.deepEqual(safeLinkTarget('#', 'README.md'), { kind: 'hash', href: '#', id: '' });
+});
+
+// ---- 评审修正 ----
+
+test('列表内的代码保留原始 Tab：容器缩进按展开后的列宽识别，代码正文原样', async t => {
+  await withDom(t);
+  const fenced = renderMarkdown('- a\n  ```go\n  \tprintln(1)\n  ```', { basePath: 'README.md' });
+  assert.equal(byClass(fenced, 'md-code')[0].textContent, '\tprintln(1)', '列表项内围栏里的 Tab 不展开');
+
+  const indented = renderMarkdown('- a\n\n      \tx\n      y', { basePath: 'README.md' });
+  assert.equal(byClass(indented, 'md-code')[0].textContent, '\tx\ny', '列表项内缩进代码块里的 Tab 不展开');
+
+  const nested = renderMarkdown('- a\n\t- b\n\t  ```\n\t  \tc\n\t  ```', { basePath: 'README.md' });
+  assert.deepEqual(byTag(nested, 'ul').map(ul => ul.children.length), [1, 1], 'Tab 缩进仍按 4 列识别为嵌套列表');
+  assert.ok(byClass(nested, 'md-code')[0].textContent.includes('\tc'), '嵌套两层后围栏里的 Tab 仍在');
+
+  const quoted = renderMarkdown('> ```\n> \tq\n> ```', { basePath: 'README.md' });
+  assert.equal(byClass(quoted, 'md-code')[0].textContent, '\tq', '引用块内围栏里的 Tab 保留');
+});
+
+test('HTML 注释按块和行内两层识别：整行起头的注释是注释块，行内注释不跨块，代码里的 <!-- 永远是字面量', async t => {
+  await withDom(t);
+  const render = src => renderMarkdown(src, { basePath: 'README.md' });
+  const texts = md => md.children.map(n => n.textContent.trim());
+
+  // 注释块：跨空行、含标题行都整块隐藏，闭合行之后的正文保留
+  assert.deepEqual(texts(render('<!--\n# 隐藏标题\n\n隐藏正文\n-->\n可见正文')), ['可见正文']);
+  const afterClose = render('<!-- hidden\n# still hidden\n--> After');
+  assert.equal(byTag(afterClose, 'h1').length, 0);
+  assert.deepEqual(texts(afterClose), ['After']);
+  assert.deepEqual(texts(render('<!-- a\nb --> 正文\n\n后文')), ['正文', '后文'], '闭合行后的正文作为新的一行继续解析');
+  assert.deepEqual(texts(render('段一\n<!-- c -->\n段二')), ['段一', '段二'], '预期行为：行首 <!-- 本来就能打断段落（CommonMark 的 HTML 块），所以切成两段，不是一段');
+  assert.deepEqual(texts(render('   <!-- 缩进 3 格 -->\n正文')), ['正文']);
+  assert.deepEqual(texts(render('前\n\n<!-- 没有闭合\n# 标题\n正文')), ['前'], '没有闭合的注释块到容器末尾（CommonMark）');
+
+  // 容器坐标：列表项、引用块里同样按块识别
+  const inList = render('- 项\n  <!--\n  # x\n  -->\n  续\n- 下一项');
+  assert.equal(byTag(inList, 'h1').length, 0);
+  assert.deepEqual(byTag(inList, 'li').map(li => li.textContent), ['项续', '下一项'], '项内注释块整块隐藏');
+  const inQuote = render('> <!--\n> # x\n> -->\n> y');
+  assert.equal(byTag(inQuote, 'h1').length, 0);
+  assert.equal(byTag(inQuote, 'blockquote')[0].textContent, 'y');
+
+  // 行内注释：可跨段内软换行，不跨块（行内跨空行按 CommonMark 显示出来）
+  assert.deepEqual(texts(render('a <!-- 1 --> b <!-- 2 --> c')), ['a  b  c']);
+  assert.deepEqual(texts(render('a <!-- x\ny --> b')), ['a  b'], '跨软换行的行内注释去掉');
+  assert.deepEqual(texts(render('Before <!-- hidden\n\nstill hidden --> After')), ['Before <!-- hidden', 'still hidden --> After'], '行内注释跨空行时不当注释，两段都显示（CommonMark）');
+
+  // 字面量：转义、代码跨度、围栏与缩进代码块、链接目标与标题
+  assert.deepEqual(texts(render('\\<!-- 转义 -->')), ['<!-- 转义 -->']);
+  const literal = render('```\n<!-- a\n# b\n-->\n```\n\n    <!-- 缩进代码 -->\n\n`<!-- 行内 -->` 和 <!-- 丢弃 -->\n\n- c\n\n      <!-- 列表内缩进代码 -->');
+  assert.equal(byClass(literal, 'md-code')[0].textContent, '<!-- a\n# b\n-->');
+  assert.equal(byClass(literal, 'md-code')[1].textContent, '<!-- 缩进代码 -->');
+  assert.equal(byClass(literal, 'md-code')[2].textContent, '<!-- 列表内缩进代码 -->');
+  assert.equal(byClass(literal, 'md-inline-code')[0].textContent, '<!-- 行内 -->');
+  assert.equal(byTag(literal, 'p')[0].textContent, '<!-- 行内 --> 和 ');
+  const link = render('[a](./b.md "<!-- t -->") [c](./d<!--e-->.md)');
+  const anchors = byTag(link, 'a');
+  assert.equal(anchors[0].getAttribute('title'), '<!-- t -->', '链接标题里的注释保持字面量');
+  assert.equal(anchors[1].getAttribute('data-rel-path'), 'd<!--e-->.md', '链接目标里的注释保持字面量');
+
+  // 删除注释不把两侧拼成新语法，也不改注释以外的空白与硬换行
+  const split = render('[文档]<!-- -->(guide.md)');
+  assert.equal(byTag(split, 'a').length, 0, '不得拼成链接');
+  assert.equal(split.textContent, '[文档](guide.md)');
+  const em = render('*a <!-- * --> b*');
+  assert.equal(byTag(em, 'em')[0].textContent, 'a  b', '注释里的 * 不参与强调配对');
+  assert.equal(byTag(render('x<!-- c -->  \ny'), 'br').length, 1, '注释之后的行尾两个空格仍是硬换行');
+  const spaces = render('x  <!-- c -->\ny');
+  assert.equal(byTag(spaces, 'br').length, 0, '注释前的空格不在行尾，不是硬换行');
+  assert.equal(spaces.textContent, 'x  \ny', '注释以外的空白原样保留');
+});
+
+test('列表项末尾判定与块解析一致：列表内表格后的续行、无缩进的表格分隔行、列表项开头的注释', async t => {
+  await withDom(t);
+  const afterTable = renderMarkdown('- 项\n  A | B\n  --- | ---\n  x | y\n无缩进行', { basePath: 'README.md' });
+  assert.equal(byTag(afterTable, 'table').length, 1);
+  assert.equal(byTag(byTag(afterTable, 'li')[0], 'tbody')[0].children.length, 1, '表格只有数据行 x | y');
+  assert.equal(afterTable.children.at(-1).textContent, '无缩进行', '表格之后的无缩进行不并入列表项');
+  assert.equal(byTag(afterTable, 'li')[0].textContent.includes('无缩进行'), false);
+
+  const lazyDelimiter = renderMarkdown('- x\n  | a | b |\n--- | ---\n文字', { basePath: 'README.md' });
+  assert.equal(byTag(lazyDelimiter, 'table').length, 0, '无缩进的分隔行不能把列表项里的段落变成表格');
+  assert.equal(byTag(lazyDelimiter, 'li')[0].textContent, 'x\n| a | b |');
+  assert.equal(lazyDelimiter.children.at(-1).textContent, '--- | ---\n文字');
+
+  const leadingComment = renderMarkdown('- <!-- 备注 -->\n  正文\n续行', { basePath: 'README.md' });
+  assert.equal(byTag(leadingComment, 'li').length, 1);
+  assert.equal(byTag(leadingComment, 'li')[0].textContent, '正文\n续行', '列表项开头的注释不影响续行归属');
+
+  const inlineComment = renderMarkdown('- 前 <!-- c --> 后\n续行\n\n段落', { basePath: 'README.md' });
+  assert.equal(byTag(inlineComment, 'li')[0].textContent, '前  后\n续行');
+
+  const nestedTable = renderMarkdown('- 外\n  - 内\n    x | y\n    --- | ---\n    1 | 2\n  无缩进', { basePath: 'README.md' });
+  assert.equal(byTag(nestedTable, 'li').at(-1).textContent.includes('无缩进'), false, '嵌套列表项里表格之后的无缩进行不并入');
+});
+
+test('列表条目必须同标记：换了标记字符或有序分隔符就另起列表，有没有空行都一样，AST 与续行判定一致', async t => {
+  await withDom(t);
+  const lists = (src, tag = 'UL') => renderMarkdown(src, { basePath: 'README.md' }).children.map(n => n.children.map(li => li.textContent));
+  assert.deepEqual(lists('- a\n+ b\n\n- c'), [['a'], ['b'], ['c']], '和当前所在列表（+）比较，- 另起一个列表');
+  assert.deepEqual(lists('- a\n+ b\n\n+ c'), [['a'], ['b', 'c']]);
+  assert.deepEqual(lists('- a\n\n- b\n\n* c\n\n+ d\n\n+ e'), [['a', 'b'], ['c'], ['d', 'e']]);
+  assert.deepEqual(lists('- a\n* b\n- c'), [['a'], ['b'], ['c']], '相邻也不例外');
+
+  const ordered = renderMarkdown('1. a\n2) b\n\n3) c\n\n4. d', { basePath: 'README.md' });
+  assert.deepEqual(ordered.children.map(n => [n.tagName, n.getAttribute('start'), n.children.map(li => li.textContent)]), [
+    ['OL', null, ['a']], ['OL', '2', ['b', 'c']], ['OL', '4', ['d']],
+  ]);
+
+  const nested = renderMarkdown('- a\n  - x\n\n  * y\n\n  - z', { basePath: 'README.md' });
+  assert.deepEqual(byTag(nested, 'ul').slice(1).map(ul => ul.children.map(li => li.textContent)), [['x'], ['y'], ['z']], '嵌套列表同样按标记分开');
+
+  // 续行判定与列表归属共用同一套判定：无缩进的续行并入最后一个（换过标记的）列表项，而不是被丢出列表
+  const lazy = renderMarkdown('- a\n  - x\n  + y\n续行', { basePath: 'README.md' });
+  assert.deepEqual(byTag(lazy, 'ul').slice(1).map(ul => ul.children.map(li => li.textContent)), [['x'], ['y\n续行']]);
+  assert.equal(lazy.children.length, 1);
+});
+
+test('部分 Tab：容器剥掉 Tab 的一部分后，剩下的列补成空格，制表位按累计列偏移计算', async t => {
+  await withDom(t);
+  const code = src => byClass(renderMarkdown(src, { basePath: 'README.md' }), 'md-code').map(el => el.textContent);
+  assert.deepEqual(code('- a\n\n\t\tvalue'), ['  value'], '列表项剥 2 列后，两个 Tab 剩 2 个空格加 value');
+  assert.deepEqual(code('> \t\tcode'), ['  code'], '引用块里同样按累计列偏移（> 加空格占 2 列）');
+  assert.deepEqual(code('x\n\n\t\tbar'), ['\tbar'], '顶层缩进代码块只吃掉第一个 Tab，其余原样');
+  assert.deepEqual(code('- a\n  ```\n  \tkeep\n  ```'), ['\tkeep'], '没被剥到的 Tab 原样保留');
+  assert.deepEqual(code('- a\n  - b\n\n\t\t\tdeep'), ['\tdeep'], '两层容器累计偏移：三个 Tab 共 12 列，容器剥 2+2、代码剥 4，剩下第三个 Tab 原样');
+});
+
+test('注释之后还有 --> 时，链接、强调、删除线里的转义与代码跨度仍先于注释识别', async t => {
+  await withDom(t);
+  const render = src => renderMarkdown(src, { basePath: 'README.md' });
+
+  const link = render('[a `<!--` b](./c.md) 后文 -->');
+  assert.equal(byTag(link, 'a')[0]?.getAttribute('data-rel-path'), 'c.md', '链接文字里的代码跨度含 <!-- 不影响 ] 的配对');
+  assert.equal(byTag(link, 'a')[0].textContent, 'a <!-- b');
+  assert.equal(byClass(link, 'md-inline-code')[0].textContent, '<!--');
+  assert.equal(link.textContent.includes('后文 -->'), true, '链接之后的 --> 照常显示');
+
+  const strong = render('**a `<!--` b** 后文 -->');
+  assert.equal(byTag(strong, 'strong')[0]?.textContent, 'a <!-- b', '粗体闭合不被代码跨度里的 <!-- 吞掉');
+  assert.equal(strong.textContent.includes('后文 -->'), true);
+
+  const del = render('~~a `<!--` b~~ 后文 -->');
+  assert.equal(byTag(del, 'del')[0]?.textContent, 'a <!-- b', '删除线闭合不被代码跨度里的 <!-- 吞掉');
+  assert.equal(del.textContent.includes('后文 -->'), true);
+
+  const escaped = render('*a \\<!-- b* 后文 -->');
+  assert.equal(byTag(escaped, 'em')[0]?.textContent, 'a <!-- b', '转义的 \\<!-- 不是注释起点');
+
+  const image = render('![a `<!--` b](./c.png) 后文 -->');
+  assert.equal(byTag(image, 'img').length + byClass(image, 'md-img-fallback').length, 1, '图片的 ] 配对同样不受影响');
+});
+
+test('引用块里围栏闭合后，后面的注释照常丢掉，围栏代码保留', async t => {
+  await withDom(t);
+  const md = renderMarkdown('> ```\n> <!-- 围栏里保留 -->\n> ```\n> <!-- 围栏后的注释块 -->\n> 正文 <!-- 行内注释 --> 尾', { basePath: 'README.md' });
+  const quote = byTag(md, 'blockquote')[0];
+  assert.equal(byClass(quote, 'md-code')[0].textContent, '<!-- 围栏里保留 -->');
+  assert.equal(quote.textContent.includes('围栏后的注释块'), false);
+  assert.equal(quote.textContent.includes('行内注释'), false);
+  assert.equal(byTag(quote, 'p')[0].textContent, '正文  尾');
+});
+
+test('转义的 \\<!-- 保留字面量，也不生成换行', async t => {
+  await withDom(t);
+  const md = renderMarkdown('\\<!-- literal -->\nNext', { basePath: 'README.md' });
+  assert.equal(byTag(md, 'p')[0].textContent, '<!-- literal -->\nNext');
+  assert.equal(byTag(md, 'br').length, 0);
+});
+
+test('反引号只和等长序列配对，不匹配时整段按字面量，闭合扫描也一样', async t => {
+  await withDom(t);
+  const render = text => renderMarkdown(text, { basePath: 'README.md' });
+  const link = render('[Use `](guide.md) and ``code``');
+  assert.equal(byTag(link, 'a').length, 1, '链接不被长度不同的反引号吞掉');
+  assert.equal(byTag(link, 'a')[0].getAttribute('data-rel-path'), 'guide.md');
+  assert.deepEqual(byClass(link, 'md-inline-code').map(c => c.textContent), ['code']);
+
+  const image = render('![A `](logo.png) and ``code``');
+  assert.equal(byTag(image, 'img').length + byClass(image, 'md-img-fallback').length, 1, '图片不被吞掉');
+  assert.deepEqual(byClass(image, 'md-inline-code').map(c => c.textContent), ['code']);
+
+  const strong = render('**Use `** and ``code``');
+  assert.equal(byTag(strong, 'strong')[0]?.textContent, 'Use `');
+  assert.deepEqual(byClass(strong, 'md-inline-code').map(c => c.textContent), ['code']);
+
+  const del = render('~~Use `~~ and ``code``');
+  assert.equal(byTag(del, 'del')[0]?.textContent, 'Use `');
+  assert.deepEqual(byClass(del, 'md-inline-code').map(c => c.textContent), ['code']);
+
+  // 无等长闭合：整段反引号是字面量，不从中间重新配对
+  const lone = render('``a` b');
+  assert.equal(byClass(lone, 'md-inline-code').length, 0);
+  assert.equal(lone.textContent, '``a` b');
+
+  // 正向：等长配对仍是代码跨度，内部可含更短的反引号
+  const pair = render('``a`b`` 和 `c`');
+  assert.deepEqual(byClass(pair, 'md-inline-code').map(c => c.textContent), ['a`b', 'c']);
+  const closed = render('[x ``a`b`` y](guide.md)');
+  assert.equal(byTag(closed, 'a').length, 1, '等长代码跨度内的反引号不影响链接配对');
 });

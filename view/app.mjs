@@ -5,6 +5,7 @@ import { createChat } from './chat.mjs';
 import { connect } from './connection.mjs';
 import { infoText, sortName } from './format.mjs';
 import { h } from './dom.mjs';
+import { createExternalOpener } from './external.mjs';
 import { mountGrid } from './grid.mjs';
 import { mountHint } from './hint.mjs';
 import { mountInfo } from './info.mjs';
@@ -14,7 +15,7 @@ import { Model, STATE_LIMIT, View, noticeText, parseState, putSession, trimState
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
 import { mountPress, onMotionChange, reducedMotion } from './press.mjs';
-import { EntryKind, OpenWith, RootState, SortKey, Type, openCategoryOf, servedType, serviceUrl } from './protocol.mjs';
+import { EntryKind, OpenCategory, OpenWith, RootState, SortKey, Type, openCategoryOf, servedType } from './protocol.mjs';
 import { createRestore, createTrail } from './restore.mjs';
 import { createSearch } from './search.mjs';
 import { mountSearchbar } from './searchbar.mjs';
@@ -138,6 +139,7 @@ function clearSearch() {
 const preview = mountPreview($('preview'), {
   read: (path, offset) => conn.link.call('read', { path, offset }), copy: text => coda.copy(text),
   media: path => conn.link.call('media', { path }),
+  canOpenInCoda: path => canOpenExternal(path), openInCoda: path => openFileAs(path, OpenWith.CODA), // 「不预览」提示里的按钮，同行菜单的「在 Coda 中打开」
   // iPhone 预览头部右边的 ⋯（刷新、复制路径）：顶部工具条在预览时只有「返回」，只留头部一行标题
   actions: isIOS ? [{ label: '更多', icon: 'ellipsis', run: (_, button) => toggleMore(button) }] : [{ label: '窗口', icon: 'window', run: openInView }], copyInHead: !isIOS,
   back: isIOS ? null : closePreview,
@@ -184,61 +186,35 @@ function openInView(path) {
 }
 // 两端都在页内打开：model.openFile 设 selected 和 opened，经 onChange 切到预览。iPhone 触屏没有键盘焦点，不交焦点；
 // 快速两次轻点：第一次已切到预览，目录树 .off 不接指针事件，第二次落不到条目上。
-// 独立自增序号（不复用 epoch）与单在途串行队列：
-// 同一页面同时只允许一个 coda.open 在途，在途期间的新打开意图合并到最新一次；
-// 换会话、根目录变化、切目录、打开属性页或改开页内文件时递增序号并清空待执行队列，防止旧操作晚完成或晚失败覆盖新状态。
-let openSeq = 0;
-let openingExternal = false;
-let queuedExternal = null;
-const cancelExternal = () => { openSeq++; queuedExternal = null; };
+// 交给 Coda 打开走 external.mjs 的单在途串行队列（和独立窗口共用）：
+// 换会话、根目录变化、切目录、打开属性页、改开页内文件、关预览时作废，防止旧操作晚完成或晚失败覆盖新状态；失败静默退回页内预览。
+const external = createExternalOpener({
+  grant: path => conn.link.call(Type.MEDIA, { path }),
+  open: url => coda.open(url),
+  fallback: ({ path, select }) => { if (model.ready) openInline(path, { select }); },
+});
+const cancelExternal = external.cancel;
 function openInline(path, { select = true } = {}) {
   openPressed = !isIOS; // 用户在 Mac 上打开的：render 把焦点交给预览面板
   note({ kind: 'push', from: mode(), to: 'preview' });
   model.openFile(path, { select });
 }
-async function drainExternal(first) {
-  openingExternal = true;
-  let current = first;
-  try {
-    while (current) {
-      const { path, select, seq } = current;
-      current = null;
-      if (seq === openSeq) {
-        try {
-          const granted = await conn.link.call(Type.MEDIA, { path });
-          if (seq === openSeq) {
-            if (!granted?.token) throw new Error('no media service');
-            await coda.open(serviceUrl(granted.token, path));
-          }
-        } catch {
-          if (seq === openSeq && model.ready) openInline(path, { select });
-        }
-      }
-      if (queuedExternal) {
-        current = queuedExternal;
-        queuedExternal = null;
-      }
-    }
-  } finally {
-    openingExternal = false;
-  }
-}
-// 按类别读取当前默认打开方式（初始默认全部走资源管理器页内预览）。
-const openModeOf = path => (persisted.openWith[openCategoryOf(path)] === OpenWith.CODA ? OpenWith.CODA : OpenWith.INLINE);
+// 按类别读取当前默认打开方式：用户切过的按记下的；没切过的，文档类（PDF、Office、iWork）页内没有预览，默认交给 Coda，其余走资源管理器页内预览。
+const openModeOf = path => {
+  const category = openCategoryOf(path);
+  return (persisted.openWith[category] ?? (category === OpenCategory.DOCUMENT ? OpenWith.CODA : OpenWith.INLINE)) === OpenWith.CODA ? OpenWith.CODA : OpenWith.INLINE;
+};
 const canOpenExternal = path => typeof coda.open === 'function' && model.ready && Boolean(model.root?.path) && servedType(path) !== null;
 // 打开文件的统一入口（目录树、图标视图和搜索结果）：按该类别当前默认习惯决定走 Coda 还是页内预览；
 // 走 coda.open 时复用单在途串行队列与本机流式服务，失败静默退回页内预览，成功时不设 model.opened（不记入 setState.opened）。
 // select 为假（搜索结果）时走页内预览只设预览，不改 model.selected。
 function openFile(path, { select = true, via = null } = {}) {
-  cancelExternal();
-  const seq = openSeq;
   const target = via ?? openModeOf(path);
   if (target === OpenWith.CODA && canOpenExternal(path)) {
-    const task = { path, select, seq };
-    if (openingExternal) queuedExternal = task;
-    else drainExternal(task);
+    external.request({ path, select });
     return;
   }
+  cancelExternal();
   openInline(path, { select });
 }
 // 经行菜单显式切换打开方式：立即用所选方式打开，并记住该类别的默认打开习惯（持久化保存，后续双击/轻点自动跟随）。
@@ -283,6 +259,7 @@ function mouseSelect(path) {
 // 预览头部的返回和预览里的 ⌘↑ 是同一个动作：opened 清掉，selected 留着。
 function closePreview() {
   backPressed = true;
+  cancelExternal(); // 预览里发起的「在 Coda 中打开」随预览作废：之后失败也不能把它弹回来
   model.closeFile();
 }
 // 用户点了预览头部的返回：render 据此决定焦点要不要交给浏览区，别的模式变化不动焦点。
@@ -766,7 +743,7 @@ function goBack(steps) {
   if (!model.ready) return false;
   const from = mode();
   let used = 0, layer = false;
-  if (previewOpen() && steps > used) { model.closeFile(); used++; layer = true; } // 走和 Mac 一样的 closeFile：opened 清，selected 留着
+  if (previewOpen() && steps > used) { cancelExternal(); model.closeFile(); used++; layer = true; } // 走和 Mac 一样的 closeFile：opened 清，selected 留着
   if (infoOpen && steps > used) { closeInfo(false); used++; layer = true; }
   const levels = Math.min(steps - used, model.view === View.ICONS && model.cwd !== '' && !searching() ? model.cwd.split('/').length : 0); // 搜索模式下不消耗被遮住的图标视图目录
   if (levels > 0) { leaveDir(levels, false); used += levels; }

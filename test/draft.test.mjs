@@ -79,11 +79,23 @@ test('addText：超过上限回 draft_too_long（本地超限不调接口，服�
   for (const error of [
     Object.assign(new Error('nope'), { code: 'draft_too_long' }),
     Object.assign(new Error('nope'), { code: 'too_large' }),
-    new Error('草稿太长'),
-    new Error('draft exceeds limit'),
+    new Error('draft too long'),
   ]) {
     const mapped = { call: async () => { throw error; } };
     assert.equal((await caught(addText(mapped, 'A', { text: 'p', block: false }))).code, 'draft_too_long', error.message);
+  }
+});
+
+test('addText：只信错误 code，限流等带 limit、超过的 message 不算草稿太长', async () => {
+  for (const error of [
+    new Error('rate limit exceeded'),
+    Object.assign(new Error('rate limit exceeded'), { code: 'rate_limited' }),
+    new Error('超过调用频率上限'),
+    new Error('草稿太长'),
+    new Error('quota exceeded, limit reached'),
+  ]) {
+    const mapped = { call: async () => { throw error; } };
+    assert.equal((await caught(addText(mapped, 'A', { text: 'p', block: false }))).code, 'draft_failed', error.message);
   }
 });
 

@@ -2,10 +2,10 @@
 import { loadFileApp } from './dom.mjs';
 import { flush } from './fake.mjs';
 
-// files：路径 → { kind, text, size?, mtimeMs? }；size 省略就是正文的字节数。host.service 为假时模拟宿主没有流式服务（media 回答的 token 是 null）。
+// files：路径 → { kind, text, size?, mtimeMs? }；host.holdMedia 为真时 media 请求先扣在 host.heldMedia 里，用 host.releaseMedia 回答；size 省略就是正文的字节数。host.service 为假时模拟宿主没有流式服务（media 回答的 token 是 null）。
 const timersOn = new WeakSet();
 export async function open(t, { path, files, platform = 'web', coda = {} }) {
-  const sent = [], copied = [], events = {}, host = { files, failRead: null, closed: 0, copied, events, service: true };
+  const sent = [], copied = [], events = {}, host = { files, failRead: null, closed: 0, copied, events, service: true, holdMedia: false, heldMedia: [] };
   let generation = 0, page;
   const answer = request => {
     if (request.generation !== generation) return;
@@ -18,6 +18,7 @@ export async function open(t, { path, files, platform = 'web', coda = {} }) {
   };
   const answerMedia = request => {
     if (request.generation !== generation) return;
+    if (host.holdMedia && !request.released) return host.heldMedia.push(request);
     const base = { type: 'media_granted', generation, requestId: request.requestId };
     const file = host.files[request.path];
     if (!file) return page.post({ ...base, error: { code: 'not_found', message: '没有这个文件' } });
@@ -32,6 +33,7 @@ export async function open(t, { path, files, platform = 'web', coda = {} }) {
   });
   Object.assign(host, {
     sent,
+    releaseMedia(request) { answerMedia({ ...request, released: true }); }, // holdMedia 时扣住的 media 请求，由测试决定何时回答
     start(rootPath = '/A') { generation++; page.post({ type: 'session', generation, session: 's1' }); page.post({ type: 'root', generation, state: 'ready', path: rootPath }); },
     gone() { page.post({ type: 'root', generation, state: 'gone', path: '/A' }); },
     changed() { page.post({ type: 'changed', generation }); },

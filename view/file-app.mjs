@@ -5,13 +5,14 @@
 import { paintBar } from './bar.mjs';
 import { createChat } from './chat.mjs';
 import { connect } from './connection.mjs';
+import { createExternalOpener } from './external.mjs';
 import { mountHint } from './hint.mjs';
 import { mountMenu } from './menu.mjs';
 import { noticeText } from './model.mjs';
 import { showNotice } from './notice.mjs';
 import { mountPreview } from './preview.mjs';
 import { mountPress } from './press.mjs';
-import { RootState } from './protocol.mjs';
+import { RootState, Type, servedType } from './protocol.mjs';
 
 const coda = window.coda;
 const $ = id => document.getElementById(id);
@@ -39,6 +40,12 @@ const hint = mountHint($('hint'));
 const menu = mountMenu($('menu'));
 const press = mountPress({ consumed: menu.consumed }); // 按下反馈：刷新、复制、重试等按钮同资源页（第 17.3 节）
 const chat = createChat({ link: conn.link, copy: text => coda.copy(text), hint });
+// 交给 Coda 打开：和资源页共用 external.mjs 的串行与作废（换会话、根目录、文件参数时 cancel）；失败在原地提示。
+const external = createExternalOpener({
+  grant: path => conn.link.call(Type.MEDIA, { path }),
+  open: url => coda.open(url),
+  fallback: (_, error) => hint.show(`打不开文件：${error?.message ?? '未知原因'}`),
+});
 const preview = mountPreview($('preview'), {
   read: (path, offset) => conn.link.call('read', { path, offset }), copy: text => coda.copy(text),
   media: path => conn.link.call('media', { path }),
@@ -58,6 +65,8 @@ const preview = mountPreview($('preview'), {
       () => { if (want.session === mine) hint.show('没能复制邮箱'); },
     );
   },
+  canOpenInCoda: path => typeof coda.open === 'function' && servedType(path) !== null,
+  openInCoda: path => { hint.hide(); external.request({ path }); },
   openRelative: relPath => {
     const mine = want.session;
     Promise.resolve().then(() => coda.open({ view: 'file', args: { session: want.session, path: relPath } })).then(
@@ -119,6 +128,7 @@ function paintNotice() {
 
 // ---- 模块的消息（代次和握手由 connection 处理）----
 function onSession(data) {
+  external.cancel();
   press.reset();
   park();
   preview.close();
@@ -131,6 +141,7 @@ function onSession(data) {
 
 function onRoot(data) {
   const before = root;
+  if (data.state !== RootState.READY || data.path !== before?.path) external.cancel();
   if (data.state !== before?.state || data.path !== before?.path) press.reset();
   if (data.state !== before?.state || data.path !== before?.path) menu.hide(); // 选区和行号是旧内容上的
   root = { state: data.state, path: data.path };
@@ -149,7 +160,7 @@ function onChanged() {
 // ---- 参数变了：换文件或换会话，旧文件的滚动位置不带过去 ----
 quiet(() => coda.on('context', ({ args }) => {
   const next = argsOf(args);
-  if (next.path !== want.path || next.session !== want.session) { press.reset(); restore = null; preview.close(); menu.hide(); hint.hide(); }
+  if (next.path !== want.path || next.session !== want.session) { external.cancel(); press.reset(); restore = null; preview.close(); menu.hide(); hint.hide(); }
   want = next;
   schedule();
 }));
