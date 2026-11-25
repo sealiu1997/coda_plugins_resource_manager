@@ -2094,6 +2094,7 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
 - **X1 供应类型**（作者定）：
   - `xml`、`plist` 改按 `text/plain; charset=utf-8` 供应；`rtf` 已在 `0.9.8` 改过，见第 26.3 节。
   - `html`、`htm`、`xhtml` **照旧**按 `text/html`、`application/xhtml+xml` 供应（作者 2026-11-23 改定），这样以后 Coda 支持 HTML 预览时能直接渲染。
+    - `0.10.1` 起 `html`、`htm` 的 `charset` 按文件实际编码写，不再固定 `utf-8`，见第 28.5 节；`xhtml` 不变。
   - **已知风险**（作者知情）：如果将来 Coda 在流式服务的地址下执行页面脚本，脚本能用同一口令读到工作目录里的其他文件（`x1-probe.html` 测的就是这个；`0.9.7` 实测 Coda 只显示源码，不执行）。Coda 支持 HTML 预览后，先用这个探针复测，再决定是否改按纯文本供应。
 - **`nosniff`**（作者定）：**所有**回答都加 `X-Content-Type-Options: nosniff`。范围包括成功、`206`、`304`、`HEAD`、`OPTIONS` 预检，以及 `400`/`403`/`404`/`405`/`416` 等错误。
 - **SVG 的 CSP**（作者定，有前提）：
@@ -2256,8 +2257,18 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
 - 没选「新增 xhtml 类别」：要改类别枚举、状态解析、模式和解码几处，换来的只是 xhtml 能单独记偏好，不值。
 - 代价：偏好按类别记忆，用户在 `.xhtml` 上切到 Coda，会连带 `.html`、`.htm`（反之亦然）；在 `.xhtml` 上切回页内同样连带。已知，不处理。
 
-### 28.4 测试
+### 28.4 测试（响应头见 28.5）
 
 `test/coda-open.test.mjs`：`.html`、`.htm`（含大写扩展名）默认走 Coda、`.xhtml` 默认页内、行菜单标签、已存偏好（inline、coda）不变、`coda.open` 失败退回页内。`test/html-preview.test.mjs` 里测页内预览的用例先存「页内」偏好。
 
+### 28.5 响应头的 charset 按实际编码（评审后补，作者定）
+
+- **问题**：Coda 渲染 HTML 时把响应的 `charset` 交给渲染引擎，响应头优先于文件里的 `<meta charset>`。原先固定写 `text/html; charset=utf-8`，GBK 页面（如 `test/fixtures/html/gbk.html`）默认交给 Coda 后会乱码，而且打开成功，不会退回页内。
+- **做法**：`.html`、`.htm` 的 `content-type` 写成 `text/html; charset=<实际编码>`。
+  - 判定规则就是页内预览的规则：UTF-8 BOM 优先；否则预扫前 1024 字节的 `meta`；没有声明、认不出、或规范化后是 utf-16、replacement、x-user-defined 的，写 `utf-8`。
+  - 规则只定义一处：抽成不依赖 DOM 的 `view/charset.mjs`（`htmlEncodingOf(bytes)`，返回 `TextDecoder` 规范化后的名字，如 `gb2312` 写成 `gbk`）。`decodeHtmlBytes`（`view/html.mjs`）和 `lib/media.mjs` 都调它，所以供应用的编码和页内解码不会不一致。
+- **服务端**：在 `writeHead` 之前用异步句柄读文件开头至多 1024 字节，不整份读、不用同步 `fs`。
+  - `200`、`206`（按文件开头判断，和请求的区间无关）、`HEAD` 都带；`304` 和 `416` 本来就没有 `content-type`，不变。
+  - 读开头失败，走原来的错误路径。
+- **不变**：`xhtml`、Markdown、文本等其他类型的响应头；响应体原样，不转码。
 

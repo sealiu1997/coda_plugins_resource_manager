@@ -326,3 +326,54 @@ test('SVG 的 CSP：200、206、304 各自带 MIME、CSP、nosniff，HEAD 同；
   }
   for (const name of ['a.png', 'a.html', 'a.mp3', 'missing.mp3']) assert.equal((await get(name)).res.headers.get('content-security-policy'), null, name);
 });
+
+test('HTML 的 content-type 按文件开头的实际编码写 charset：GBK、BOM、无声明、认不出、UTF-16 声明；200、206、HEAD、304', async t => {
+  const { root, get } = await serving(t);
+  const GBK = Buffer.from([0xd6, 0xd0, 0xce, 0xc4]);
+  const files = {
+    'gbk.html': Buffer.concat([Buffer.from('<meta charset="gbk"><p>'), GBK]),
+    'Gb.HTM': Buffer.concat([Buffer.from('<meta http-equiv="Content-Type" content="text/html; charset=GB2312"><p>'), GBK]),
+    'plain.html': Buffer.from('<p>没写声明</p>'),
+    'bom.html': Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('<meta charset="gbk"><p>中文')]),
+    'bogus.html': Buffer.from('<meta charset="no-such"><p>x'),
+    'utf16.html': Buffer.from('<meta charset="utf-16le"><p>x'),
+    'late.html': Buffer.concat([Buffer.from(`<!-- ${'x'.repeat(1100)} --><meta charset="gbk"><p>`), GBK]), // 声明在前 1024 字节之外：不算
+    'empty.html': Buffer.alloc(0),
+  };
+  for (const [name, bytes] of Object.entries(files)) await writeFile(join(root, name), bytes);
+  const type = async (name, options) => (await get(name, options)).res.headers.get('content-type');
+  assert.equal(await type('gbk.html'), 'text/html; charset=gbk');
+  assert.equal(await type('Gb.HTM'), 'text/html; charset=gbk', 'gb2312 规范化成 gbk');
+  assert.equal(await type('plain.html'), 'text/html; charset=utf-8');
+  assert.equal(await type('bom.html'), 'text/html; charset=utf-8', 'BOM 优先于 meta');
+  assert.equal(await type('bogus.html'), 'text/html; charset=utf-8');
+  assert.equal(await type('utf16.html'), 'text/html; charset=utf-8', 'UTF-16 声明按 UTF-8');
+  assert.equal(await type('late.html'), 'text/html; charset=utf-8');
+  assert.equal(await type('empty.html'), 'text/html; charset=utf-8');
+  // Range 按文件开头判断，不按请求的区间；HEAD 同
+  const ranged = await get('gbk.html', { headers: { range: 'bytes=5-' } });
+  assert.equal(ranged.res.status, 206);
+  assert.equal(ranged.res.headers.get('content-type'), 'text/html; charset=gbk');
+  assert.equal((await get('gbk.html', { method: 'HEAD' })).res.headers.get('content-type'), 'text/html; charset=gbk');
+  // 304 照旧不带 content-type
+  const etag = (await get('gbk.html')).res.headers.get('etag');
+  const cached = await get('gbk.html', { headers: { 'if-none-match': etag } });
+  assert.deepEqual([cached.res.status, cached.res.headers.get('content-type')], [304, null]);
+  // 响应体原样，不转码
+  assert.equal((await get('gbk.html')).body.equals(files['gbk.html']), true);
+  // 其他类型的头不变
+  await writeFile(join(root, 'a.xhtml'), '<meta charset="gbk">');
+  await writeFile(join(root, 'a.md'), '# x');
+  assert.equal(await type('a.xhtml'), 'application/xhtml+xml; charset=utf-8');
+  assert.equal(await type('a.md'), 'text/markdown; charset=utf-8');
+});
+
+test('HTML 服务端判定与页内预览共用同一个函数：真实 gbk.html 样例', async t => {
+  const { readFile } = await import('node:fs/promises');
+  const { htmlEncodingOf } = await import('../view/charset.mjs');
+  const { root, get } = await serving(t);
+  const bytes = await readFile(new URL('./fixtures/html/gbk.html', import.meta.url));
+  await writeFile(join(root, 'gbk.html'), bytes);
+  assert.equal((await get('gbk.html')).res.headers.get('content-type'), `text/html; charset=${htmlEncodingOf(bytes)}`);
+  assert.equal(htmlEncodingOf(bytes), 'gbk');
+});
