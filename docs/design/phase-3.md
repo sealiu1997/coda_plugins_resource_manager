@@ -2246,7 +2246,7 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
 | 其余 | 页内预览 |
 
 - 用户切过的偏好（持久化的 `openWith.html`）照旧，不迁移、不覆盖；默认值不写进保存状态。
-- 交给 Coda 失败（旧版 Coda、超限、无服务）时，沿用 `createExternalOpener` 的退路：静默退回页内预览。Mac 侧栏、iPhone 与文档类同一条路径；独立文件窗口（`file-app.mjs`）本来就不自动交给 Coda，不变。
+- 交给 Coda 失败（超限、服务不可用等，`coda.open` 抛错）时，沿用 `createExternalOpener` 的退路：静默退回页内预览。旧于 v0.3.36 的 Coda 不报错、只显示源码，退路接不住，见 backlog。Mac 侧栏、iPhone 与文档类同一条路径；独立文件窗口（`file-app.mjs`）本来就不自动交给 Coda，不变。
 - 页内预览保留。行菜单的切换项按当前默认显示：`.html` 写「在资源管理器中打开」，`.xhtml` 写「在 Coda 中打开」。
 
 ### 28.3 xhtml 为什么例外，取舍
