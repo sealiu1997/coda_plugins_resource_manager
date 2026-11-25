@@ -229,10 +229,13 @@ test('Mac 独立窗口：⌘F 打开查找条，留在 HTML 预览里，找得�
   assert.equal(pick(page, 'fcount').textContent, '1/2');
 });
 
+// 0.10.1 起 .html 默认交给 Coda：要在页内预览的用例先存「页内」偏好。
+const savedInlineHtml = { v: 1, seq: 1, hidden: false, sort: 'name', view: 'list', openWith: { html: 'inline' }, sessions: {} };
+
 test('Mac 侧栏：⌘F 打开查找条，留在 HTML 预览里', async t => {
   installHighlights(t);
   installParser(t);
-  const ctx = await startSearch(t, { listing: { '': ['a.html'] } });
+  const ctx = await startSearch(t, { listing: { '': ['a.html'] }, state: savedInlineHtml });
   Object.assign(ctx.host, { autoRead: true, files: { 'a.html': HTML_FILE } });
   const row = ctx.page.tree.find(n => n.classList.contains('row') && n.textContent.includes('a.html'))[0];
   row.dispatch('click');
@@ -249,7 +252,7 @@ test('Mac 侧栏：⌘F 打开查找条，留在 HTML 预览里', async t => {
 test('iPhone：⋯ 菜单里的「查找」打开查找条，留在 HTML 预览里；模式切换在头部', async t => {
   installHighlights(t);
   installParser(t);
-  const ctx = await startPhone(t, { listing: { '': ['a.html'] } });
+  const ctx = await startPhone(t, { listing: { '': ['a.html'] }, state: savedInlineHtml });
   Object.assign(ctx.host, { autoRead: true, files: { 'a.html': HTML_FILE } });
   ctx.page.tree.find(n => n.classList.contains('row') && n.textContent.includes('a.html'))[0].dispatch('click');
   await flush();
