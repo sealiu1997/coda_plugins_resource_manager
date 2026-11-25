@@ -3,6 +3,7 @@ import {
   DOCKERFILE_NAMES, ENV_NAMES, GIT_NAMES, LICENSE_NAMES, MAKEFILE_NAMES, MARKDOWN_EXTS, RUBY_NAMES,
   basenameLower, isEnvName,
 } from './lookup.mjs';
+import { PRESCAN_BYTES, htmlEncodingOf } from './charset.mjs';
 
 // 宿主按 JSON.stringify({ message }).length 计量，超过的消息会被丢弃。
 export const MESSAGE_LIMIT = 128 * 1024;
@@ -224,6 +225,11 @@ export function openCategoryOf(name) {
   if (media) return media.kind; // 'image' | 'audio' | 'video' | 'model' 与 OpenCategory 一致
   return OpenCategory.TEXT;
 }
+
+// HTML（.html、.htm）的 content-type 按文件开头的实际编码写 charset（设计第 28.5 节）：服务只需读开头 HTML_HEAD_BYTES 字节，交给 htmlContentType。
+// 编码规则只在 view/charset.mjs 一处实现，lib 经这里取，不直接引用别的 view 模块。
+export const HTML_HEAD_BYTES = PRESCAN_BYTES;
+export const htmlContentType = head => `text/html; charset=${htmlEncodingOf(head)}`;
 
 // 流式服务肯供应的文件的 MIME 类型：能预览的媒体、模型的伴随文件、文档、Markdown 和常见文本/代码；其余返回 null（服务回 415）。
 // 精确文件名（如 .env、Makefile）优先；带已知扩展名（如 .env.json、.env.md、.env.pdf）按扩展名返回准确 MIME；其余 .env.* 以 text/plain 兜底。
