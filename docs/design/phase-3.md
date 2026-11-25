@@ -2266,7 +2266,7 @@ PDF、Office、iWork 文档页内没有预览，Markdown 当时也还没有页�
 - **问题**：Coda 渲染 HTML 时把响应的 `charset` 交给渲染引擎，响应头优先于文件里的 `<meta charset>`。原先固定写 `text/html; charset=utf-8`，GBK 页面（如 `test/fixtures/html/gbk.html`）默认交给 Coda 后会乱码，而且打开成功，不会退回页内。
 - **做法**：`.html`、`.htm` 的 `content-type` 写成 `text/html; charset=<实际编码>`。
   - 判定规则就是页内预览的规则：UTF-8 BOM 优先；否则预扫前 1024 字节的 `meta`；没有声明、认不出、或规范化后是 utf-16、replacement、x-user-defined 的，写 `utf-8`。
-  - 规则只定义一处：抽成不依赖 DOM 的 `view/charset.mjs`（`htmlEncodingOf(bytes)`，返回 `TextDecoder` 规范化后的名字，如 `gb2312` 写成 `gbk`）。`decodeHtmlBytes`（`view/html.mjs`）和 `lib/media.mjs` 都调它，所以供应用的编码和页内解码不会不一致。
+  - 规则只定义一处：抽成不依赖 DOM 的 `view/charset.mjs`（`htmlEncodingOf(bytes)`，返回 `TextDecoder` 规范化后的名字，如 `gb2312` 写成 `gbk`）。`decodeHtmlBytes`（`view/html.mjs`）和 `lib/media.mjs` 都调它，所以供应用的编码和页内解码不会不一致。`lib/media.mjs` 不直接引用它，经 `view/protocol.mjs` 的 `htmlContentType`、`HTML_HEAD_BYTES` 取（同 `view/lookup.mjs` 的先例，`lib` 只引用 `protocol.mjs`）。
 - **服务端**：在 `writeHead` 之前用异步句柄读文件开头至多 1024 字节，不整份读、不用同步 `fs`。
   - `200`、`206`（按文件开头判断，和请求的区间无关）、`HEAD` 都带；`304` 和 `416` 本来就没有 `content-type`，不变。
   - 读开头失败，走原来的错误路径。
