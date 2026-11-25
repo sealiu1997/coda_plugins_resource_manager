@@ -170,17 +170,16 @@ test('text 类记了「在 Coda 中打开」：未知扩展名和 mkv 不能交�
   page.menu.dispatch('keydown', { key: 'Escape' });
 
   await dbl(page, 'page.html');
-  assert.deepEqual(host.opened, [], 'html 有自己的类别，默认页内预览');
-  assert.equal(text(page), '网页');
-  assert.equal(page.preview.find(node => node.classList.contains('md')).length, 1, '预览模式');
-  await back();
-  rightClick(page, 'page.html');
-  assert.ok(menuButtons(page).some(b => b.textContent === '在 Coda 中打开'), '行菜单里 html 的切换项可用');
-  await choose(page, '在 Coda 中打开');
   tick(300);
-  assert.deepEqual(host.opened, ['coda-view://service/media/tokH/page.html']);
-  assert.equal(host.state.at(-1)?.openWith?.html, 'coda', '按 html 类别记住');
+  assert.deepEqual(host.opened, ['coda-view://service/media/tokH/page.html'], 'html 默认交给 Coda（0.10.1），和 text 类的记忆无关');
+  assert.equal(host.state.at(-1)?.openWith?.html ?? null, null, '默认值不写进保存状态');
+  rightClick(page, 'page.html');
+  assert.ok(menuButtons(page).some(b => b.textContent === '在资源管理器中打开'), '行菜单里 html 的切换项是「在资源管理器中打开」');
+  await choose(page, '在资源管理器中打开');
+  tick(300);
+  assert.equal(host.state.at(-1)?.openWith?.html, 'inline', '按 html 类别记住');
   assert.equal(host.state.at(-1)?.openWith?.text, 'coda', 'text 类的记忆没动');
+  assert.equal(text(page), '网页');
 });
 
 test('右键「在 Coda 中打开」立即用 Coda 打开并按类别记住默认习惯，反向选「在资源管理器中打开」可切回', async t => {
@@ -658,4 +657,57 @@ test('独立 file 视图不调 coda.open，打开 Markdown/PDF 仍走页内预�
   assert.deepEqual(calls, [], '独立 file 视图不能再调 coda.open');
   assert.equal(visible(page.preview), true);
   assert.equal(page.preview.find(node => node.classList.contains('md'))[0]?.textContent, 'standalone');
+});
+
+// ---- 0.10.1：HTML 默认交给 Coda ----
+
+test('初始默认：.html、.htm 交给 Coda，.xhtml 仍在页内预览；行菜单标签对应', async t => {
+  installParser(t);
+  const roots = { '/A': { 'a.html': { text: '<p>甲</p>' }, 'b.htm': { text: '<p>乙</p>' }, 'c.xhtml': { text: '<p>丙</p>' }, 'D.HTML': { text: '<p>丁</p>' } } };
+  const { page, host, tick } = await open(t, { roots, mediaToken: 'tokX' });
+  host.session('s1');
+  await flush();
+  const back = async () => { page.preview.find(node => node.tagName === 'BUTTON' && node.getAttribute('aria-label') === '返回')[0].dispatch('click'); await flush(); };
+  const labels = name => { rightClick(page, name); const found = menuButtons(page).map(b => b.textContent).filter(l => l.startsWith('在')); page.menu.dispatch('keydown', { key: 'Escape' }); return found; };
+
+  assert.deepEqual(labels('a.html'), ['在资源管理器中打开']);
+  assert.deepEqual(labels('b.htm'), ['在资源管理器中打开']);
+  assert.deepEqual(labels('c.xhtml'), ['在 Coda 中打开']);
+  await dbl(page, 'a.html'); tick(300);
+  await dbl(page, 'b.htm'); tick(300);
+  await dbl(page, 'D.HTML'); tick(300);
+  assert.deepEqual(host.opened, ['coda-view://service/media/tokX/a.html', 'coda-view://service/media/tokX/b.htm', 'coda-view://service/media/tokX/D.HTML']);
+  assert.equal(visible(page.preview), false);
+  await dbl(page, 'c.xhtml'); tick(300);
+  assert.equal(host.opened.length, 3, 'xhtml 不发 coda.open');
+  assert.equal(visible(page.preview), true);
+  assert.equal(text(page), '丙');
+  await back();
+});
+
+test('已存的 html 偏好照旧：inline 仍页内，coda 连 .xhtml 一起走 Coda（偏好按类别）', async t => {
+  installParser(t);
+  const roots = { '/A': { 'a.html': { text: '<p>甲</p>' }, 'c.xhtml': { text: '<p>丙</p>' } } };
+  const inline = await open(t, { roots, mediaToken: 'tokI', state: savedInline('html') });
+  inline.host.session('s1'); await flush();
+  await dbl(inline.page, 'a.html');
+  assert.deepEqual(inline.host.opened, []);
+  assert.equal(text(inline.page), '甲');
+
+  const coda = await open(t, { roots, mediaToken: 'tokC', state: savedCoda('html') });
+  coda.host.session('s1'); await flush();
+  await dbl(coda.page, 'c.xhtml'); coda.tick(300);
+  assert.deepEqual(coda.host.opened, ['coda-view://service/media/tokC/c.xhtml']);
+  assert.equal(visible(coda.page.preview), false);
+});
+
+test('html 默认交给 Coda 但 coda.open 失败：静默退回页内预览', async t => {
+  installParser(t);
+  const roots = { '/A': { 'a.html': { text: '<p>退路</p>' } } };
+  const { page, host, tick } = await open(t, { roots, coda: { open: () => Promise.reject(new Error('旧版')) } });
+  host.session('s1'); await flush();
+  await dbl(page, 'a.html'); tick(300); await flush();
+  assert.equal(visible(page.preview), true);
+  assert.equal(text(page), '退路');
+  assert.equal(page.hint.textContent, '');
 });

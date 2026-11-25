@@ -199,11 +199,15 @@ function openInline(path, { select = true } = {}) {
   note({ kind: 'push', from: mode(), to: 'preview' });
   model.openFile(path, { select });
 }
-// 按类别读取当前默认打开方式：用户切过的按记下的；没切过的，文档类（PDF、Office、iWork）页内没有预览，默认交给 Coda，其余走资源管理器页内预览。
-const openModeOf = path => {
+// 按类别读取当前默认打开方式：用户切过的按记下的；没切过的，文档类（PDF、Office、iWork）页内没有预览，默认交给 Coda；
+// HTML（.html、.htm）自 Coda v0.3.36 起在隔离沙箱里渲染，也默认交给 Coda；.xhtml 同属 html 类别但 Coda 不走沙箱，仍默认页内预览；其余走资源管理器页内预览。
+const defaultOpenWith = path => {
   const category = openCategoryOf(path);
-  return (persisted.openWith[category] ?? (category === OpenCategory.DOCUMENT ? OpenWith.CODA : OpenWith.INLINE)) === OpenWith.CODA ? OpenWith.CODA : OpenWith.INLINE;
+  if (category === OpenCategory.DOCUMENT) return OpenWith.CODA;
+  if (category === OpenCategory.HTML) return /\.xhtml$/i.test(path) ? OpenWith.INLINE : OpenWith.CODA;
+  return OpenWith.INLINE;
 };
+const openModeOf = path => (persisted.openWith[openCategoryOf(path)] ?? defaultOpenWith(path)) === OpenWith.CODA ? OpenWith.CODA : OpenWith.INLINE;
 const canOpenExternal = path => typeof coda.open === 'function' && model.ready && Boolean(model.root?.path) && canOpenInCoda(path);
 // 打开文件的统一入口（目录树、图标视图和搜索结果）：按该类别当前默认习惯决定走 Coda 还是页内预览；
 // 走 coda.open 时复用单在途串行队列与本机流式服务，失败静默退回页内预览，成功时不设 model.opened（不记入 setState.opened）。
